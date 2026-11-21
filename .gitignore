@@ -1,0 +1,38 @@
+# Qt / qmake 构建产物
+Makefile
+Makefile.Debug
+Makefile.Release
+object_script.*
+.qmake.stash
+*.pro.user
+*.pro.user.*
+debug/
+release/
+*.o
+*.obj
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.exe
+*.dll
+*.a
+*.lib
+*.pdb
+*.ilk
+
+# 构建日志
+build_*.log
+qmake_*.log
+*.log
+
+# IDE / 编辑器
+.vs/
+*.sdf
+*.suo
+*.aps
+*.user
+
+# 系统文件
+Thumbs.db
+.DS_Store

@@ -1,0 +1,83 @@
+﻿#ifndef CONSUMABLESDIALOG_H
+#define CONSUMABLESDIALOG_H
+
+#include "FramelessDialog.h"
+#include "mainboardconsumables.h"
+#include "mainboardstatus.h"
+
+#include <QString>
+
+class QLabel;
+class QProgressBar;
+
+/**
+ * 耗材管理：集中显示主板每秒上报的耗材信息。
+ *
+ * 包括 MFC 读卡状态、刷卡类型/瓶数、耗材种类/状态/余量、
+ * 试剂有效期等；数据由 MainWindow 收到主板状态后实时推送。
+ */
+class ConsumablesDialog : public FramelessDialog
+{
+    Q_OBJECT
+
+public:
+    explicit ConsumablesDialog(QWidget *parent = nullptr);
+
+public slots:
+    void setMainboardStatus(const MainBoardStatus &status);
+    void clearStatus(const QString &reason = QString());
+    /** 主板逐个读取的某个位置剩余总量；试管单位为板，其余为瓶 */
+    void setConsumableAmount(int position, int bottles, int ratio);
+    void clearConsumableAmounts();
+
+private:
+    enum AmountRow {
+        AmountAA = 0,
+        AmountEPI,
+        AmountADP,
+        AmountCOL,
+        AmountRIS,
+        AmountInternalClean,
+        AmountTestTube,
+        AmountExternalClean,
+        AmountRowCount
+    };
+
+    QWidget *createContent();
+    QWidget *createStatCard(const QString &caption, QLabel **valueLabel,
+                            QWidget *parent);
+    QWidget *createRemainingCard(QWidget *parent);
+    QWidget *createAmountCard(QWidget *parent);
+    QWidget *createDetailCard(QWidget *parent);
+    void updateConsumableAmountLabels();
+    void setLabelState(QLabel *label, const char *state);
+    static QString expiryText(quint8 year, quint8 month, bool *expired);
+
+    QLabel *m_sourceBadge = nullptr;
+    QLabel *m_updatedLabel = nullptr;
+
+    QLabel *m_consTypeValue = nullptr;
+    QLabel *m_remainPercentValue = nullptr;
+    QLabel *m_remainDetailValue = nullptr;
+    QProgressBar *m_remainBar = nullptr;
+    QLabel *m_expiryValue = nullptr;
+    QLabel *m_regRemainValue = nullptr;
+
+    QLabel *m_amountValues[AmountRowCount] = {};
+    QLabel *m_amountLeftValues[AmountRowCount] = {};
+    QLabel *m_amountRightValues[AmountRowCount] = {};
+    int m_positionBottles[MainBoardConsumable::kPositionCount] = {};
+    int m_positionRatios[MainBoardConsumable::kPositionCount] = {};
+    bool m_positionValid[MainBoardConsumable::kPositionCount] = {};
+
+    QLabel *m_detailMfc = nullptr;
+    QLabel *m_detailRegType = nullptr;
+    QLabel *m_detailRegRemain = nullptr;
+    QLabel *m_detailConsStatus = nullptr;
+    QLabel *m_detailConsType = nullptr;
+    QLabel *m_detailConsumable = nullptr;
+    QLabel *m_detailExpiry = nullptr;
+    QLabel *m_detailUpdated = nullptr;
+};
+
+#endif // CONSUMABLESDIALOG_H
