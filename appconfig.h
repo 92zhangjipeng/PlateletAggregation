@@ -68,6 +68,60 @@ inline void setTestModePppPrp(bool enabled)
                               : QStringLiteral("prp"));
 }
 
+/** 仪器参数：机型（KS600 / KS800 / KS1200） */
+inline const char *machineModelSettingsKey()
+{
+    return "instrument/machineModel";
+}
+
+inline MachineModel machineModelFromSettings()
+{
+    QSettings settings;
+    const QString name = settings.value(
+                QString::fromLatin1(machineModelSettingsKey()),
+                QString::fromLatin1(machineModelName(defaultMachineModel())))
+            .toString();
+    if (name == QLatin1String("KS600")) {
+        return MachineModel::KS600;
+    }
+    if (name == QLatin1String("KS800")) {
+        return MachineModel::KS800;
+    }
+    if (name == QLatin1String("KS1200")) {
+        return MachineModel::KS1200;
+    }
+    return defaultMachineModel();
+}
+
+inline void setMachineModelInSettings(MachineModel model)
+{
+    QSettings settings;
+    settings.setValue(QString::fromLatin1(machineModelSettingsKey()),
+                      QString::fromLatin1(machineModelName(model)));
+}
+
+/** 仪器参数：通道测试模式。同通道 / 不同通道（目前只保存，测试逻辑后续接入）。 */
+inline const char *channelTestModeSettingsKey()
+{
+    return "instrument/channelTestMode";
+}
+
+inline bool channelTestModeIsSameChannel()
+{
+    QSettings settings;
+    return settings.value(QString::fromLatin1(channelTestModeSettingsKey()),
+                          QStringLiteral("same")).toString()
+            == QLatin1String("same");
+}
+
+inline void setChannelTestModeSameChannel(bool sameChannel)
+{
+    QSettings settings;
+    settings.setValue(QString::fromLatin1(channelTestModeSettingsKey()),
+                      sameChannel ? QStringLiteral("same")
+                                  : QStringLiteral("different"));
+}
+
 /** 按机型保存每个全局通道的启用/禁用状态 */
 inline QString channelStateSettingsKey(MachineModel model, int globalChannel)
 {

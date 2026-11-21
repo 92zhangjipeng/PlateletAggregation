@@ -36,6 +36,8 @@ signals:
     void frameReady(const QByteArray &frame, const QString &description);
     /** 基础设置中通道启用/禁用状态变化 */
     void channelEnabledChanged(int globalChannel, bool enabled);
+    /** 仪器参数页切换机型 */
+    void machineModelChanged(MachineModel model);
     /** 坐标维护页「触发移动」请求执行定位校验 */
     void coordinateMotionRequested(
             const InstrumentCoordinates::MoveTarget &target);
@@ -55,6 +57,7 @@ private:
     void showBasicPage();
     void showMaintenanceMenu();
     void updateBasicMachineInfo();
+    void rebuildBasicPage();
 
     void reloadUserTable(const QString &filter = QString());
     void addUserFromForm();

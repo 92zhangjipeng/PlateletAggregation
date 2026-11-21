@@ -377,6 +377,8 @@ MainWindow::MainWindow(QWidget *parent)
     setWindowFlags(windowFlags() | Qt::FramelessWindowHint);
     resize(1200, 800);
     setMinimumSize(960, 640);
+    m_machineModel = machineModelFromSettings();
+    m_instrumentCoordinates.setMachineModel(m_machineModel);
 
     // 先设置样式，再创建子控件：Qt 5.10 下反过来可能不会给首个可见页面 polish
     setStyleSheet(QStringLiteral(
@@ -1433,6 +1435,8 @@ void MainWindow::createSettingsTab()
     connect(m_settingsDialog, &SettingsDialog::coordinateMotionRequested,
             m_verificationController,
             &CoordinateVerificationController::start);
+    connect(m_settingsDialog, &SettingsDialog::machineModelChanged,
+            this, &MainWindow::setMachineModel);
     connect(m_settingsDialog, &SettingsDialog::channelEnabledChanged,
             this, [this](int globalChannel, bool enabled) {
         if (!m_moduleOverview) {
@@ -3008,6 +3012,7 @@ void MainWindow::applyMainboardStatus(const MainBoardStatus &status)
 void MainWindow::setMachineModel(MachineModel model)
 {
     m_machineModel = model;
+    setMachineModelInSettings(model);
     m_instrumentCoordinates.setMachineModel(model);
     if (m_moduleOverview) {
         m_moduleOverview->setMachineModel(model);

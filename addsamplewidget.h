@@ -42,11 +42,15 @@ public:
     /** 重新读取样本质量，刷新采血管液体颜色和高度列标题 */
     void refreshMode();
 
+    /** 测试流程调用：按样本号把状态改成“测试中”或“待测” */
+    void setSampleTesting(const QString &sampleNumber, bool testing);
+
 protected:
     void showEvent(QShowEvent *event) override;
 
 private slots:
     void addSample();
+    void confirmSamples();
     void removeSelectedSamples();
     void modifySampleNumber();
     void handleTableItemChanged(QTableWidgetItem *item);
@@ -96,6 +100,7 @@ private:
     QLineEdit *m_quickSampleNoEdit = nullptr;
     QLineEdit *m_quickBarcodeEdit = nullptr;
     QPushButton *m_addSampleButton = nullptr;
+    QPushButton *m_confirmButton = nullptr;
     QPushButton *m_removeSampleButton = nullptr;
     QPushButton *m_modifySampleButton = nullptr;
     BloodSampleAreaWidget *m_bloodArea = nullptr;

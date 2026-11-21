@@ -1464,42 +1464,90 @@ QWidget *SettingsDialog::createInstrumentParamsPage()
     layout->addLayout(header);
 
     auto *subtitle = new QLabel(
-                tr("设置加样时的测试模式。修改后返回加样页生效，"
-                   "已有的加样列表会按新模式重新分配血样孔。"),
+                tr("设置机型、测试模式和通道测试方式。修改后立即保存；"
+                   "测试模式变化后返回加样页会按新模式重新分配血样孔。"),
                 page);
     subtitle->setObjectName(QStringLiteral("dialogSubtitle"));
     subtitle->setWordWrap(true);
     layout->addWidget(subtitle);
 
-    auto *group = new QGroupBox(tr("测试模式"), page);
-    group->setObjectName(QStringLiteral("basicParamGroup"));
-    auto *groupLayout = new QVBoxLayout(group);
-    groupLayout->setContentsMargins(18, 22, 18, 18);
-    groupLayout->setSpacing(12);
+    auto *instrumentGroup = new QGroupBox(tr("仪器"), page);
+    instrumentGroup->setObjectName(QStringLiteral("basicParamGroup"));
+    auto *instrumentLayout = new QVBoxLayout(instrumentGroup);
+    instrumentLayout->setContentsMargins(18, 22, 18, 18);
+    instrumentLayout->setSpacing(10);
+
+    auto *modelRow = new QHBoxLayout;
+    modelRow->setSpacing(12);
+    auto *modelCaption = new QLabel(tr("机型"), instrumentGroup);
+    modelCaption->setObjectName(QStringLiteral("paramCaption"));
+    auto *modelCombo = new MedicalComboBox(instrumentGroup);
+    modelCombo->addItem(QStringLiteral("KS600"),
+                        int(MachineModel::KS600));
+    modelCombo->addItem(QStringLiteral("KS800"),
+                        int(MachineModel::KS800));
+    modelCombo->addItem(QStringLiteral("KS1200"),
+                        int(MachineModel::KS1200));
+    modelCombo->setCurrentIndex(modelCombo->findData(int(m_machineModel)));
+    modelRow->addWidget(modelCaption);
+    modelRow->addWidget(modelCombo, 1);
+    instrumentLayout->addLayout(modelRow);
+
+    auto *modelHint = new QLabel(
+                tr("切换机型会改变模组、通道、试管盘和血样孔数量；"
+                   "主界面、加样页和通道状态会按新机型刷新。"),
+                instrumentGroup);
+    modelHint->setObjectName(QStringLiteral("paramHint"));
+    modelHint->setWordWrap(true);
+    instrumentLayout->addWidget(modelHint);
+
+    connect(modelCombo,
+            static_cast<void (QComboBox::*)(int)>(
+                &QComboBox::currentIndexChanged),
+            this, [this, modelCombo](int) {
+        const MachineModel model = static_cast<MachineModel>(
+                    modelCombo->currentData().toInt());
+        if (model == m_machineModel) {
+            return;
+        }
+        setMachineModelInSettings(model);
+        m_machineModel = model;
+        rebuildBasicPage();
+        updateBasicMachineInfo();
+        emit machineModelChanged(model);
+        if (m_coordinateWidget) {
+            m_coordinateWidget->refreshAll();
+        }
+    });
+
+    auto *testGroup = new QGroupBox(tr("测试模式"), page);
+    testGroup->setObjectName(QStringLiteral("basicParamGroup"));
+    auto *testLayout = new QVBoxLayout(testGroup);
+    testLayout->setContentsMargins(18, 22, 18, 18);
+    testLayout->setSpacing(12);
 
     auto *pppPrp = new QRadioButton(
                 tr("PPP+PRP 模式（每个样本 2 管血，占用 2 个连续血样孔）"),
-                group);
+                testGroup);
     auto *prp = new QRadioButton(
                 tr("PRP 模式（每个样本 1 管血，占用 1 个血样孔）"),
-                group);
-    auto *modeGroup = new QButtonGroup(group);
+                testGroup);
+    auto *modeGroup = new QButtonGroup(testGroup);
     modeGroup->setExclusive(true);
     modeGroup->addButton(pppPrp);
     modeGroup->addButton(prp);
     (testModeIsPppPrp() ? pppPrp : prp)->setChecked(true);
 
     auto *example = new QLabel(
-                tr("PPP+PRP 示例：样本1占 0+1，样本2占 2+3，"
-                   "样本3占 4+5……（两个孔不能重复使用）"),
-                group);
+                tr("PPP+PRP 示例：样本1占 0+1（PPP 在前、PRP 在后），"
+                   "样本2占 2+3……（两个孔不能重复使用）"),
+                testGroup);
     example->setObjectName(QStringLiteral("paramHint"));
     example->setWordWrap(true);
 
-    groupLayout->addWidget(pppPrp);
-    groupLayout->addWidget(prp);
-    groupLayout->addWidget(example);
-    groupLayout->addStretch(1);
+    testLayout->addWidget(pppPrp);
+    testLayout->addWidget(prp);
+    testLayout->addWidget(example);
 
     connect(pppPrp, &QRadioButton::toggled, this, [](bool checked) {
         if (checked) {
@@ -1512,6 +1560,68 @@ QWidget *SettingsDialog::createInstrumentParamsPage()
         }
     });
 
-    layout->addWidget(group, 1);
+    auto *channelGroup = new QGroupBox(tr("通道测试模式"), page);
+    channelGroup->setObjectName(QStringLiteral("basicParamGroup"));
+    auto *channelLayout = new QVBoxLayout(channelGroup);
+    channelLayout->setContentsMargins(18, 22, 18, 18);
+    channelLayout->setSpacing(12);
+
+    auto *sameChannel = new QRadioButton(tr("同通道测试"), channelGroup);
+    auto *differentChannel = new QRadioButton(tr("不同通道测试"),
+                                              channelGroup);
+    auto *channelModeGroup = new QButtonGroup(channelGroup);
+    channelModeGroup->setExclusive(true);
+    channelModeGroup->addButton(sameChannel);
+    channelModeGroup->addButton(differentChannel);
+    (channelTestModeIsSameChannel() ? sameChannel : differentChannel)
+            ->setChecked(true);
+
+    auto *channelHint = new QLabel(
+                tr("这两个选项先保存到仪器参数，具体测试逻辑后续接入。"),
+                channelGroup);
+    channelHint->setObjectName(QStringLiteral("paramHint"));
+    channelHint->setWordWrap(true);
+
+    channelLayout->addWidget(sameChannel);
+    channelLayout->addWidget(differentChannel);
+    channelLayout->addWidget(channelHint);
+
+    connect(sameChannel, &QRadioButton::toggled, this, [](bool checked) {
+        if (checked) {
+            setChannelTestModeSameChannel(true);
+        }
+    });
+    connect(differentChannel, &QRadioButton::toggled,
+            this, [](bool checked) {
+        if (checked) {
+            setChannelTestModeSameChannel(false);
+        }
+    });
+
+    layout->addWidget(instrumentGroup);
+    layout->addWidget(testGroup);
+    layout->addWidget(channelGroup);
+    layout->addStretch(1);
     return page;
+}
+
+void SettingsDialog::rebuildBasicPage()
+{
+    if (!m_stack) {
+        return;
+    }
+    QWidget *current = m_stack->currentWidget();
+    QWidget *oldPage = m_stack->widget(m_basicPageIndex);
+    if (!oldPage) {
+        return;
+    }
+    m_stack->removeWidget(oldPage);
+    oldPage->deleteLater();
+
+    QWidget *newPage = createBasicPage();
+    m_stack->insertWidget(m_basicPageIndex, newPage);
+    if (current) {
+        m_stack->setCurrentWidget(current);
+    }
+    updateBasicMachineInfo();
 }
