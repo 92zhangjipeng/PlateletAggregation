@@ -186,16 +186,6 @@ void CoordinateMaintenanceWidget::buildUi()
         "  font-size: 12px;"
         "}"
         "QPushButton#coordSecondary:hover { background: #E8F1FA; }"
-        "QPushButton#coordDanger {"
-        "  background: #FFFFFF;"
-        "  color: #B03A2E;"
-        "  border: 1px solid #E0B4AE;"
-        "  border-radius: 6px;"
-        "  padding: 7px 12px;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
-        "}"
-        "QPushButton#coordDanger:hover { background: #FCEDEA; }"
         "QFrame#coordinateVerify {"
         "  background: #FFFFFF;"
         "  border: 1px solid #DCE7F1;"
@@ -404,10 +394,6 @@ void CoordinateMaintenanceWidget::buildUi()
     m_reloadButton->setObjectName(QStringLiteral("coordSecondary"));
     m_reloadButton->setCursor(Qt::PointingHandCursor);
 
-    m_clearButton = new QPushButton(tr("清空当前"), m_editorPanel);
-    m_clearButton->setObjectName(QStringLiteral("coordSecondary"));
-    m_clearButton->setCursor(Qt::PointingHandCursor);
-
     m_importButton = new QPushButton(tr("导入坐标..."), m_editorPanel);
     m_importButton->setObjectName(QStringLiteral("coordSecondary"));
     m_importButton->setCursor(Qt::PointingHandCursor);
@@ -418,16 +404,10 @@ void CoordinateMaintenanceWidget::buildUi()
     m_exportButton->setCursor(Qt::PointingHandCursor);
     m_exportButton->setToolTip(tr("把当前机型的所有已设置坐标导出为 JSON 文件"));
 
-    m_clearAllButton = new QPushButton(tr("清空全部"), m_editorPanel);
-    m_clearAllButton->setObjectName(QStringLiteral("coordDanger"));
-    m_clearAllButton->setCursor(Qt::PointingHandCursor);
-
-    buttonGrid->addWidget(m_saveButton, 0, 0, 1, 2);
-    buttonGrid->addWidget(m_reloadButton, 1, 0);
-    buttonGrid->addWidget(m_clearButton, 1, 1);
-    buttonGrid->addWidget(m_importButton, 2, 0);
-    buttonGrid->addWidget(m_exportButton, 2, 1);
-    buttonGrid->addWidget(m_clearAllButton, 3, 0, 1, 2);
+    buttonGrid->addWidget(m_saveButton, 0, 0);
+    buttonGrid->addWidget(m_reloadButton, 0, 1);
+    buttonGrid->addWidget(m_importButton, 1, 0);
+    buttonGrid->addWidget(m_exportButton, 1, 1);
     editorLayout->addLayout(buttonGrid);
 
     m_feedbackLabel = new QLabel(m_editorPanel);
@@ -440,10 +420,6 @@ void CoordinateMaintenanceWidget::buildUi()
             this, &CoordinateMaintenanceWidget::saveCurrent);
     connect(m_reloadButton, &QPushButton::clicked,
             this, &CoordinateMaintenanceWidget::loadSelection);
-    connect(m_clearButton, &QPushButton::clicked,
-            this, &CoordinateMaintenanceWidget::clearCurrent);
-    connect(m_clearAllButton, &QPushButton::clicked,
-            this, &CoordinateMaintenanceWidget::clearAll);
     connect(m_importButton, &QPushButton::clicked,
             this, &CoordinateMaintenanceWidget::importCoordinates);
     connect(m_exportButton, &QPushButton::clicked,
@@ -783,67 +759,6 @@ void CoordinateMaintenanceWidget::saveCurrent()
         setFeedback(tr("已保存：%1（已写入坐标文件）").arg(name), false);
     } else {
         setFeedback(tr("已保存到内存，但写入坐标文件失败：%1")
-                    .arg(persistError), true);
-    }
-}
-
-void CoordinateMaintenanceWidget::clearCurrent()
-{
-    TargetKind kind;
-    int index = -1;
-    QString name;
-    if (!m_coordinates || !currentTarget(&kind, &index, &name)) {
-        return;
-    }
-
-    m_coordinates->clear(kind, index);
-    QString persistError;
-    const bool persisted = saveToDefaultFile(&persistError);
-    refreshStatuses();
-    loadSelection();
-    if (persisted) {
-        setFeedback(tr("已清空当前坐标：%1（已写入坐标文件）").arg(name),
-                    false);
-    } else {
-        setFeedback(tr("已清空当前坐标：%1，但写入坐标文件失败：%2")
-                    .arg(name, persistError), true);
-    }
-}
-
-void CoordinateMaintenanceWidget::clearAll()
-{
-    if (!m_coordinates) {
-        return;
-    }
-
-    QMessageBox box(this);
-    box.setIcon(QMessageBox::Question);
-    box.setWindowTitle(tr("清空全部坐标"));
-    box.setText(tr("确定清空当前机型下所有工位坐标吗？"));
-    box.setInformativeText(
-                tr("该操作会清空当前机型坐标并写入坐标文件，"
-                   "不会影响模组参数。"));
-    box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-    box.setDefaultButton(QMessageBox::No);
-    if (QAbstractButton *yesButton = box.button(QMessageBox::Yes)) {
-        yesButton->setText(tr("确定清空"));
-    }
-    if (QAbstractButton *noButton = box.button(QMessageBox::No)) {
-        noButton->setText(tr("取消"));
-    }
-    if (box.exec() != QMessageBox::Yes) {
-        return;
-    }
-
-    m_coordinates->clear();
-    QString persistError;
-    const bool persisted = saveToDefaultFile(&persistError);
-    refreshStatuses();
-    loadSelection();
-    if (persisted) {
-        setFeedback(tr("已清空全部坐标（已写入坐标文件）"), false);
-    } else {
-        setFeedback(tr("已清空全部坐标，但写入坐标文件失败：%1")
                     .arg(persistError), true);
     }
 }

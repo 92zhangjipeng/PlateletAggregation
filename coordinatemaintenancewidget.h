@@ -46,8 +46,6 @@ protected:
 private slots:
     void loadSelection();
     void saveCurrent();
-    void clearCurrent();
-    void clearAll();
     void importCoordinates();
     void exportCoordinates();
     void triggerVerificationMove();
@@ -101,8 +99,6 @@ private:
 
     QPushButton *m_saveButton = nullptr;
     QPushButton *m_reloadButton = nullptr;
-    QPushButton *m_clearButton = nullptr;
-    QPushButton *m_clearAllButton = nullptr;
     QPushButton *m_importButton = nullptr;
     QPushButton *m_exportButton = nullptr;
 
