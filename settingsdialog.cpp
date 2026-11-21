@@ -561,6 +561,8 @@ SettingsDialog::SettingsDialog(CommunicationWorker *commWorker,
     m_menuPageIndex = m_stack->addWidget(createMenuPage());
     m_modulePageIndex = m_stack->addWidget(createModuleControlPage());
     m_coordinatePageIndex = m_stack->addWidget(createCoordinatePage());
+    m_instrumentParamsPageIndex = m_stack->addWidget(
+                createInstrumentParamsPage());
     m_stack->setCurrentIndex(m_basicPageIndex);
     setContentWidget(m_stack);
 
@@ -1288,7 +1290,8 @@ QWidget *SettingsDialog::createMenuPage()
     enum class MenuTarget {
         Placeholder,
         ModuleControl,
-        Coordinates
+        Coordinates,
+        InstrumentParams
     };
     struct SettingEntry {
         QString title;
@@ -1302,7 +1305,8 @@ QWidget *SettingsDialog::createMenuPage()
         { tr("抓手参数"),   tr("抓杯、丢杯、气路与延时参数"),     MenuTarget::Placeholder },
         { tr("模组控制"),   tr("温度、调光、LED 电流与电机转速"), MenuTarget::ModuleControl },
         { tr("打印设置"),   tr("报告模板、打印机与纸张设置"),     MenuTarget::Placeholder },
-        { tr("坐标维护"),   tr("各工位 XY 与 Z 轴坐标维护"),       MenuTarget::Coordinates }
+        { tr("坐标维护"),   tr("各工位 XY 与 Z 轴坐标维护"),       MenuTarget::Coordinates },
+        { tr("仪器参数"),   tr("测试模式：PPP+PRP / PRP"),        MenuTarget::InstrumentParams }
     };
     const int columnCount = 3;
     const int entryCount = int(sizeof(entries) / sizeof(entries[0]));
@@ -1330,6 +1334,10 @@ QWidget *SettingsDialog::createMenuPage()
                 m_stack->setCurrentIndex(m_coordinatePageIndex);
                 return;
             }
+            if (target == MenuTarget::InstrumentParams) {
+                m_stack->setCurrentIndex(m_instrumentParamsPageIndex);
+                return;
+            }
             QMessageBox::information(this, entryTitle,
                                      tr("该设置界面尚未实现，后续再补充。"));
         });
@@ -1340,6 +1348,7 @@ QWidget *SettingsDialog::createMenuPage()
     }
     grid->setRowStretch(0, 1);
     grid->setRowStretch(1, 1);
+    grid->setRowStretch(2, 1);
     layout->addLayout(grid, 1);
 
     return page;
@@ -1423,5 +1432,86 @@ QWidget *SettingsDialog::createCoordinatePage()
             this, &SettingsDialog::coordinateMotionRequested);
     layout->addWidget(m_coordinateWidget, 1);
 
+    return page;
+}
+
+QWidget *SettingsDialog::createInstrumentParamsPage()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(28, 20, 28, 24);
+    layout->setSpacing(16);
+
+    auto *header = new QHBoxLayout;
+    header->setSpacing(12);
+    auto *backButton = new QPushButton(tr("← 返回"), page);
+    backButton->setObjectName(QStringLiteral("backButton"));
+    backButton->setCursor(Qt::PointingHandCursor);
+    backButton->setFixedHeight(34);
+    connect(backButton, &QPushButton::clicked, this, [this]() {
+        m_stack->setCurrentIndex(m_menuPageIndex);
+    });
+    header->addWidget(backButton);
+
+    auto *title = new QLabel(tr("仪器参数"), page);
+    title->setObjectName(QStringLiteral("pageTitle"));
+    header->addWidget(title);
+    header->addStretch();
+
+    auto *badge = new QLabel(tr("● 维护模式"), page);
+    badge->setObjectName(QStringLiteral("maintenanceBadge"));
+    header->addWidget(badge, 0, Qt::AlignVCenter);
+    layout->addLayout(header);
+
+    auto *subtitle = new QLabel(
+                tr("设置加样时的测试模式。修改后返回加样页生效，"
+                   "已有的加样列表会按新模式重新分配血样孔。"),
+                page);
+    subtitle->setObjectName(QStringLiteral("dialogSubtitle"));
+    subtitle->setWordWrap(true);
+    layout->addWidget(subtitle);
+
+    auto *group = new QGroupBox(tr("测试模式"), page);
+    group->setObjectName(QStringLiteral("basicParamGroup"));
+    auto *groupLayout = new QVBoxLayout(group);
+    groupLayout->setContentsMargins(18, 22, 18, 18);
+    groupLayout->setSpacing(12);
+
+    auto *pppPrp = new QRadioButton(
+                tr("PPP+PRP 模式（每个样本 2 管血，占用 2 个连续血样孔）"),
+                group);
+    auto *prp = new QRadioButton(
+                tr("PRP 模式（每个样本 1 管血，占用 1 个血样孔）"),
+                group);
+    auto *modeGroup = new QButtonGroup(group);
+    modeGroup->setExclusive(true);
+    modeGroup->addButton(pppPrp);
+    modeGroup->addButton(prp);
+    (testModeIsPppPrp() ? pppPrp : prp)->setChecked(true);
+
+    auto *example = new QLabel(
+                tr("PPP+PRP 示例：样本1占 0+1，样本2占 2+3，"
+                   "样本3占 4+5……（两个孔不能重复使用）"),
+                group);
+    example->setObjectName(QStringLiteral("paramHint"));
+    example->setWordWrap(true);
+
+    groupLayout->addWidget(pppPrp);
+    groupLayout->addWidget(prp);
+    groupLayout->addWidget(example);
+    groupLayout->addStretch(1);
+
+    connect(pppPrp, &QRadioButton::toggled, this, [](bool checked) {
+        if (checked) {
+            setTestModePppPrp(true);
+        }
+    });
+    connect(prp, &QRadioButton::toggled, this, [](bool checked) {
+        if (checked) {
+            setTestModePppPrp(false);
+        }
+    });
+
+    layout->addWidget(group, 1);
     return page;
 }

@@ -18,6 +18,7 @@
 #include <QEvent>
 #include <QFont>
 #include <QFrame>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -236,7 +237,7 @@ public:
         , m_model(model)
     {
         setMouseTracking(true);
-        setMinimumSize(720, 440);
+        setMinimumSize(600, 440);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     }
 
@@ -275,13 +276,19 @@ public:
         update();
     }
 
-    void setSelectedPosition(const QString &position)
+    void setSelectedPositions(const QStringList &positions)
     {
-        const QString trimmed = position.trimmed();
-        if (m_selectedPosition == trimmed) {
+        QSet<QString> next;
+        for (const QString &position : positions) {
+            const QString trimmed = position.trimmed();
+            if (!trimmed.isEmpty()) {
+                next.insert(trimmed);
+            }
+        }
+        if (next == m_selectedPositions) {
             return;
         }
-        m_selectedPosition = trimmed;
+        m_selectedPositions = next;
         update();
     }
 
@@ -311,7 +318,7 @@ protected:
                     continue;
                 }
                 paintTube(p, well, index == m_hoverWell,
-                          well.position == m_selectedPosition);
+                          m_selectedPositions.contains(well.position));
             }
         }
 
@@ -337,8 +344,9 @@ protected:
                             : tr("全血：下层红色 60% / 上层淡黄色 40%");
                     QToolTip::showText(
                                 event->globalPos(),
-                                tr("采血管 %1\n第 %2 行%3\n%4")
+                                tr("采血管 %1\n%2 组 · 第 %3 行%4\n%5")
                                 .arg(well.position)
+                                .arg(groupLetter(well.group))
                                 .arg(well.row + 1)
                                 .arg(side)
                                 .arg(liquid),
@@ -346,8 +354,9 @@ protected:
                 } else {
                     QToolTip::showText(
                                 event->globalPos(),
-                                tr("空孔 %1\n第 %2 行%3\n等待加样")
+                                tr("空孔 %1\n%2 组 · 第 %3 行%4\n等待加样")
                                 .arg(well.position)
+                                .arg(groupLetter(well.group))
                                 .arg(well.row + 1)
                                 .arg(side),
                                 this);
@@ -433,7 +442,7 @@ private:
         geometry.columns = columns;
         geometry.rows = rows;
 
-        const qreal headerSpace = 60.0;  // 组名标签 + 后排采血管顶部空间
+        const qreal headerSpace = 64.0;  // 组名标签 + 后排敞口管顶部空间
         const qreal shadowSpace = 16.0;
         const qreal trayLipHeight = qBound<qreal>(
                     12.0, area.height() * 0.025, 18.0);
@@ -584,17 +593,16 @@ private:
                     well.group = group;
                     well.row = row;
                     well.column = localColumn;
-                    well.holeNumber = row * 2 + localColumn;
-                    well.position = QStringLiteral("%1-%2")
-                            .arg(groupLetter(group))
-                            .arg(well.holeNumber);
+                    // 孔号跨组连续编号：A组0~9、B组10~19、C组20~29……
+                    well.holeNumber = group * 10 + row * 2 + localColumn;
+                    well.position = QString::number(well.holeNumber);
                     geometry.wells.append(well);
                 }
             }
         }
 
         // 组名标在架子上方，位于该组两列的正中间。
-        const qreal labelY = geometry.backY - 40.0;
+        const qreal labelY = geometry.backY - 44.0;
         for (int group = 0; group < groups; ++group) {
             const qreal leftX = geometry.frontLeft + sideMargin
                     + group * 2 * pitch + group * groupGap + pitch / 2.0;
@@ -852,7 +860,8 @@ private:
                            QString::number(well.holeNumber));
             }
 
-            const bool selected = well.position == m_selectedPosition;
+            const bool selected = m_selectedPositions.contains(
+                        well.position);
             if (i == m_hoverWell || selected) {
                 p.setPen(QPen(QColor(44, 123, 191,
                                      selected ? 235 : 200),
@@ -914,10 +923,8 @@ private:
                    bool selected) const
     {
         const qreal bodyRadius = well.bodyRadius;
-        const qreal capRadius = bodyRadius * 1.22;
-        const qreal capHeight = qMax<qreal>(5.0, well.tubeHeight * 0.095);
-        const qreal bodyTop = well.center.y() - well.tubeHeight
-                + capHeight * 0.45;
+        // 敞口采血管：顶部没有管帽，直接在管口画玻璃壁和内腔。
+        const qreal bodyTop = well.center.y() - well.tubeHeight;
         // 上层可见段到孔口为止，孔口前侧壁盖住管身下段。
         const qreal bodyBottom = well.center.y() + well.holeRy * 0.45;
         const qreal bodyHeight = bodyBottom - bodyTop;
@@ -958,14 +965,24 @@ private:
 
         const QRectF bodyRect(well.center.x() - bodyRadius, bodyTop,
                               bodyRadius * 2.0, bodyHeight);
+        const qreal left = well.center.x() - bodyRadius;
+        const qreal right = well.center.x() + bodyRadius;
+        const qreal corner = bodyRadius * 0.95;
         QPainterPath bodyPath;
-        bodyPath.addRoundedRect(bodyRect, bodyRadius * 0.95,
-                                bodyRadius * 0.95);
+        bodyPath.moveTo(left, bodyTop);
+        bodyPath.lineTo(right, bodyTop);
+        bodyPath.lineTo(right, bodyBottom - corner);
+        bodyPath.quadTo(right, bodyBottom, right - corner, bodyBottom);
+        bodyPath.lineTo(left + corner, bodyBottom);
+        bodyPath.quadTo(left, bodyBottom, left, bodyBottom - corner);
+        bodyPath.closeSubpath();
 
         // 管内液体
         p.save();
         p.setClipPath(bodyPath);
-        const qreal liquidTop = bodyTop + bodyHeight * 0.10;
+        // 全血不要装太满，管口下方留一段空管；血浆保持较高液位。
+        const qreal emptyFraction = m_plasma ? 0.10 : 0.32;
+        const qreal liquidTop = bodyTop + bodyHeight * emptyFraction;
         const qreal liquidBottom = bodyBottom - bodyHeight * 0.05;
         const qreal liquidHeight = liquidBottom - liquidTop;
         const qreal boundary = liquidBottom - liquidHeight * 0.60;
@@ -1038,38 +1055,35 @@ private:
                    QPointF(well.center.x() + bodyRadius * 0.72,
                            bodyBottom - 3.0));
 
-        // 管帽
-        const QRectF capRect(well.center.x() - capRadius,
-                             bodyTop - capHeight * 0.85,
-                             capRadius * 2.0, capHeight);
-        QLinearGradient capGradient(0.0, capRect.top(),
-                                    0.0, capRect.bottom());
-        capGradient.setColorAt(0.0, QColor(246, 250, 252));
-        capGradient.setColorAt(0.55, QColor(219, 231, 239));
-        capGradient.setColorAt(1.0, QColor(190, 207, 220));
-        p.setPen(QPen(QColor(144, 168, 185), 0.9));
-        p.setBrush(capGradient);
-        p.drawRoundedRect(capRect, capHeight * 0.42, capHeight * 0.42);
+        // 敞口管口：外圈玻璃壁 + 深色管口内腔，不画管帽。
+        const qreal rimRy = qMax<qreal>(2.0, bodyRadius * 0.30);
+        const QRectF rimRect(well.center.x() - bodyRadius,
+                             bodyTop - rimRy,
+                             bodyRadius * 2.0, rimRy * 2.0);
+        QLinearGradient rimGradient(0.0, rimRect.top(),
+                                    0.0, rimRect.bottom());
+        rimGradient.setColorAt(0.0, QColor(247, 251, 253, 235));
+        rimGradient.setColorAt(0.55, QColor(224, 237, 245, 235));
+        rimGradient.setColorAt(1.0, QColor(193, 212, 226, 235));
+        p.setPen(QPen(QColor(150, 176, 194, 220), 0.9));
+        p.setBrush(rimGradient);
+        p.drawEllipse(rimRect);
 
-        p.setPen(QPen(QColor(127, 153, 172, 130), 0.7));
-        p.drawLine(QPointF(capRect.left() + 1.0,
-                           capRect.bottom() - capHeight * 0.26),
-                   QPointF(capRect.right() - 1.0,
-                           capRect.bottom() - capHeight * 0.26));
-        p.setPen(QPen(QColor(255, 255, 255, 190), 0.8));
-        p.drawLine(QPointF(capRect.left() + capHeight * 0.30,
-                           capRect.top() + 1.1),
-                   QPointF(capRect.right() - capHeight * 0.30,
-                           capRect.top() + 1.1));
+        const QRectF innerRect(well.center.x() - bodyRadius * 0.78,
+                               bodyTop - rimRy * 0.78,
+                               bodyRadius * 1.56, rimRy * 1.56);
+        QRadialGradient mouth(innerRect.center() - QPointF(0.0, rimRy * 0.18),
+                              qMax<qreal>(3.0, bodyRadius * 0.78));
+        mouth.setColorAt(0.0, QColor(43, 63, 78, 235));
+        mouth.setColorAt(0.70, QColor(79, 102, 118, 225));
+        mouth.setColorAt(1.0, QColor(120, 143, 159, 210));
+        p.setPen(QPen(QColor(230, 241, 248, 180), 0.8));
+        p.setBrush(mouth);
+        p.drawEllipse(innerRect);
 
-        // 管帽上标注组内孔号 0~9，插管后仍能看出孔位。
-        QFont numberFont(QStringLiteral("Microsoft YaHei"));
-        numberFont.setPixelSize(qBound(6, int(capHeight * 1.15), 8));
-        numberFont.setBold(true);
-        p.setFont(numberFont);
-        p.setPen(QColor("#1F4E79"));
-        p.drawText(capRect, Qt::AlignCenter,
-                   QString::number(well.holeNumber));
+        p.setPen(QPen(QColor(255, 255, 255, 130), 0.6));
+        p.setBrush(Qt::NoBrush);
+        p.drawArc(innerRect, 200 * 16, 140 * 16);
 
         // 孔内前侧壁：盖住管身下段，形成采血管插进孔内的深度感。
         const QRectF holeRect(well.center.x() - well.holeRx,
@@ -1248,7 +1262,7 @@ private:
     MachineModel m_model = defaultMachineModel();
     bool m_plasma = false;
     QSet<QString> m_samplePositions;
-    QString m_selectedPosition;
+    QSet<QString> m_selectedPositions;
     int m_hoverWell = -1;
 };
 
@@ -1293,6 +1307,31 @@ AddSampleWidget::AddSampleWidget(MachineModel model,
         "  color: #8A9CAB;"
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 11px;"
+        "}"
+        "QLabel#quickLabel {"
+        "  color: #5D7386;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "}"
+        "QLineEdit#quickInput {"
+        "  background: #FFFFFF;"
+        "  color: #1F2D3D;"
+        "  border: 1px solid #A9C8DF;"
+        "  border-radius: 6px;"
+        "  padding: 4px 8px;"
+        "  min-height: 28px;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "  selection-background-color: #2C7BBF;"
+        "  selection-color: #FFFFFF;"
+        "}"
+        "QLineEdit#quickInput:focus {"
+        "  border: 2px solid #2C7BBF;"
+        "  padding: 3px 7px;"
+        "}"
+        "QLineEdit#quickInput:disabled {"
+        "  background: #F2F5F8;"
+        "  color: #9AA9B5;"
         "}"
         "QPushButton#sampleAction {"
         "  background: #FFFFFF;"
@@ -1360,6 +1399,10 @@ void AddSampleWidget::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
     updateSampleQuality();
+    if (m_quickBarcodeEdit) {
+        m_quickBarcodeEdit->setFocus();
+        m_quickBarcodeEdit->selectAll();
+    }
 }
 
 void AddSampleWidget::buildUi()
@@ -1378,20 +1421,25 @@ void AddSampleWidget::buildUi()
     header->addWidget(m_subtitle);
     root->addLayout(header);
 
-    root->addWidget(createSampleTableCard());
-    root->addWidget(createBloodAreaCard(), 1);
+    auto *content = new QHBoxLayout;
+    content->setSpacing(12);
+    content->addWidget(createBloodAreaCard(), 1);
+    content->addWidget(createSampleTableCard(), 0);
+    root->addLayout(content, 1);
 }
 
 QFrame *AddSampleWidget::createSampleTableCard()
 {
     auto *card = new QFrame(this);
     card->setObjectName(QStringLiteral("sampleCard"));
+    card->setFixedWidth(470);
+    card->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     auto *layout = new QVBoxLayout(card);
     layout->setContentsMargins(16, 12, 16, 12);
     layout->setSpacing(8);
 
     auto *titleRow = new QHBoxLayout;
-    auto *title = new QLabel(tr("样本列表"), card);
+    auto *title = new QLabel(tr("加样列表"), card);
     title->setObjectName(QStringLiteral("cardTitle"));
     m_countLabel = new QLabel(card);
     m_countLabel->setObjectName(QStringLiteral("cardNote"));
@@ -1401,22 +1449,57 @@ QFrame *AddSampleWidget::createSampleTableCard()
     titleRow->addWidget(m_countLabel);
     layout->addLayout(titleRow);
 
+    // 快速加样：样本号 + 条码 一次录入，条码栏可直接扫码/手动输入。
+    auto *quickGrid = new QGridLayout;
+    quickGrid->setHorizontalSpacing(8);
+    quickGrid->setVerticalSpacing(6);
+
+    auto *sampleNoCaption = new QLabel(tr("样本号"), card);
+    sampleNoCaption->setObjectName(QStringLiteral("quickLabel"));
+    m_quickSampleNoEdit = new QLineEdit(card);
+    m_quickSampleNoEdit->setObjectName(QStringLiteral("quickInput"));
+    m_quickSampleNoEdit->setPlaceholderText(tr("下一个样本号"));
+    m_quickSampleNoEdit->setToolTip(
+                tr("默认按 T+日期+4位序号生成，可修改；表格和数据库都不能重复"));
+
+    auto *barcodeCaption = new QLabel(tr("条码"), card);
+    barcodeCaption->setObjectName(QStringLiteral("quickLabel"));
+    m_quickBarcodeEdit = new QLineEdit(card);
+    m_quickBarcodeEdit->setObjectName(QStringLiteral("quickInput"));
+    m_quickBarcodeEdit->setPlaceholderText(tr("扫描或手动输入条码"));
+    m_quickBarcodeEdit->setClearButtonEnabled(true);
+    m_quickBarcodeEdit->setToolTip(
+                tr("扫码枪直接扫入；回车或点「添加」加入列表"));
+
+    m_addSampleButton = new QPushButton(tr("＋ 添加"), card);
+    m_addSampleButton->setObjectName(QStringLiteral("sampleAction"));
+    m_addSampleButton->setCursor(Qt::PointingHandCursor);
+
+    quickGrid->addWidget(sampleNoCaption, 0, 0);
+    quickGrid->addWidget(m_quickSampleNoEdit, 0, 1, 1, 2);
+    quickGrid->addWidget(barcodeCaption, 1, 0);
+    quickGrid->addWidget(m_quickBarcodeEdit, 1, 1);
+    quickGrid->addWidget(m_addSampleButton, 1, 2);
+    quickGrid->setColumnStretch(1, 1);
+    layout->addLayout(quickGrid);
+
     auto *toolRow = new QHBoxLayout;
     toolRow->setSpacing(8);
-    m_addSampleButton = new QPushButton(tr("＋ 添加样本"), card);
     m_removeSampleButton = new QPushButton(tr("删除选中"), card);
     m_modifySampleButton = new QPushButton(tr("修改样本号"), card);
-    for (QPushButton *button : {m_addSampleButton, m_removeSampleButton,
+    for (QPushButton *button : {m_removeSampleButton,
                                 m_modifySampleButton}) {
         button->setObjectName(QStringLiteral("sampleAction"));
         button->setCursor(Qt::PointingHandCursor);
         toolRow->addWidget(button);
     }
     toolRow->addStretch(1);
+    layout->addLayout(toolRow);
+
     m_tableHint = new QLabel(card);
     m_tableHint->setObjectName(QStringLiteral("tableHint"));
-    toolRow->addWidget(m_tableHint);
-    layout->addLayout(toolRow);
+    m_tableHint->setWordWrap(true);
+    layout->addWidget(m_tableHint);
 
     m_sampleTable = new QTableWidget(card);
     m_sampleTable->setObjectName(QStringLiteral("sampleTable"));
@@ -1442,12 +1525,11 @@ QFrame *AddSampleWidget::createSampleTableCard()
     m_sampleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Fixed);
     m_sampleTable->horizontalHeader()->setSectionResizeMode(
                 TestItemColumn, QHeaderView::Stretch);
-    m_sampleTable->setColumnWidth(SampleNoColumn, 160);
-    m_sampleTable->setColumnWidth(BarcodeColumn, 180);
-    m_sampleTable->setColumnWidth(HeightColumn, 110);
-    m_sampleTable->setColumnWidth(PositionColumn, 100);
+    m_sampleTable->setColumnWidth(SampleNoColumn, 110);
+    m_sampleTable->setColumnWidth(BarcodeColumn, 100);
+    m_sampleTable->setColumnWidth(HeightColumn, 80);
+    m_sampleTable->setColumnWidth(PositionColumn, 65);
     m_sampleTable->setMinimumHeight(150);
-    m_sampleTable->setMaximumHeight(200);
 
     m_sampleTable->setItemDelegateForColumn(
                 PositionColumn,
@@ -1480,11 +1562,23 @@ QFrame *AddSampleWidget::createSampleTableCard()
     auto *positionHeader = m_sampleTable->horizontalHeaderItem(
                 PositionColumn);
     if (positionHeader) {
-        positionHeader->setToolTip(tr("格式：组-孔号，例如 A-3"));
+        positionHeader->setToolTip(
+                    tr("血样孔号，例如 10；PPP+PRP 模式为 10+11"));
     }
 
     connect(m_addSampleButton, &QPushButton::clicked,
             this, &AddSampleWidget::addSample);
+    connect(m_quickSampleNoEdit, &QLineEdit::textEdited,
+            this, [this]() { m_quickSampleNoEdited = true; });
+    connect(m_quickBarcodeEdit, &QLineEdit::returnPressed,
+            this, &AddSampleWidget::addSample);
+    connect(m_quickSampleNoEdit, &QLineEdit::returnPressed,
+            this, [this]() {
+        if (m_quickBarcodeEdit) {
+            m_quickBarcodeEdit->setFocus();
+            m_quickBarcodeEdit->selectAll();
+        }
+    });
     connect(m_removeSampleButton, &QPushButton::clicked,
             this, &AddSampleWidget::removeSelectedSamples);
     connect(m_modifySampleButton, &QPushButton::clicked,
@@ -1542,35 +1636,33 @@ void AddSampleWidget::updateSampleQuality()
 
     const bool plasma = sampleQualityIsPlasma();
     const bool scanBarcode = addSampleScanBarcodeEnabled();
+    const bool pppPrp = testModeIsPppPrp();
+    if (pppPrp != m_lastPppPrpMode) {
+        m_lastPppPrpMode = pppPrp;
+        reallocatePositionsForMode();
+    }
+    updatePositionEditability();
+
     m_bloodArea->setMachineModel(m_model);
     m_bloodArea->setPlasma(plasma);
     m_bloodArea->update();
     updateHeightHeader();
     updateSampleCount();
     updateScanHint();
+    updateQuickSampleNumber();
     syncBloodAreaSamples();
 
-    const int groups = machineBloodSampleGroupCount(m_model);
     const int wells = machineBloodSampleWellCount(m_model);
-    const QString groupRange = QStringLiteral("%1~%2")
-            .arg(groupLetter(0))
-            .arg(groupLetter(groups - 1));
-
     m_subtitle->setText(
-                tr("%1 · 样本质量：%2 · 加样扫码：%3 · "
-                   "血样区 %4 组（%5）× 10 孔 = %6 孔")
+                tr("%1 · %2 · 测试模式：%3 · 扫码：%4 · 血样区 %5 孔")
                 .arg(QString::fromLatin1(machineModelName(m_model)))
                 .arg(plasma ? tr("血浆") : tr("全血"))
+                .arg(pppPrp ? tr("PPP+PRP") : tr("PRP"))
                 .arg(scanBarcode ? tr("开") : tr("关"))
-                .arg(groups)
-                .arg(groupRange)
                 .arg(wells));
 
     m_bloodCaption->setText(
-                plasma
-                ? tr("每组 5 行 × 2 列 = 10 孔 · 采血管内全部淡黄色血浆")
-                : tr("每组 5 行 × 2 列 = 10 孔 · 采血管下层红色 60% / "
-                     "上层淡黄色 40%"));
+                tr("孔号跨组连续：A组0-9、B组10-19…… 每组5行×2列"));
 }
 
 void AddSampleWidget::updateHeightHeader()
@@ -1594,10 +1686,11 @@ void AddSampleWidget::updateSampleCount()
     if (!m_countLabel || !m_sampleTable) {
         return;
     }
+    const int rows = m_sampleTable->rowCount();
     m_countLabel->setText(
-                tr("共 %1 个样本 · 血样区 %2 个位置")
-                .arg(m_sampleTable->rowCount())
-                .arg(machineBloodSampleWellCount(m_model)));
+                testModeIsPppPrp()
+                ? tr("共 %1 个样本 · 每样本2孔").arg(rows)
+                : tr("共 %1 个样本 · 每样本1孔").arg(rows));
 }
 
 void AddSampleWidget::updateScanHint()
@@ -1613,6 +1706,111 @@ void AddSampleWidget::updateScanHint()
         m_tableHint->setText(
                     tr("扫码关：条码可留空/手动输入 · "
                        "双击测试项目多选"));
+    }
+}
+
+void AddSampleWidget::updateQuickSampleNumber()
+{
+    if (!m_quickSampleNoEdit || m_quickSampleNoEdited) {
+        return;
+    }
+    QString error;
+    const QString next = generateNextSampleNumber(&error);
+    m_quickSampleNoEdit->setText(next);
+    m_quickSampleNoEdit->setPlaceholderText(
+                next.isEmpty()
+                ? (error.isEmpty() ? tr("无法生成样本号") : error)
+                : tr("下一个样本号"));
+    m_quickSampleNoEdit->setToolTip(
+                next.isEmpty()
+                ? (error.isEmpty() ? tr("无法生成样本号") : error)
+                : tr("默认按 T+日期+4位序号生成，可修改；"
+                     "表格和数据库都不能重复"));
+}
+
+void AddSampleWidget::updatePositionEditability()
+{
+    if (!m_sampleTable) {
+        return;
+    }
+    const bool editable = !testModeIsPppPrp();
+    for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
+        QTableWidgetItem *item = m_sampleTable->item(row, PositionColumn);
+        if (!item) {
+            continue;
+        }
+        Qt::ItemFlags flags = item->flags();
+        if (editable) {
+            flags |= Qt::ItemIsEditable;
+        } else {
+            flags &= ~Qt::ItemIsEditable;
+        }
+        if (flags != item->flags()) {
+            m_updatingTable = true;
+            item->setFlags(flags);
+            m_updatingTable = false;
+        }
+    }
+    if (QTableWidgetItem *header =
+            m_sampleTable->horizontalHeaderItem(PositionColumn)) {
+        header->setToolTip(
+                    editable
+                    ? tr("双击选择血样孔号，例如 10")
+                    : tr("PPP+PRP 模式自动分配两个孔，例如 10+11"));
+    }
+}
+
+void AddSampleWidget::reallocatePositionsForMode()
+{
+    if (!m_sampleTable) {
+        return;
+    }
+    const bool pppPrp = testModeIsPppPrp();
+    const int holes = machineBloodSampleWellCount(m_model);
+    QSet<int> used;
+
+    m_updatingTable = true;
+    for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
+        QString position;
+        if (pppPrp) {
+            for (int hole = 0; hole + 1 < holes; ++hole) {
+                if (!used.contains(hole) && !used.contains(hole + 1)) {
+                    position = QStringLiteral("%1+%2")
+                            .arg(hole).arg(hole + 1);
+                    used.insert(hole);
+                    used.insert(hole + 1);
+                    break;
+                }
+            }
+        } else {
+            for (int hole = 0; hole < holes; ++hole) {
+                if (!used.contains(hole)) {
+                    position = QString::number(hole);
+                    used.insert(hole);
+                    break;
+                }
+            }
+        }
+        if (QTableWidgetItem *item =
+                m_sampleTable->item(row, PositionColumn)) {
+            item->setText(position);
+            item->setData(Qt::UserRole, position);
+        }
+    }
+    m_updatingTable = false;
+
+    updatePositionEditability();
+    updateSampleCount();
+    updateQuickSampleNumber();
+    syncBloodAreaSamples();
+
+    if (pppPrp && m_sampleTable->rowCount() > holes / 2) {
+        QMessageBox::warning(
+                    this, tr("测试模式已切换"),
+                    tr("当前加样列表有 %1 个样本，PPP+PRP 模式最多 %2 个；"
+                       "超出部分没有分配孔位。")
+                    .arg(m_sampleTable->rowCount())
+                    .arg(holes / 2));
     }
 }
 
@@ -1664,15 +1862,12 @@ void AddSampleWidget::syncBloodAreaSamples()
     for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
         if (QTableWidgetItem *item =
                 m_sampleTable->item(row, PositionColumn)) {
-            const QString position = item->text().trimmed();
-            if (!position.isEmpty()) {
-                positions << position;
-            }
+            positions << positionParts(item->text());
         }
     }
     m_bloodArea->setSamplePositions(positions);
 
-    QString selectedPosition;
+    QStringList selectedPositions;
     const QModelIndexList selected =
             m_sampleTable->selectionModel()->selectedRows();
     if (!selected.isEmpty()) {
@@ -1686,10 +1881,10 @@ void AddSampleWidget::syncBloodAreaSamples()
         }
         if (QTableWidgetItem *item =
                 m_sampleTable->item(row, PositionColumn)) {
-            selectedPosition = item->text().trimmed();
+            selectedPositions = positionParts(item->text());
         }
     }
-    m_bloodArea->setSelectedPosition(selectedPosition);
+    m_bloodArea->setSelectedPositions(selectedPositions);
 }
 
 void AddSampleWidget::addSample()
@@ -1719,40 +1914,84 @@ void AddSampleWidget::addSample()
             focusBarcodeCell(row);
             return;
         }
+
+        if (!m_quickBarcodeEdit
+                || m_quickBarcodeEdit->text().trimmed().isEmpty()) {
+            QMessageBox::information(
+                        this, tr("请扫描条码"),
+                        tr("加样扫码已开启，请先在条码栏扫描或输入条码，"
+                           "再点「添加」。"));
+            if (m_quickBarcodeEdit) {
+                m_quickBarcodeEdit->setFocus();
+                m_quickBarcodeEdit->selectAll();
+            }
+            return;
+        }
     }
 
     const QString position = nextFreePosition();
     if (position.isEmpty()) {
         QMessageBox::information(
                     this, tr("无法添加样本"),
-                    tr("血样区已满：当前机型最多 %1 个样本。")
-                    .arg(machineBloodSampleWellCount(m_model)));
+                    testModeIsPppPrp()
+                    ? tr("没有连续的两个空闲血样孔；PPP+PRP 模式最多 %1 "
+                         "个样本。")
+                      .arg(machineBloodSampleWellCount(m_model) / 2)
+                    : tr("血样区已满：当前机型最多 %1 个样本。")
+                      .arg(machineBloodSampleWellCount(m_model)));
         return;
     }
 
-    QString error;
-    const QString sampleNumber = generateNextSampleNumber(&error);
+    QString sampleNumber = m_quickSampleNoEdit
+            ? normalizedSampleNumber(m_quickSampleNoEdit->text())
+            : QString();
     if (sampleNumber.isEmpty()) {
-        QMessageBox::warning(
-                    this, tr("无法添加样本"),
-                    error.isEmpty()
-                    ? tr("无法生成当天样本号，请检查测试数据库。")
-                    : error);
+        QString error;
+        sampleNumber = generateNextSampleNumber(&error);
+        if (sampleNumber.isEmpty()) {
+            QMessageBox::warning(
+                        this, tr("无法添加样本"),
+                        error.isEmpty()
+                        ? tr("无法生成当天样本号，请检查测试数据库。")
+                        : error);
+            return;
+        }
+        if (m_quickSampleNoEdit) {
+            m_quickSampleNoEdit->setText(sampleNumber);
+        }
+    }
+
+    QString reason;
+    if (!validateSampleNumber(sampleNumber, -1, &reason)) {
+        QMessageBox::warning(this, tr("样本号不可用"), reason);
+        if (m_quickSampleNoEdit) {
+            m_quickSampleNoEdit->setFocus();
+            m_quickSampleNoEdit->selectAll();
+        }
         return;
     }
 
-    appendSampleRow(sampleNumber, QString(), QString(), QString(),
-                    position);
+    const QString barcode = m_quickBarcodeEdit
+            ? m_quickBarcodeEdit->text().trimmed() : QString();
+
+    appendSampleRow(sampleNumber, barcode, QString(), QString(), position);
     qInfo() << "Add sample:" << sampleNumber << "position" << position;
 
     const int row = m_sampleTable->rowCount() - 1;
     m_sampleTable->scrollToBottom();
-    if (addSampleScanBarcodeEnabled()) {
-        focusBarcodeCell(row);
-    } else {
-        m_sampleTable->selectRow(row);
-        m_sampleTable->setCurrentCell(row, BarcodeColumn);
+    m_sampleTable->selectRow(row);
+    m_sampleTable->setCurrentCell(row, BarcodeColumn);
+
+    if (m_quickBarcodeEdit) {
+        m_quickBarcodeEdit->clear();
     }
+    m_quickSampleNoEdited = false;
+    updateQuickSampleNumber();
+    if (m_quickBarcodeEdit) {
+        m_quickBarcodeEdit->setFocus();
+        m_quickBarcodeEdit->selectAll();
+    }
+    updateSampleCount();
     syncBloodAreaSamples();
 }
 
@@ -1790,6 +2029,7 @@ void AddSampleWidget::removeSelectedSamples()
     m_updatingTable = false;
     qInfo() << "Removed sample rows:" << rows.size();
     updateSampleCount();
+    updateQuickSampleNumber();
     syncBloodAreaSamples();
 }
 
@@ -1843,6 +2083,7 @@ void AddSampleWidget::modifySampleNumber()
             m_updatingTable = false;
             qInfo() << "Sample number changed:" << oldNumber << "->"
                     << value;
+            updateQuickSampleNumber();
             m_sampleTable->setCurrentCell(row, SampleNoColumn);
             return;
         }
@@ -1860,18 +2101,21 @@ void AddSampleWidget::handleTableItemChanged(QTableWidgetItem *item)
     const int column = item->column();
     if (column == PositionColumn) {
         const QString text = item->text().trimmed();
-        if (!allPositions().contains(text)
-                || positionInTable(text, item->row())) {
+        if (!positionStringValid(text, item->row())) {
             QMessageBox::warning(
                         this, tr("样本位置无效"),
-                        tr("该位置不存在或已被其他样本占用。\n"
-                           "格式：组-孔号，例如 A-3。"));
+                        testModeIsPppPrp()
+                        ? tr("PPP+PRP 模式每个样本占用两个孔，"
+                             "孔号不能重复。\n格式：10+11。")
+                        : tr("该孔号不存在或已被其他样本占用。\n"
+                             "格式：孔号，例如 10。"));
             restoreTableItem(item);
             return;
         }
-        if (item->text() != text) {
+        const QString canonical = positionParts(text).join(QLatin1Char('+'));
+        if (item->text() != canonical) {
             m_updatingTable = true;
-            item->setText(text);
+            item->setText(canonical);
             m_updatingTable = false;
         }
     }
@@ -1888,13 +2132,9 @@ void AddSampleWidget::handleTableItemChanged(QTableWidgetItem *item)
 QStringList AddSampleWidget::allPositions() const
 {
     QStringList result;
-    const int groups = machineBloodSampleGroupCount(m_model);
-    for (int group = 0; group < groups; ++group) {
-        for (int hole = 0; hole < 10; ++hole) {
-            result << QStringLiteral("%1-%2")
-                      .arg(groupLetter(group))
-                      .arg(hole);
-        }
+    const int holes = machineBloodSampleWellCount(m_model);
+    for (int hole = 0; hole < holes; ++hole) {
+        result << QString::number(hole);
     }
     return result;
 }
@@ -1912,9 +2152,9 @@ QStringList AddSampleWidget::positionsForRow(int row) const
 
     const QStringList all = allPositions();
     QStringList result;
-    for (const QString &position : all) {
-        if (position == current || !positionInTable(position, row)) {
-            result << position;
+    for (const QString &hole : all) {
+        if (hole == current || !holeInTable(hole, row)) {
+            result << hole;
         }
     }
     if (!current.isEmpty() && !all.contains(current)
@@ -1927,9 +2167,20 @@ QStringList AddSampleWidget::positionsForRow(int row) const
 QString AddSampleWidget::nextFreePosition() const
 {
     const QStringList positions = allPositions();
-    for (const QString &position : positions) {
-        if (!positionInTable(position)) {
-            return position;
+    if (testModeIsPppPrp()) {
+        for (int i = 0; i + 1 < positions.size(); ++i) {
+            if (!holeInTable(positions.at(i))
+                    && !holeInTable(positions.at(i + 1))) {
+                return positions.at(i) + QLatin1Char('+')
+                        + positions.at(i + 1);
+            }
+        }
+        return QString();
+    }
+
+    for (const QString &hole : positions) {
+        if (!holeInTable(hole)) {
+            return hole;
         }
     }
     return QString();
@@ -2010,25 +2261,63 @@ bool AddSampleWidget::sampleNumberInTable(const QString &number,
     return false;
 }
 
-bool AddSampleWidget::positionInTable(const QString &position,
-                                      int exceptRow) const
+QStringList AddSampleWidget::positionParts(const QString &position) const
+{
+    QStringList result;
+    const QStringList parts = position.split(QLatin1Char('+'),
+                                             QString::SkipEmptyParts);
+    for (const QString &part : parts) {
+        const QString trimmed = part.trimmed();
+        if (!trimmed.isEmpty()) {
+            result << trimmed;
+        }
+    }
+    return result;
+}
+
+bool AddSampleWidget::holeInTable(const QString &hole,
+                                  int exceptRow) const
 {
     if (!m_sampleTable) {
         return false;
     }
-    const QString trimmed = position.trimmed();
+    const QString trimmed = hole.trimmed();
     for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
         if (row == exceptRow) {
             continue;
         }
         if (QTableWidgetItem *item =
                 m_sampleTable->item(row, PositionColumn)) {
-            if (item->text().trimmed() == trimmed) {
+            if (positionParts(item->text()).contains(trimmed)) {
                 return true;
             }
         }
     }
     return false;
+}
+
+bool AddSampleWidget::positionStringValid(const QString &position,
+                                          int exceptRow) const
+{
+    const QStringList parts = positionParts(position);
+    if (testModeIsPppPrp()) {
+        if (parts.size() != 2) {
+            return false;
+        }
+    } else if (parts.size() != 1) {
+        return false;
+    }
+
+    const QStringList all = allPositions();
+    QSet<QString> seen;
+    for (const QString &part : parts) {
+        if (!all.contains(part) || seen.contains(part)
+                || holeInTable(part, exceptRow)) {
+            return false;
+        }
+        seen.insert(part);
+    }
+    return true;
 }
 
 bool AddSampleWidget::validateSampleNumber(const QString &number,
@@ -2102,7 +2391,7 @@ void AddSampleWidget::appendSampleRow(const QString &sampleNumber,
     m_sampleTable->setItem(row, HeightColumn,
                            makeItem(height, false));
     m_sampleTable->setItem(row, PositionColumn,
-                           makeItem(position, true));
+                           makeItem(position, !testModeIsPppPrp()));
 
     if (QTableWidgetItem *item = m_sampleTable->item(row, SampleNoColumn)) {
         item->setToolTip(tr("双击可修改样本号"));
@@ -2114,7 +2403,7 @@ void AddSampleWidget::appendSampleRow(const QString &sampleNumber,
         item->setToolTip(tr("由识别/测高结果自动填入，不可编辑"));
     }
     if (QTableWidgetItem *item = m_sampleTable->item(row, PositionColumn)) {
-        item->setToolTip(tr("组-孔号，例如 A-3"));
+        item->setToolTip(tr("血样孔号，例如 10；PPP+PRP 模式为 10+11"));
     }
 
     m_sampleTable->setRowHeight(row, kSampleRowHeight);

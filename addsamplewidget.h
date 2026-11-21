@@ -8,6 +8,7 @@
 
 class QFrame;
 class QLabel;
+class QLineEdit;
 class QPushButton;
 class QShowEvent;
 class QTableWidget;
@@ -58,18 +59,24 @@ private:
     void updateHeightHeader();
     void updateSampleCount();
     void updateScanHint();
+    void updateQuickSampleNumber();
+    void updatePositionEditability();
+    void reallocatePositionsForMode();
     void focusBarcodeCell(int row);
     void modifyTestItems(int row);
     void syncBloodAreaSamples();
 
     QStringList allPositions() const;
     QStringList positionsForRow(int row) const;
+    QStringList positionParts(const QString &position) const;
     QString nextFreePosition() const;
     QString generateNextSampleNumber(QString *error = nullptr) const;
     bool sampleNumberInTable(const QString &number,
                              int exceptRow = -1) const;
-    bool positionInTable(const QString &position,
-                         int exceptRow = -1) const;
+    bool holeInTable(const QString &hole,
+                     int exceptRow = -1) const;
+    bool positionStringValid(const QString &position,
+                             int exceptRow) const;
     bool validateSampleNumber(const QString &number, int exceptRow,
                               QString *reason) const;
     void appendSampleRow(const QString &sampleNumber,
@@ -86,11 +93,15 @@ private:
     QLabel *m_countLabel = nullptr;
     QLabel *m_tableHint = nullptr;
     QTableWidget *m_sampleTable = nullptr;
+    QLineEdit *m_quickSampleNoEdit = nullptr;
+    QLineEdit *m_quickBarcodeEdit = nullptr;
     QPushButton *m_addSampleButton = nullptr;
     QPushButton *m_removeSampleButton = nullptr;
     QPushButton *m_modifySampleButton = nullptr;
     BloodSampleAreaWidget *m_bloodArea = nullptr;
     bool m_updatingTable = false;
+    bool m_lastPppPrpMode = false;
+    bool m_quickSampleNoEdited = false;
 };
 
 #endif // ADDSAMPLEWIDGET_H

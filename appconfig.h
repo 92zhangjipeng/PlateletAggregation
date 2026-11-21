@@ -46,6 +46,28 @@ inline void setAddSampleScanBarcodeEnabled(bool enabled)
                       enabled);
 }
 
+/** 仪器参数：测试模式。pppPrp=PPP+PRP（每样本2孔），prp=PRP（每样本1孔）。 */
+inline const char *testModeSettingsKey()
+{
+    return "instrument/testMode";
+}
+
+inline bool testModeIsPppPrp()
+{
+    QSettings settings;
+    return settings.value(QString::fromLatin1(testModeSettingsKey()),
+                          QStringLiteral("prp"))
+            .toString() == QLatin1String("pppPrp");
+}
+
+inline void setTestModePppPrp(bool enabled)
+{
+    QSettings settings;
+    settings.setValue(QString::fromLatin1(testModeSettingsKey()),
+                      enabled ? QStringLiteral("pppPrp")
+                              : QStringLiteral("prp"));
+}
+
 /** 按机型保存每个全局通道的启用/禁用状态 */
 inline QString channelStateSettingsKey(MachineModel model, int globalChannel)
 {

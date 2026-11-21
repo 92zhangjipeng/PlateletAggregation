@@ -49,6 +49,7 @@ private:
     QWidget *createMenuPage();
     QWidget *createModuleControlPage();
     QWidget *createCoordinatePage();
+    QWidget *createInstrumentParamsPage();
 
     void promptMaintenanceLogin();
     void showBasicPage();
@@ -69,6 +70,7 @@ private:
     int m_menuPageIndex = 1;
     int m_modulePageIndex = 2;
     int m_coordinatePageIndex = -1;
+    int m_instrumentParamsPageIndex = -1;
     bool m_serialConnected = false;
     MachineModel m_machineModel = defaultMachineModel();
 
