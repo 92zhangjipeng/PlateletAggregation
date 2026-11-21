@@ -9,6 +9,8 @@
 #include <QByteArray>
 #include <QString>
 
+#include <functional>
+
 class CommunicationWorker;
 class CoordinateMaintenanceWidget;
 class QLineEdit;
@@ -26,6 +28,9 @@ public:
                             InstrumentCoordinates *coordinates,
                             QWidget *parent = nullptr,
                             MachineModel model = defaultMachineModel());
+
+    /** 加样页提供待测/测试中样本数；大于 0 时禁止改样本质量和测试模式 */
+    void setActiveSampleCountProvider(std::function<int()> provider);
 
 public slots:
     /** 串口/主控收到模组应答帧后调用，转发到模组控制页显示 */
@@ -58,6 +63,8 @@ private:
     void showMaintenanceMenu();
     void updateBasicMachineInfo();
     void rebuildBasicPage();
+    int activeSampleCount() const;
+    bool ensureSampleShapeEditable(const QString &what);
 
     void reloadUserTable(const QString &filter = QString());
     void addUserFromForm();
@@ -76,6 +83,7 @@ private:
     int m_instrumentParamsPageIndex = -1;
     bool m_serialConnected = false;
     MachineModel m_machineModel = defaultMachineModel();
+    std::function<int()> m_activeSampleCountProvider;
 
     InstrumentCoordinates m_ownCoordinates;
     InstrumentCoordinates *m_coordinates = nullptr;

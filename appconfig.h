@@ -46,6 +46,12 @@ inline void setAddSampleScanBarcodeEnabled(bool enabled)
                       enabled);
 }
 
+/** 测试项目常用组合：QStringList，每项为 "AA+ADP" 形式 */
+inline const char *testItemCombinationsSettingsKey()
+{
+    return "basic/testItemCombinations";
+}
+
 /** 仪器参数：测试模式。pppPrp=PPP+PRP（每样本2孔），prp=PRP（每样本1孔）。 */
 inline const char *testModeSettingsKey()
 {

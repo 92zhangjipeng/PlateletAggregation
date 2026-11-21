@@ -49,6 +49,9 @@ public:
     /** 测试流程调用：按样本号把状态改成“测试中”或“待测” */
     void setSampleTesting(const QString &sampleNumber, bool testing);
 
+    /** 待测 + 测试中样本数；用于锁住会影响孔位的设置 */
+    int activeSampleCount() const;
+
     /** 已确认待测样本队列（测试流程后续从这里取样本） */
     TestQueue *testQueue();
     const TestQueue *testQueue() const;

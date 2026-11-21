@@ -41,8 +41,10 @@
 #include <QRadialGradient>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
+#include <QScrollArea>
 #include <QSet>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QStyleOptionViewItem>
@@ -103,82 +105,551 @@ QString editorStyleSheet()
                 "}");
 }
 
-/** 测试项目多选对话框：AA/ADP/COL/EPI/RIS 可任意组合。 */
+const QStringList &testItemCatalog()
+{
+    static const QStringList items = {
+        QStringLiteral("AA"), QStringLiteral("ADP"),
+        QStringLiteral("COL"), QStringLiteral("EPI"),
+        QStringLiteral("RIS")
+    };
+    return items;
+}
+
+/** 去重并按 AA/ADP/COL/EPI/RIS 的固定顺序整理 */
+QStringList canonicalTestItemList(const QStringList &items)
+{
+    QStringList picked;
+    for (const QString &raw : items) {
+        const QString item = raw.trimmed().toUpper();
+        if (testItemCatalog().contains(item) && !picked.contains(item)) {
+            picked << item;
+        }
+    }
+    QStringList ordered;
+    for (const QString &item : testItemCatalog()) {
+        if (picked.contains(item)) {
+            ordered << item;
+        }
+    }
+    return ordered;
+}
+
+QString canonicalTestItemText(const QStringList &items)
+{
+    return canonicalTestItemList(items).join(QLatin1Char('+'));
+}
+
+QStringList splitTestItemText(const QString &text)
+{
+    return canonicalTestItemList(
+                text.split(QLatin1Char('+'), QString::SkipEmptyParts));
+}
+
+QStringList loadTestItemCombinations()
+{
+    QSettings settings;
+    const QStringList stored = settings.value(
+                QString::fromLatin1(testItemCombinationsSettingsKey()))
+            .toStringList();
+    QStringList combinations;
+    for (const QString &entry : stored) {
+        const QString combination = canonicalTestItemText(
+                    entry.split(QLatin1Char('+'), QString::SkipEmptyParts));
+        if (!combination.isEmpty()
+                && !combinations.contains(combination)) {
+            combinations << combination;
+        }
+    }
+    return combinations;
+}
+
+void saveTestItemCombinations(const QStringList &combinations)
+{
+    QSettings settings;
+    settings.setValue(
+                QString::fromLatin1(testItemCombinationsSettingsKey()),
+                combinations);
+}
+
+QString testItemDialogStyleSheet()
+{
+    return QStringLiteral(
+        "QDialog { background: #F7FAFD; }"
+        "QLabel {"
+        "  color: #5D7386;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "}"
+        "QCheckBox {"
+        "  color: #1F4E79;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 13px;"
+        "  spacing: 8px;"
+        "  padding: 3px;"
+        "}"
+        "QPushButton {"
+        "  min-width: 70px;"
+        "  min-height: 28px;"
+        "  border: 1px solid #A9C8DF;"
+        "  border-radius: 5px;"
+        "  background: #FFFFFF;"
+        "  color: #1F4E79;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "  padding: 2px 10px;"
+        "}"
+        "QPushButton:hover { background: #EAF5FD; }"
+        "QPushButton:pressed { background: #D3E6F5; }"
+        "QPushButton:disabled { color: #9FB0BF; background: #F0F4F8; }"
+        "QPushButton#comboAction { min-width: 70px; min-height: 26px; }"
+        "QScrollArea {"
+        "  border: 1px solid #D6E6F2;"
+        "  border-radius: 6px;"
+        "  background: #FFFFFF;"
+        "}");
+}
+
+/** 新增/修改一个常用组合：只选择组合包含的试剂。 */
+class TestItemCombinationDialog : public QDialog
+{
+public:
+    explicit TestItemCombinationDialog(const QStringList &selected,
+                                       bool editing,
+                                       QWidget *parent = nullptr)
+        : QDialog(parent)
+    {
+        setWindowTitle(editing ? tr("修改组合") : tr("添加组合"));
+        setModal(true);
+        setMinimumWidth(360);
+        setStyleSheet(testItemDialogStyleSheet());
+
+        auto *layout = new QVBoxLayout(this);
+        layout->setContentsMargins(18, 16, 18, 16);
+        layout->setSpacing(10);
+
+        auto *hint = new QLabel(
+                    tr("勾选这个组合包含的试剂；组合名称会按固定顺序自动生成。"),
+                    this);
+        hint->setWordWrap(true);
+        layout->addWidget(hint);
+
+        auto *grid = new QGridLayout;
+        grid->setHorizontalSpacing(16);
+        grid->setVerticalSpacing(4);
+        int index = 0;
+        for (const QString &item : testItemCatalog()) {
+            auto *check = new MedicalCheckBox(item, this);
+            check->setChecked(selected.contains(item));
+            m_checks.append(check);
+            grid->addWidget(check, index / 3, index % 3);
+            ++index;
+            connect(check, &QCheckBox::toggled,
+                    this, [this](bool) { updateState(); });
+        }
+        layout->addLayout(grid);
+
+        m_summary = new QLabel(this);
+        m_summary->setStyleSheet(
+                    QStringLiteral("color: #2C7BBF; font-weight: 600;"));
+        layout->addWidget(m_summary);
+
+        auto *buttons = new QDialogButtonBox(
+                    QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                    this);
+        m_okButton = buttons->button(QDialogButtonBox::Ok);
+        if (m_okButton) {
+            m_okButton->setText(tr("确定"));
+        }
+        if (QPushButton *cancel = buttons->button(QDialogButtonBox::Cancel)) {
+            cancel->setText(tr("取消"));
+        }
+        connect(buttons, &QDialogButtonBox::accepted,
+                this, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected,
+                this, &QDialog::reject);
+        layout->addWidget(buttons);
+
+        updateState();
+    }
+
+    QStringList selectedItems() const
+    {
+        QStringList items;
+        for (QCheckBox *check : m_checks) {
+            if (check->isChecked()) {
+                items << check->text();
+            }
+        }
+        return canonicalTestItemList(items);
+    }
+
+private:
+    void updateState()
+    {
+        const QStringList items = selectedItems();
+        m_summary->setText(
+                    items.isEmpty()
+                    ? tr("请至少选择一个试剂")
+                    : tr("组合：%1").arg(items.join(QLatin1Char('+'))));
+        if (m_okButton) {
+            m_okButton->setEnabled(!items.isEmpty());
+        }
+    }
+
+    QList<QCheckBox *> m_checks;
+    QLabel *m_summary = nullptr;
+    QPushButton *m_okButton = nullptr;
+};
+
+/**
+ * 测试项目选择：
+ * - 已有组合：勾选一个直接使用，可添加/修改/删除；
+ * - 自由组合：直接勾选 AA/ADP/COL/EPI/RIS，组成临时组合；
+ * - 两种方式互斥：勾已有组合会清空自由勾选，勾任一自由试剂会取消已有组合。
+ */
 class TestItemDialog : public QDialog
 {
 public:
     explicit TestItemDialog(const QStringList &selected,
                             QWidget *parent = nullptr)
         : QDialog(parent)
+        , m_combinations(loadTestItemCombinations())
     {
         setWindowTitle(tr("选择测试项目"));
         setModal(true);
-        setMinimumWidth(280);
-        setStyleSheet(QStringLiteral(
-            "QDialog { background: #F7FAFD; }"
-            "QLabel {"
-            "  color: #5D7386;"
-            "  font-family: 'Microsoft YaHei';"
-            "  font-size: 12px;"
-            "}"
-            "QCheckBox {"
-            "  color: #1F4E79;"
-            "  font-family: 'Microsoft YaHei';"
-            "  font-size: 13px;"
-            "  spacing: 8px;"
-            "  padding: 3px;"
-            "}"
-            "QPushButton {"
-            "  min-width: 70px;"
-            "  min-height: 28px;"
-            "}"));
+        setMinimumSize(520, 470);
+        setStyleSheet(testItemDialogStyleSheet());
 
         auto *layout = new QVBoxLayout(this);
         layout->setContentsMargins(18, 16, 18, 16);
-        layout->setSpacing(8);
+        layout->setSpacing(10);
 
         auto *hint = new QLabel(
-                    tr("可单选或多选，每个样本可自由组合测试项目。"),
+                    tr("可以直接勾选一个已有组合，也可以在下方自由勾选试剂。"
+                       "两种方式是互斥的，勾选一边会自动取消另一边。"),
                     this);
         hint->setWordWrap(true);
         layout->addWidget(hint);
 
-        const QStringList items = {
-            QStringLiteral("AA"), QStringLiteral("ADP"),
-            QStringLiteral("COL"), QStringLiteral("EPI"),
-            QStringLiteral("RIS")
-        };
-        for (const QString &item : items) {
+        auto *comboHeader = new QHBoxLayout;
+        comboHeader->setSpacing(6);
+        auto *comboTitle = new QLabel(tr("已有组合"), this);
+        comboTitle->setStyleSheet(
+                    QStringLiteral("color: #1F4E79; font-weight: 600;"));
+        comboHeader->addWidget(comboTitle);
+        comboHeader->addStretch(1);
+
+        m_addComboButton = new QPushButton(tr("添加组合"), this);
+        m_addComboButton->setObjectName(QStringLiteral("comboAction"));
+        m_modifyComboButton = new QPushButton(tr("修改组合"), this);
+        m_modifyComboButton->setObjectName(QStringLiteral("comboAction"));
+        m_deleteComboButton = new QPushButton(tr("删除组合"), this);
+        m_deleteComboButton->setObjectName(QStringLiteral("comboAction"));
+        comboHeader->addWidget(m_addComboButton);
+        comboHeader->addWidget(m_modifyComboButton);
+        comboHeader->addWidget(m_deleteComboButton);
+        layout->addLayout(comboHeader);
+
+        m_comboScroll = new QScrollArea(this);
+        m_comboScroll->setWidgetResizable(true);
+        m_comboScroll->setMinimumHeight(88);
+        m_comboScroll->setMaximumHeight(132);
+        m_comboScroll->setFrameShape(QFrame::StyledPanel);
+        m_comboScroll->setHorizontalScrollBarPolicy(
+                    Qt::ScrollBarAlwaysOff);
+        layout->addWidget(m_comboScroll);
+
+        auto *freeTitle = new QLabel(tr("自由组合（临时）"), this);
+        freeTitle->setStyleSheet(
+                    QStringLiteral("color: #1F4E79; font-weight: 600;"));
+        layout->addWidget(freeTitle);
+
+        auto *reagentGrid = new QGridLayout;
+        reagentGrid->setHorizontalSpacing(16);
+        reagentGrid->setVerticalSpacing(4);
+        int index = 0;
+        for (const QString &item : testItemCatalog()) {
             auto *check = new MedicalCheckBox(item, this);
-            check->setChecked(selected.contains(item,
-                                                Qt::CaseInsensitive));
-            m_checks.append(check);
-            layout->addWidget(check);
+            m_reagentChecks.append(check);
+            reagentGrid->addWidget(check, index / 3, index % 3);
+            ++index;
+            connect(check, &QCheckBox::toggled,
+                    this, [this](bool checked) {
+                if (m_updatingSelection) {
+                    return;
+                }
+                if (checked) {
+                    m_updatingSelection = true;
+                    for (QCheckBox *combo : m_comboChecks) {
+                        combo->setChecked(false);
+                    }
+                    m_updatingSelection = false;
+                }
+                updateState();
+            });
         }
+        layout->addLayout(reagentGrid);
+
+        m_summary = new QLabel(this);
+        m_summary->setWordWrap(true);
+        m_summary->setStyleSheet(
+                    QStringLiteral("color: #2C7BBF; font-weight: 600;"
+                                   " padding: 4px;"));
+        layout->addWidget(m_summary);
 
         auto *buttons = new QDialogButtonBox(
                     QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
                     this);
+        m_okButton = buttons->button(QDialogButtonBox::Ok);
+        if (m_okButton) {
+            m_okButton->setText(tr("确定"));
+        }
+        if (QPushButton *cancel = buttons->button(QDialogButtonBox::Cancel)) {
+            cancel->setText(tr("取消"));
+        }
         connect(buttons, &QDialogButtonBox::accepted,
                 this, &QDialog::accept);
         connect(buttons, &QDialogButtonBox::rejected,
                 this, &QDialog::reject);
         layout->addWidget(buttons);
+
+        connect(m_addComboButton, &QPushButton::clicked,
+                this, &TestItemDialog::addCombination);
+        connect(m_modifyComboButton, &QPushButton::clicked,
+                this, &TestItemDialog::modifyCombination);
+        connect(m_deleteComboButton, &QPushButton::clicked,
+                this, &TestItemDialog::deleteCombination);
+
+        rebuildComboChecks(QString());
+        applyInitialSelection(selected);
+        updateState();
     }
 
     QStringList selectedItems() const
     {
-        QStringList result;
-        for (QCheckBox *check : m_checks) {
+        const int combo = selectedComboIndex();
+        if (combo >= 0) {
+            return splitTestItemText(m_combinations.at(combo));
+        }
+        QStringList items;
+        for (QCheckBox *check : m_reagentChecks) {
             if (check->isChecked()) {
-                result << check->text();
+                items << check->text();
             }
         }
-        return result;
+        return canonicalTestItemList(items);
     }
 
 private:
-    QList<QCheckBox *> m_checks;
+    int selectedComboIndex() const
+    {
+        for (int i = 0; i < m_comboChecks.size(); ++i) {
+            if (m_comboChecks.at(i)->isChecked()) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    void rebuildComboChecks(const QString &selectedCombo)
+    {
+        m_comboChecks.clear();
+
+        auto *container = new QWidget;
+        container->setStyleSheet(QStringLiteral("background: #FFFFFF;"));
+        auto *listLayout = new QVBoxLayout(container);
+        listLayout->setContentsMargins(8, 8, 8, 8);
+        listLayout->setSpacing(2);
+
+        if (m_combinations.isEmpty()) {
+            auto *empty = new QLabel(
+                        tr("暂无组合。在下方自由勾选后点「添加组合」保存。"),
+                        container);
+            empty->setWordWrap(true);
+            empty->setStyleSheet(
+                        QStringLiteral("color: #7B8FA3; font-size: 12px;"));
+            listLayout->addWidget(empty);
+        } else {
+            for (const QString &combination : m_combinations) {
+                auto *check = new MedicalCheckBox(combination, container);
+                check->setChecked(combination == selectedCombo);
+                listLayout->addWidget(check);
+                m_comboChecks.append(check);
+                connect(check, &QCheckBox::toggled,
+                        this, [this, check](bool checked) {
+                    if (m_updatingSelection) {
+                        return;
+                    }
+                    if (checked) {
+                        m_updatingSelection = true;
+                        for (QCheckBox *other : m_comboChecks) {
+                            if (other != check) {
+                                other->setChecked(false);
+                            }
+                        }
+                        for (QCheckBox *reagent : m_reagentChecks) {
+                            reagent->setChecked(false);
+                        }
+                        m_updatingSelection = false;
+                    }
+                    updateState();
+                });
+            }
+        }
+        listLayout->addStretch(1);
+        m_comboScroll->setWidget(container);
+        updateState();
+    }
+
+    void applyInitialSelection(const QStringList &selected)
+    {
+        const QString text = canonicalTestItemText(selected);
+        if (text.isEmpty()) {
+            return;
+        }
+        const int combo = m_combinations.indexOf(text);
+        m_updatingSelection = true;
+        if (combo >= 0 && combo < m_comboChecks.size()) {
+            m_comboChecks.at(combo)->setChecked(true);
+            for (QCheckBox *reagent : m_reagentChecks) {
+                reagent->setChecked(false);
+            }
+        } else {
+            const QStringList items = splitTestItemText(text);
+            for (QCheckBox *reagent : m_reagentChecks) {
+                reagent->setChecked(items.contains(reagent->text()));
+            }
+        }
+        m_updatingSelection = false;
+    }
+
+    void clearReagentChecks()
+    {
+        m_updatingSelection = true;
+        for (QCheckBox *reagent : m_reagentChecks) {
+            reagent->setChecked(false);
+        }
+        m_updatingSelection = false;
+    }
+
+    void updateState()
+    {
+        const int combo = selectedComboIndex();
+        const QStringList items = selectedItems();
+        if (items.isEmpty()) {
+            m_summary->setText(tr("当前未选择测试项目"));
+        } else {
+            m_summary->setText(
+                        tr("当前选择：%1（%2）")
+                        .arg(items.join(QLatin1Char('+')))
+                        .arg(combo >= 0 ? tr("已有组合")
+                                        : tr("临时组合")));
+        }
+        const bool hasCombo = combo >= 0;
+        m_modifyComboButton->setEnabled(hasCombo);
+        m_deleteComboButton->setEnabled(hasCombo);
+        if (m_okButton) {
+            m_okButton->setEnabled(!items.isEmpty());
+        }
+    }
+
+    void addCombination()
+    {
+        TestItemCombinationDialog dialog(selectedItems(), false, this);
+        if (dialog.exec() != QDialog::Accepted) {
+            return;
+        }
+        const QString combination = canonicalTestItemText(
+                    dialog.selectedItems());
+        if (combination.isEmpty()) {
+            return;
+        }
+        if (m_combinations.contains(combination)) {
+            QMessageBox::information(
+                        this, tr("添加组合"),
+                        tr("组合 %1 已存在，已直接选中。")
+                        .arg(combination));
+        } else {
+            m_combinations.append(combination);
+            saveTestItemCombinations(m_combinations);
+        }
+        rebuildComboChecks(combination);
+        clearReagentChecks();
+        updateState();
+    }
+
+    void modifyCombination()
+    {
+        const int combo = selectedComboIndex();
+        if (combo < 0) {
+            QMessageBox::information(this, tr("修改组合"),
+                                     tr("请先勾选要修改的已有组合。"));
+            return;
+        }
+        const QString oldCombination = m_combinations.at(combo);
+        TestItemCombinationDialog dialog(
+                    splitTestItemText(oldCombination), true, this);
+        if (dialog.exec() != QDialog::Accepted) {
+            return;
+        }
+        const QString combination = canonicalTestItemText(
+                    dialog.selectedItems());
+        if (combination.isEmpty() || combination == oldCombination) {
+            return;
+        }
+        const int duplicate = m_combinations.indexOf(combination);
+        if (duplicate >= 0 && duplicate != combo) {
+            QMessageBox::warning(
+                        this, tr("修改组合"),
+                        tr("组合 %1 已存在，请换一个组合。")
+                        .arg(combination));
+            return;
+        }
+        m_combinations[combo] = combination;
+        saveTestItemCombinations(m_combinations);
+        rebuildComboChecks(combination);
+        clearReagentChecks();
+        updateState();
+    }
+
+    void deleteCombination()
+    {
+        const int combo = selectedComboIndex();
+        if (combo < 0) {
+            QMessageBox::information(this, tr("删除组合"),
+                                     tr("请先勾选要删除的已有组合。"));
+            return;
+        }
+        const QString combination = m_combinations.at(combo);
+        if (QMessageBox::question(
+                    this, tr("删除组合"),
+                    tr("确定删除组合「%1」吗？").arg(combination),
+                    QMessageBox::Yes | QMessageBox::No,
+                    QMessageBox::No) != QMessageBox::Yes) {
+            return;
+        }
+        const QStringList items = splitTestItemText(combination);
+        m_combinations.removeAt(combo);
+        saveTestItemCombinations(m_combinations);
+        rebuildComboChecks(QString());
+        m_updatingSelection = true;
+        for (QCheckBox *reagent : m_reagentChecks) {
+            reagent->setChecked(items.contains(reagent->text()));
+        }
+        m_updatingSelection = false;
+        updateState();
+    }
+
+    QStringList m_combinations;
+    QVector<QCheckBox *> m_comboChecks;
+    QList<QCheckBox *> m_reagentChecks;
+    QScrollArea *m_comboScroll = nullptr;
+    QLabel *m_summary = nullptr;
+    QPushButton *m_okButton = nullptr;
+    QPushButton *m_addComboButton = nullptr;
+    QPushButton *m_modifyComboButton = nullptr;
+    QPushButton *m_deleteComboButton = nullptr;
+    bool m_updatingSelection = false;
 };
 
 /** 样本位置：下拉选择当前机型下未被其他样本占用的位置。 */
@@ -1891,6 +2362,23 @@ const TestQueue *AddSampleWidget::testQueue() const
     return &m_testQueue;
 }
 
+int AddSampleWidget::activeSampleCount() const
+{
+    if (!m_sampleTable) {
+        return 0;
+    }
+    int count = 0;
+    for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
+        QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+        if (status
+                && (status->text() == tr("待测")
+                    || status->text() == tr("测试中"))) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 void AddSampleWidget::setSampleTesting(const QString &sampleNumber,
                                        bool testing)
 {
@@ -2022,7 +2510,8 @@ QFrame *AddSampleWidget::createSampleTableCard()
     m_quickSampleNoEdit->setObjectName(QStringLiteral("quickInput"));
     m_quickSampleNoEdit->setPlaceholderText(tr("下一个样本号"));
     m_quickSampleNoEdit->setToolTip(
-                tr("默认按 T+日期+4位序号生成，可修改；只能输入 T 和数字"));
+                tr("默认按 T+8位日期+4位序号生成，共 13 位；"
+                   "可修改，但必须保持 13 位长度"));
     m_quickSampleNoEdit->setValidator(new QRegularExpressionValidator(
                 QRegularExpression(QStringLiteral("^[Tt]?\\d{0,12}$")),
                 m_quickSampleNoEdit));
@@ -2357,8 +2846,8 @@ void AddSampleWidget::updateQuickSampleNumber()
     m_quickSampleNoEdit->setToolTip(
                 next.isEmpty()
                 ? (error.isEmpty() ? tr("无法生成样本号") : error)
-                : tr("默认按 T+日期+4位序号生成，可修改；"
-                     "表格和数据库都不能重复"));
+                : tr("默认按 T+8位日期+4位序号生成，共 13 位；"
+                     "修改后也必须保持 13 位且不能重复"));
 }
 
 void AddSampleWidget::updatePositionEditability()
@@ -2790,6 +3279,8 @@ void AddSampleWidget::confirmSamples()
                                                          SampleNoColumn);
         QTableWidgetItem *barcode = m_sampleTable->item(row,
                                                         BarcodeColumn);
+        QTableWidgetItem *testItem = m_sampleTable->item(row,
+                                                         TestItemColumn);
         QTableWidgetItem *position = m_sampleTable->item(row,
                                                          PositionColumn);
         QString reason;
@@ -2807,6 +3298,13 @@ void AddSampleWidget::confirmSamples()
         if (needBarcode
                 && (!barcode || barcode->text().trimmed().isEmpty())) {
             problems << tr("第 %1 行：条码不能为空").arg(row + 1);
+            if (firstProblemRow < 0) {
+                firstProblemRow = row;
+            }
+            continue;
+        }
+        if (!testItem || testItem->text().trimmed().isEmpty()) {
+            problems << tr("第 %1 行：测试项目不能为空").arg(row + 1);
             if (firstProblemRow < 0) {
                 firstProblemRow = row;
             }
@@ -2980,7 +3478,7 @@ void AddSampleWidget::modifySampleNumber()
         bool ok = false;
         const QString entered = QInputDialog::getText(
                     this, tr("修改样本号"),
-                    tr("样本号（T + 日期 + 4位序号）："),
+                    tr("样本号（13 位：T + 8 位日期 + 4 位序号）："),
                     QLineEdit::Normal, value, &ok);
         if (!ok) {
             return;
@@ -3259,15 +3757,17 @@ bool AddSampleWidget::validateSampleNumber(const QString &number,
         }
         return false;
     }
+    const QString canonical = normalizedSampleNumber(trimmed);
     const QRegularExpression sampleNoPattern(
-                QStringLiteral("^[Tt]?\\d+$"));
-    if (!sampleNoPattern.match(trimmed).hasMatch()) {
+                QStringLiteral("^T\\d{12}$"));
+    if (!sampleNoPattern.match(canonical).hasMatch()) {
         if (reason) {
-            *reason = tr("样本号只能输入数字（可带 T 前缀）。");
+            *reason = tr("样本号必须为 13 位：T + 8 位日期 + 4 位序号"
+                         "（例如 T202611220001）。");
         }
         return false;
     }
-    if (sampleNumberInTable(trimmed, exceptRow)) {
+    if (sampleNumberInTable(canonical, exceptRow)) {
         if (reason) {
             *reason = tr("表格中已存在该样本号，请更换。");
         }
@@ -3280,7 +3780,7 @@ bool AddSampleWidget::validateSampleNumber(const QString &number,
             }
             return false;
         }
-        if (m_dataStore->sampleNumberExists(trimmed)) {
+        if (m_dataStore->sampleNumberExists(canonical)) {
             if (reason) {
                 *reason = tr("样本数据库中已存在该样本号，请更换。");
             }

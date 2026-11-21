@@ -32,6 +32,7 @@
 #include <QRadioButton>
 #include <QScrollArea>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QStackedWidget>
 #include <QStyle>
@@ -602,6 +603,32 @@ SettingsDialog::SettingsDialog(CommunicationWorker *commWorker,
     updateBasicMachineInfo();
 }
 
+void SettingsDialog::setActiveSampleCountProvider(
+        std::function<int()> provider)
+{
+    m_activeSampleCountProvider = provider;
+}
+
+int SettingsDialog::activeSampleCount() const
+{
+    return m_activeSampleCountProvider ? m_activeSampleCountProvider() : 0;
+}
+
+bool SettingsDialog::ensureSampleShapeEditable(const QString &what)
+{
+    const int count = activeSampleCount();
+    if (count <= 0) {
+        return true;
+    }
+    QMessageBox::warning(
+                this, tr("无法修改"),
+                tr("当前有 %1 个待测/测试中样本，不能修改%2。\n"
+                   "请先完成测试或删除待测样本后再修改。")
+                .arg(count)
+                .arg(what));
+    return false;
+}
+
 void SettingsDialog::sendFrameToInstrument(const QByteArray &frame,
                                            const QString &description)
 {
@@ -805,16 +832,39 @@ QWidget *SettingsDialog::createBasicPage()
     basicLayout->addWidget(qualityCaption);
     basicLayout->addLayout(qualityRow);
 
-    connect(wholeBlood, &QRadioButton::toggled, this, [](bool checked) {
+    auto *qualityLockHint = new QLabel(
+                tr("存在待测/测试中样本时，样本质量不可修改；"
+                   "请先完成测试或删除待测样本。"),
+                basicGroup);
+    qualityLockHint->setObjectName(QStringLiteral("paramHint"));
+    qualityLockHint->setWordWrap(true);
+    basicLayout->addWidget(qualityLockHint);
+
+    auto restoreQualitySelection = [wholeBlood, plasma]() {
+        QSignalBlocker wholeBlocker(wholeBlood);
+        QSignalBlocker plasmaBlocker(plasma);
+        (sampleQualityIsPlasma() ? plasma : wholeBlood)->setChecked(true);
+    };
+    connect(wholeBlood, &QRadioButton::toggled, this,
+            [this, restoreQualitySelection](bool checked) {
         if (!checked) {
+            return;
+        }
+        if (!ensureSampleShapeEditable(tr("样本质量"))) {
+            restoreQualitySelection();
             return;
         }
         QSettings s;
         s.setValue(QString::fromLatin1(sampleQualitySettingsKey()),
                    QStringLiteral("wholeBlood"));
     });
-    connect(plasma, &QRadioButton::toggled, this, [](bool checked) {
+    connect(plasma, &QRadioButton::toggled, this,
+            [this, restoreQualitySelection](bool checked) {
         if (!checked) {
+            return;
+        }
+        if (!ensureSampleShapeEditable(tr("样本质量"))) {
+            restoreQualitySelection();
             return;
         }
         QSettings s;
@@ -1549,15 +1599,40 @@ QWidget *SettingsDialog::createInstrumentParamsPage()
     testLayout->addWidget(prp);
     testLayout->addWidget(example);
 
-    connect(pppPrp, &QRadioButton::toggled, this, [](bool checked) {
-        if (checked) {
-            setTestModePppPrp(true);
+    auto *testModeLockHint = new QLabel(
+                tr("存在待测/测试中样本时，测试模式不可修改；"
+                   "请先完成测试或删除待测样本。"),
+                testGroup);
+    testModeLockHint->setObjectName(QStringLiteral("paramHint"));
+    testModeLockHint->setWordWrap(true);
+    testLayout->addWidget(testModeLockHint);
+
+    auto restoreTestModeSelection = [pppPrp, prp]() {
+        QSignalBlocker pppBlocker(pppPrp);
+        QSignalBlocker prpBlocker(prp);
+        (testModeIsPppPrp() ? pppPrp : prp)->setChecked(true);
+    };
+    connect(pppPrp, &QRadioButton::toggled, this,
+            [this, restoreTestModeSelection](bool checked) {
+        if (!checked) {
+            return;
         }
+        if (!ensureSampleShapeEditable(tr("测试模式"))) {
+            restoreTestModeSelection();
+            return;
+        }
+        setTestModePppPrp(true);
     });
-    connect(prp, &QRadioButton::toggled, this, [](bool checked) {
-        if (checked) {
-            setTestModePppPrp(false);
+    connect(prp, &QRadioButton::toggled, this,
+            [this, restoreTestModeSelection](bool checked) {
+        if (!checked) {
+            return;
         }
+        if (!ensureSampleShapeEditable(tr("测试模式"))) {
+            restoreTestModeSelection();
+            return;
+        }
+        setTestModePppPrp(false);
     });
 
     auto *channelGroup = new QGroupBox(tr("通道测试模式"), page);

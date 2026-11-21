@@ -48,6 +48,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QShowEvent>
+#include <QSizePolicy>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QStyle>
@@ -264,7 +265,9 @@ QToolButton *createTopFunctionButton(const QString &text, const QIcon &icon,
     button->setObjectName(QStringLiteral("topFunctionButton"));
     button->setCursor(Qt::PointingHandCursor);
     button->setFocusPolicy(Qt::NoFocus);
-    button->setFixedSize(width, 64);
+    button->setMinimumWidth(width);
+    button->setFixedHeight(64);
+    button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
     button->setIconSize(QSize(26, 26));
     button->setText(text);
@@ -911,7 +914,8 @@ QWidget *MainWindow::createMainPage()
 
     // 左侧功能按钮：主页 / 结果信息 / 耗材管理 / 试管盘 / 查询 / 质控
     auto *leftGroup = new QWidget(topBar);
-    leftGroup->setFixedSize(404, 64);
+    leftGroup->setFixedHeight(64);
+    leftGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *leftLayout = new QHBoxLayout(leftGroup);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(4);
@@ -974,11 +978,11 @@ QWidget *MainWindow::createMainPage()
 
     // 右侧操作按钮：暂停/继续 / 复位 / 清洗 / 加样 / 设置
     auto *rightGroup = new QWidget(topBar);
-    rightGroup->setFixedSize(404, 64);
+    rightGroup->setFixedHeight(64);
+    rightGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *rightLayout = new QHBoxLayout(rightGroup);
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(4);
-    rightLayout->addStretch(1);
 
     m_pauseButton = createTopFunctionButton(
                 tr("暂停"), makeToolbarIcon(ToolbarIconType::Pause,
@@ -1020,11 +1024,11 @@ QWidget *MainWindow::createMainPage()
             this, &MainWindow::openSettings);
     rightLayout->addWidget(settingsButton);
 
-    topLayout->addWidget(leftGroup, 0, Qt::AlignVCenter);
-    topLayout->addStretch(1);
+    // 左侧 6 个、右侧 5 个按钮按 6:5 分配横向空间，
+    // 再让每个按钮设为 Expanding，视觉上左右按钮宽度基本一致并铺满顶栏。
+    topLayout->addWidget(leftGroup, 6, Qt::AlignVCenter);
     topLayout->addWidget(m_startButton, 0, Qt::AlignCenter);
-    topLayout->addStretch(1);
-    topLayout->addWidget(rightGroup, 0, Qt::AlignVCenter);
+    topLayout->addWidget(rightGroup, 5, Qt::AlignVCenter);
 
     rootLayout->addWidget(topBar);
 
@@ -1432,6 +1436,10 @@ void MainWindow::createSettingsTab()
     m_settingsDialog = new SettingsDialog(m_commWorker,
                                           &m_instrumentCoordinates,
                                           m_mainTabs, m_machineModel);
+    m_settingsDialog->setActiveSampleCountProvider([this]() {
+        return m_addSampleWidget ? m_addSampleWidget->activeSampleCount()
+                                 : 0;
+    });
     connect(m_settingsDialog, &SettingsDialog::coordinateMotionRequested,
             m_verificationController,
             &CoordinateVerificationController::start);
