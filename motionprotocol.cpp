@@ -131,23 +131,23 @@ QByteArray MotionProtocol::resetSampleNeedle(int speed, Area area)
 }
 
 QByteArray MotionProtocol::moveBloodPump(int units, bool aspirate,
-                                         bool clean)
+                                         bool clean, int cleaningTimeMs)
 {
     if (!checkPumpDistance(units)) {
         return QByteArray();
     }
     return buildPumpAction(Axis::BloodPump, OperationMode::Position,
-                           units, aspirate, clean);
+                           units, aspirate, clean, cleaningTimeMs);
 }
 
 QByteArray MotionProtocol::moveReagentPump(int units, bool aspirate,
-                                           bool clean)
+                                           bool clean, int cleaningTimeMs)
 {
     if (!checkPumpDistance(units)) {
         return QByteArray();
     }
     return buildPumpAction(Axis::ReagentPump, OperationMode::Position,
-                           units, aspirate, clean);
+                           units, aspirate, clean, cleaningTimeMs);
 }
 
 QByteArray MotionProtocol::resetBloodPump(int speed, bool clean)
@@ -159,7 +159,7 @@ QByteArray MotionProtocol::resetBloodPump(int speed, bool clean)
     }
     m_lastError.clear();
     return buildPumpAction(Axis::BloodPump, OperationMode::NegativeSpeed,
-                           speed, false, clean);
+                           speed, false, clean, 0);
 }
 
 QByteArray MotionProtocol::resetReagentPump(int speed, bool clean)
@@ -171,7 +171,7 @@ QByteArray MotionProtocol::resetReagentPump(int speed, bool clean)
     }
     m_lastError.clear();
     return buildPumpAction(Axis::ReagentPump, OperationMode::NegativeSpeed,
-                           speed, false, clean);
+                           speed, false, clean, 0);
 }
 
 QByteArray MotionProtocol::buildCommand(Slave slave, Axis axis,
@@ -223,12 +223,14 @@ QByteArray MotionProtocol::buildZReset(Axis axis, int speed, Area area)
 
 QByteArray MotionProtocol::buildPumpAction(Axis axis, OperationMode mode,
                                            int units, bool aspirate,
-                                           bool clean)
+                                           bool clean, int cleaningTimeMs)
 {
     const quint8 axisByte = static_cast<quint8>(
                 (aspirate ? 0x10 : 0x00)
                 | (clean ? 0x60 : 0x00));
-    return buildCommand(Slave::MainBoard, axis, mode, axisByte, units, 0);
+    const qint32 distance2 = clean ? qMax(0, cleaningTimeMs) : 0;
+    return buildCommand(Slave::MainBoard, axis, mode, axisByte,
+                        units, distance2);
 }
 
 bool MotionProtocol::checkPumpDistance(int units)

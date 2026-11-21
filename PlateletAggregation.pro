@@ -46,6 +46,7 @@ SOURCES += \
     motionprotocol.cpp \
     motioncontroller.cpp \
     coordinateverificationcontroller.cpp \
+    perfusioncontroller.cpp \
     medicalwidgets.cpp
 
 HEADERS += \
@@ -73,6 +74,7 @@ HEADERS += \
     motionprotocol.h \
     motioncontroller.h \
     coordinateverificationcontroller.h \
+    perfusioncontroller.h \
     medicalwidgets.h \
     SerialPortManager.h \
     ModuleAdPoller.h \

@@ -9,6 +9,7 @@
 #include "coordinatefileio.h"
 #include "coordinateverificationcontroller.h"
 #include "motioncontroller.h"
+#include "perfusioncontroller.h"
 #include "AppIcon.h"
 #include "CustomTitleBar.h"
 #include "FramelessWindowSupport.h"
@@ -71,7 +72,6 @@ constexpr int kDimmingResidualThreshold = 100;    // 超 ±100 视为疑似残�
 constexpr int kLedTuningTolerance = 3;            // AD 允许 ±3
 constexpr int kMaxCupRetries = 1;   // 丢杯后只重新调光一次
 constexpr int kMaxInvalidAdSamples = 8;
-constexpr int kCleaningSimulatedMs = 5000;
 constexpr int kDiscardSimulatedMs = 2000;
 
 // 调光后 AD 会慢慢爬升，必须等稳定后再判断。
@@ -695,6 +695,35 @@ MainWindow::MainWindow(QWidget *parent)
         showActionHint(message);
         if (!ok) {
             QMessageBox::warning(this, tr("定位校验"), message);
+        }
+    });
+
+    // 开机灌注：移植老软件 QUIUtils::perfusionAction 主流程。
+    m_perfusionController = new PerfusionController(&m_instrumentCoordinates,
+                                                    this);
+    m_perfusionController->setProtocol(&m_motionController->protocol());
+    connect(m_perfusionController, &PerfusionController::sendRequested,
+            m_motionController, &platelet::MotionController::sendCommand);
+    connect(m_motionController, &platelet::MotionController::reportReceived,
+            m_perfusionController, &PerfusionController::handleReport);
+    connect(m_perfusionController, &PerfusionController::progressChanged,
+            this, [this](int completed, int total, const QString &status) {
+        if (m_startupState != StartupCalibrationState::Cleaning) {
+            return;
+        }
+        const int percent = total > 0
+                ? qBound(0, completed * 100 / total, 100) : 0;
+        setStartupMaskStatus(tr("开机灌注中"), status, true, percent);
+    });
+    connect(m_perfusionController, &PerfusionController::finished,
+            this, [this](bool ok, const QString &message) {
+        if (m_startupState != StartupCalibrationState::Cleaning) {
+            return;
+        }
+        if (ok) {
+            beginStartupDimming();
+        } else {
+            abortStartupCalibration(message, true);
         }
     });
 
@@ -1894,22 +1923,16 @@ void MainWindow::beginStartupCleaning()
     }
     m_startupState = StartupCalibrationState::Cleaning;
     setStartupMaskStatus(
-                tr("升温过程中先灌注清洗等待"),
-                tr("模组尚未达到 37℃，先执行灌注清洗，完成后继续控温调光。"),
+                tr("开机灌注中"),
+                tr("正在复位三根 Z 轴，随后灌注样本泵和试剂泵；"
+                   "请勿操作仪器。"),
                 true, 0);
 
-    startSimulatedProgress(kCleaningSimulatedMs, [this]() {
-        if (m_startupState != StartupCalibrationState::Cleaning) {
-            return;
-        }
-        QMessageBox::information(
-                    this, tr("灌注清洗"),
-                    tr("灌注清洗动作尚未接入。\n\n"
-                       "点击“确定”代表灌注清洗流程完成，继续调光。"));
-        if (m_startupState == StartupCalibrationState::Cleaning) {
-            beginStartupDimming();
-        }
-    });
+    if (!m_perfusionController) {
+        abortStartupCalibration(tr("灌注控制器未初始化"), true);
+        return;
+    }
+    m_perfusionController->start();
 }
 
 void MainWindow::beginStartupDimming()
@@ -2387,6 +2410,11 @@ void MainWindow::abortStartupCalibration(const QString &reason,
         // 断线：允许重新连接后重新开始整套流程。
         m_startupState = StartupCalibrationState::Idle;
         m_startupCalibrationAttempted = false;
+    }
+
+    // 状态已不是 Cleaning，cancel() 触发的 finished 不会再次进入本函数。
+    if (m_perfusionController && m_perfusionController->isBusy()) {
+        m_perfusionController->cancel();
     }
 }
 

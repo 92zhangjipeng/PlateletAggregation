@@ -18,6 +18,7 @@ class CommunicationWorker;
 class ConsumablesDialog;
 class CoordinateVerificationController;
 class CustomTitleBar;
+class PerfusionController;
 class MainBoardStatusIconBar;
 class ModuleOverviewWidget;
 class QCloseEvent;
@@ -210,6 +211,7 @@ private:
     TestDataStore *m_testDataStore = nullptr;
     platelet::MotionController *m_motionController = nullptr;
     CoordinateVerificationController *m_verificationController = nullptr;
+    PerfusionController *m_perfusionController = nullptr;
     SampleTrayModel *m_trayModel = nullptr;
     TubeTrayDialog *m_tubeTrayDialog = nullptr;
     MainBoardStatus m_latestMainboardStatus;

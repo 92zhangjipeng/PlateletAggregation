@@ -191,10 +191,11 @@ bool MotionController::resetSampleNeedle(int speed,
                 .arg(MotionProtocol::areaName(area)));
 }
 
-bool MotionController::moveBloodPump(int units, bool aspirate, bool clean)
+bool MotionController::moveBloodPump(int units, bool aspirate, bool clean,
+                                     int cleaningTimeMs)
 {
     const QByteArray frame =
-            m_protocol.moveBloodPump(units, aspirate, clean);
+            m_protocol.moveBloodPump(units, aspirate, clean, cleaningTimeMs);
     return queueFrame(
                 frame,
                 descriptionPrefix()
@@ -202,13 +203,16 @@ bool MotionController::moveBloodPump(int units, bool aspirate, bool clean)
                 .arg(aspirate ? QStringLiteral("吸样")
                               : QStringLiteral("吐样"))
                 .arg(units)
-                .arg(clean ? QStringLiteral("，清洗") : QString()));
+                .arg(clean ? QStringLiteral("，清洗 %1ms").arg(cleaningTimeMs)
+                           : QString()));
 }
 
-bool MotionController::moveReagentPump(int units, bool aspirate, bool clean)
+bool MotionController::moveReagentPump(int units, bool aspirate, bool clean,
+                                       int cleaningTimeMs)
 {
     const QByteArray frame =
-            m_protocol.moveReagentPump(units, aspirate, clean);
+            m_protocol.moveReagentPump(units, aspirate, clean,
+                                       cleaningTimeMs);
     return queueFrame(
                 frame,
                 descriptionPrefix()
@@ -216,7 +220,8 @@ bool MotionController::moveReagentPump(int units, bool aspirate, bool clean)
                 .arg(aspirate ? QStringLiteral("吸样")
                               : QStringLiteral("吐样"))
                 .arg(units)
-                .arg(clean ? QStringLiteral("，清洗") : QString()));
+                .arg(clean ? QStringLiteral("，清洗 %1ms").arg(cleaningTimeMs)
+                           : QString()));
 }
 
 bool MotionController::resetBloodPump(int speed, bool clean)

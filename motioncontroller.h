@@ -73,8 +73,10 @@ public:
                            MotionProtocol::Area area =
                                MotionProtocol::Area::Test);
 
-    bool moveBloodPump(int units, bool aspirate, bool clean = false);
-    bool moveReagentPump(int units, bool aspirate, bool clean = false);
+    bool moveBloodPump(int units, bool aspirate, bool clean = false,
+                       int cleaningTimeMs = 0);
+    bool moveReagentPump(int units, bool aspirate, bool clean = false,
+                         int cleaningTimeMs = 0);
     bool resetBloodPump(int speed = MotionProtocol::DefaultPumpResetSpeed,
                         bool clean = false);
     bool resetReagentPump(int speed = MotionProtocol::DefaultPumpResetSpeed,

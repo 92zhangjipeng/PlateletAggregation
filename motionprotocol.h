@@ -170,10 +170,13 @@ public:
     /**
      * 血样泵（1000ul）/试剂泵（100ul）位置模式移动。
      * units 为 0~7200 的行程单位；aspirate=true 表示吸样等待标志；
-     * clean=true 会同时打开隔膜泵和开关阀（清洗时间 distance2 暂填 0）。
+     * clean=true 会同时打开隔膜泵和开关阀，cleaningTimeMs 写入 distance2
+     * （协议规定为清洗时间，常用 6000ms）。
      */
-    QByteArray moveBloodPump(int units, bool aspirate, bool clean = false);
-    QByteArray moveReagentPump(int units, bool aspirate, bool clean = false);
+    QByteArray moveBloodPump(int units, bool aspirate, bool clean = false,
+                             int cleaningTimeMs = 0);
+    QByteArray moveReagentPump(int units, bool aspirate, bool clean = false,
+                               int cleaningTimeMs = 0);
 
     /** 柱塞泵负速度复位，speed 默认 2160 */
     QByteArray resetBloodPump(int speed = DefaultPumpResetSpeed,
@@ -200,7 +203,8 @@ private:
                           bool grabCup, bool liquidLevel);
     QByteArray buildZReset(Axis axis, int speed, Area area);
     QByteArray buildPumpAction(Axis axis, OperationMode mode, int units,
-                               bool aspirate, bool clean);
+                               bool aspirate, bool clean,
+                               int cleaningTimeMs);
     bool checkPumpDistance(int units);
     quint8 takeCommandNumber();
     static quint8 zReference(Axis axis);
