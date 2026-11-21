@@ -26,7 +26,9 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QMetaObject>
+#include <QPoint>
 #include <QPushButton>
+#include <QRect>
 #include <QRadioButton>
 #include <QScrollArea>
 #include <QSettings>
@@ -666,8 +668,17 @@ void SettingsDialog::showMaintenanceMenu()
 void SettingsDialog::promptMaintenanceLogin()
 {
     MaintenancePasswordDialog dialog(this);
-    dialog.move(frameGeometry().center()
-                - QPoint(dialog.width() / 2, dialog.height() / 2));
+
+    // SettingsDialog 是嵌在主窗口标签页里的子控件，frameGeometry()
+    // 是父级坐标，直接用来居中会把对话框放到屏幕左上角；
+    // 这里改用顶层窗口的屏幕坐标居中。
+    QWidget *anchor = window();
+    if (anchor) {
+        const QRect anchorRect = anchor->frameGeometry();
+        dialog.move(anchorRect.center()
+                    - QPoint(dialog.width() / 2, dialog.height() / 2));
+    }
+
     if (dialog.exec() == QDialog::Accepted) {
         showMaintenanceMenu();
     }

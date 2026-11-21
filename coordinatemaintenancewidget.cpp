@@ -30,6 +30,7 @@
 #include <QTreeWidgetItem>
 #include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 
 namespace {
 
@@ -44,10 +45,26 @@ const InstrumentCoordinates::ZAxis kZAxes[] = {
     InstrumentCoordinates::ZAxis::SampleNeedle
 };
 
+/** 坐标输入框：忽略滚轮，避免滚动页面时误改数值 */
+class WheelSafeDoubleSpinBox : public QDoubleSpinBox
+{
+public:
+    explicit WheelSafeDoubleSpinBox(QWidget *parent = nullptr)
+        : QDoubleSpinBox(parent)
+    {
+    }
+
+protected:
+    void wheelEvent(QWheelEvent *event) override
+    {
+        event->ignore();   // 不修改数值，交给父级滚动区域
+    }
+};
+
 QDoubleSpinBox *makeCoordinateSpin(QWidget *parent,
                                    double minimum, double maximum)
 {
-    auto *spin = new QDoubleSpinBox(parent);
+    auto *spin = new WheelSafeDoubleSpinBox(parent);
     spin->setRange(minimum, maximum);
     spin->setDecimals(3);
     spin->setSingleStep(0.1);
