@@ -14,6 +14,7 @@
 
 #include <functional>
 
+class AddSampleWidget;
 class CommunicationWorker;
 class ConsumablesDialog;
 class CoordinateVerificationController;
@@ -217,6 +218,7 @@ private:
     platelet::MotionController *m_motionController = nullptr;
     CoordinateVerificationController *m_verificationController = nullptr;
     PerfusionController *m_perfusionController = nullptr;
+    AddSampleWidget *m_addSampleWidget = nullptr;
     SampleTrayModel *m_trayModel = nullptr;
     TubeTrayDialog *m_tubeTrayDialog = nullptr;
     MainBoardStatus m_latestMainboardStatus;

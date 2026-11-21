@@ -52,6 +52,22 @@ inline int machineTubeCount(MachineModel model)
     return machineTrayCount(model) * 60;
 }
 
+/** 血样区：每组 5 列 × 2 行 = 10 孔；KS600=6 组、KS800=8 组、KS1200=12 组 */
+inline int machineBloodSampleGroupCount(MachineModel model)
+{
+    switch (model) {
+        case MachineModel::KS600:  return 6;
+        case MachineModel::KS800:  return 8;
+        case MachineModel::KS1200: return 12;
+    }
+    return 12;
+}
+
+inline int machineBloodSampleWellCount(MachineModel model)
+{
+    return machineBloodSampleGroupCount(model) * 10;
+}
+
 inline MachineModel defaultMachineModel()
 {
     // 机型读取协议尚未接入，暂时按 KS1200（3 个模组）运行

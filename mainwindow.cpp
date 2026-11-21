@@ -3,6 +3,7 @@
 #endif
 
 #include "mainwindow.h"
+#include "addsamplewidget.h"
 #include "consumablesdialog.h"
 #include "settingsdialog.h"
 #include "CommunicationWorker.h"
@@ -1318,11 +1319,9 @@ void MainWindow::createEmptyPlaceholderTabs()
                     tr("质控"));
     }
     if (m_addSampleTabIndex < 0) {
-        m_addSampleTabIndex = m_mainTabs->addTab(
-                    createPlaceholderPage(
-                        tr("加样"),
-                        tr("加样功能待接入，后续在这里进行样本/试剂加样。")),
-                    tr("加样"));
+        m_addSampleWidget = new AddSampleWidget(m_machineModel, m_mainTabs);
+        QScrollArea *scroll = makePageScroll(m_addSampleWidget, m_mainTabs);
+        m_addSampleTabIndex = m_mainTabs->addTab(scroll, tr("加样"));
     }
 }
 
@@ -1413,6 +1412,10 @@ void MainWindow::openQuality()
 void MainWindow::openAddSample()
 {
     createEmptyPlaceholderTabs();
+    if (m_addSampleWidget) {
+        m_addSampleWidget->setMachineModel(m_machineModel);
+        m_addSampleWidget->refreshMode();
+    }
     if (m_mainTabs && m_addSampleTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_addSampleTabIndex);
     }
@@ -3010,6 +3013,9 @@ void MainWindow::setMachineModel(MachineModel model)
     }
     if (m_trayModel) {
         m_trayModel->setMachineModel(model);
+    }
+    if (m_addSampleWidget) {
+        m_addSampleWidget->setMachineModel(model);
     }
     applyChannelSettings();
     if (m_commWorker) {

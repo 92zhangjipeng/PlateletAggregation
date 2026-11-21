@@ -47,7 +47,8 @@ SOURCES += \
     motioncontroller.cpp \
     coordinateverificationcontroller.cpp \
     perfusioncontroller.cpp \
-    medicalwidgets.cpp
+    medicalwidgets.cpp \
+    addsamplewidget.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -76,6 +77,7 @@ HEADERS += \
     coordinateverificationcontroller.h \
     perfusioncontroller.h \
     medicalwidgets.h \
+    addsamplewidget.h \
     SerialPortManager.h \
     ModuleAdPoller.h \
     mainboardpoller.h \
