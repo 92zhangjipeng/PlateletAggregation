@@ -195,9 +195,9 @@ private:
         geometry.columns = columns;
         geometry.rows = rows;
 
-        const qreal headerSpace = 36.0;  // 后排采血管顶部空间
+        const qreal headerSpace = 56.0;  // 组名标签 + 后排采血管顶部空间
         const qreal shadowSpace = 16.0;
-        const qreal wallHeight = qBound<qreal>(30.0, area.height() * 0.08, 46.0);
+        const qreal wallHeight = qBound<qreal>(28.0, area.height() * 0.07, 38.0);
         const qreal availableFace = area.height() - headerSpace
                 - wallHeight - shadowSpace;
         const qreal faceHeight = qBound<qreal>(200.0, availableFace, 420.0);
@@ -212,10 +212,20 @@ private:
 
         // 左右各留出 28px，左侧放行号，避免满宽时行号被裁掉。
         const qreal maxWidth = area.width() - 56.0;
-        const qreal groupGapFactor = 0.48;
+
+        // 组间距尽量大；窗口较窄时自动收小间距，保证采血管仍有足够宽度。
+        qreal groupGapFactor = 0.85;
         qreal pitch = maxWidth
                 / (columns + (groups - 1) * groupGapFactor + 1.25);
-        pitch = qBound<qreal>(26.0, pitch, 48.0);
+        if (pitch < 28.0 && groups > 1) {
+            groupGapFactor = qMax<qreal>(
+                        0.35,
+                        (maxWidth / 28.0 - columns - 1.25)
+                        / (groups - 1));
+            pitch = maxWidth
+                    / (columns + (groups - 1) * groupGapFactor + 1.25);
+        }
+        pitch = qBound<qreal>(22.0, pitch, 48.0);
         const qreal groupGap = pitch * groupGapFactor;
         const qreal sideMargin = pitch * 0.62;
 
@@ -293,13 +303,20 @@ private:
             }
         }
 
-        // 组名标在前挡板的标签条上，位于该组两列的正中间。
-        const qreal labelY = geometry.frontY + wallHeight * 0.5;
+        // 组名标在架子上方，位于该组两列的正中间。
+        const qreal labelY = geometry.backY - 38.0;
         for (int group = 0; group < groups; ++group) {
             const qreal leftX = geometry.frontLeft + sideMargin
                     + group * 2 * pitch + group * groupGap + pitch / 2.0;
+            const qreal rightX = leftX + pitch;
+            const qreal uLeft = (leftX - geometry.frontLeft)
+                    / geometry.bottomWidth;
+            const qreal uRight = (rightX - geometry.frontLeft)
+                    / geometry.bottomWidth;
+            const qreal xTopLeft = backLeft + uLeft * geometry.topWidth;
+            const qreal xTopRight = backLeft + uRight * geometry.topWidth;
             geometry.groupLabelPoints.append(
-                        QPointF(leftX + pitch / 2.0, labelY));
+                        QPointF((xTopLeft + xTopRight) / 2.0, labelY));
         }
 
         // 组与组之间在台面上画一条分隔槽。
@@ -351,18 +368,16 @@ private:
         p.setBrush(frontGradient);
         p.drawPolygon(geometry.frontFace);
 
-        // 前挡板上的组名标签条
-        const QRectF stripRect(geometry.frontLeft + 14.0,
-                               geometry.frontY + geometry.wallHeight * 0.22,
-                               geometry.bottomWidth - 28.0,
-                               geometry.wallHeight * 0.56);
-        QLinearGradient stripGradient(0.0, stripRect.top(),
-                                      0.0, stripRect.bottom());
-        stripGradient.setColorAt(0.0, QColor(231, 240, 247));
-        stripGradient.setColorAt(1.0, QColor(205, 221, 233));
-        p.setPen(QPen(QColor(174, 196, 212), 0.9));
-        p.setBrush(stripGradient);
-        p.drawRoundedRect(stripRect, 3.0, 3.0);
+        // 前挡板中部压线
+        const qreal seamY = geometry.frontY + geometry.wallHeight * 0.72;
+        p.setPen(QPen(QColor(126, 151, 170, 80), 0.8));
+        p.drawLine(QPointF(geometry.frontLeft + 12.0, seamY),
+                   QPointF(geometry.frontLeft + geometry.bottomWidth - 12.0,
+                           seamY));
+        p.setPen(QPen(QColor(255, 255, 255, 90), 0.7));
+        p.drawLine(QPointF(geometry.frontLeft + 12.0, seamY + 1.0),
+                   QPointF(geometry.frontLeft + geometry.bottomWidth - 12.0,
+                           seamY + 1.0));
 
         // 台面
         QLinearGradient topGradient(0.0, geometry.backY,
@@ -489,14 +504,17 @@ private:
         font.setPixelSize(11);
         font.setBold(true);
         p.setFont(font);
-        p.setPen(QColor("#1F4E79"));
 
         for (int group = 0; group < geometry.groupLabelPoints.size();
              ++group) {
             const QPointF point = geometry.groupLabelPoints.at(group);
-            p.drawText(QRectF(point.x() - 12.0, point.y() - 9.0,
-                              24.0, 18.0),
-                       Qt::AlignCenter, groupLetter(group));
+            const QRectF pill(point.x() - 11.0, point.y() - 8.0,
+                              22.0, 16.0);
+            p.setPen(QPen(QColor(169, 200, 223), 0.9));
+            p.setBrush(QColor(232, 241, 250, 235));
+            p.drawRoundedRect(pill, 4.0, 4.0);
+            p.setPen(QColor("#1F4E79"));
+            p.drawText(pill, Qt::AlignCenter, groupLetter(group));
         }
     }
 
@@ -507,7 +525,8 @@ private:
         const qreal capHeight = qMax<qreal>(5.0, well.tubeHeight * 0.095);
         const qreal bodyTop = well.center.y() - well.tubeHeight
                 + capHeight * 0.45;
-        const qreal bodyBottom = well.center.y() + well.holeRy * 0.25;
+        // 管身向孔内延伸，随后由孔口前侧壁遮住下段，形成插入深度。
+        const qreal bodyBottom = well.center.y() + well.holeRy * 0.95;
         const qreal bodyHeight = bodyBottom - bodyTop;
         if (bodyHeight <= 2.0) {
             return;
@@ -551,7 +570,7 @@ private:
         p.save();
         p.setClipPath(bodyPath);
         const qreal liquidTop = bodyTop + bodyHeight * 0.10;
-        const qreal liquidBottom = bodyBottom - bodyHeight * 0.05;
+        const qreal liquidBottom = well.center.y() + well.holeRy * 0.15;
         const qreal liquidHeight = liquidBottom - liquidTop;
         const qreal boundary = liquidBottom - liquidHeight * 0.60;
 
@@ -647,13 +666,31 @@ private:
                    QPointF(capRect.right() - capHeight * 0.30,
                            capRect.top() + 1.1));
 
-        // 孔口前沿压在管身上，形成“插入孔内”的遮挡
-        p.setPen(QPen(QColor(188, 211, 226, 210), 1.3));
+        // 孔内前侧壁：盖住管身下段，形成采血管插进孔内的深度感。
+        const QRectF holeRect(well.center.x() - well.holeRx,
+                              well.center.y() - well.holeRy,
+                              well.holeRx * 2.0, well.holeRy * 2.0);
+        QPainterPath holePath;
+        holePath.addEllipse(holeRect);
+        p.save();
+        p.setClipPath(holePath);
+        QLinearGradient innerWall(0.0, well.center.y(),
+                                  0.0, well.center.y()
+                                  + well.holeRy * 1.2);
+        innerWall.setColorAt(0.0, QColor(32, 49, 62, 245));
+        innerWall.setColorAt(0.55, QColor(55, 76, 92, 245));
+        innerWall.setColorAt(1.0, QColor(115, 141, 159, 245));
+        p.setPen(Qt::NoPen);
+        p.setBrush(innerWall);
+        p.drawRect(QRectF(well.center.x() - well.holeRx,
+                          well.center.y(),
+                          well.holeRx * 2.0, well.holeRy * 1.2));
+        p.restore();
+
+        // 孔口前沿高光
+        p.setPen(QPen(QColor(205, 225, 239, 230), 1.3));
         p.setBrush(Qt::NoBrush);
-        p.drawArc(QRectF(well.center.x() - well.holeRx,
-                         well.center.y() - well.holeRy,
-                         well.holeRx * 2.0, well.holeRy * 2.0),
-                  200 * 16, 140 * 16);
+        p.drawArc(holeRect, 195 * 16, 150 * 16);
     }
 
     int wellAt(const QPoint &position) const
