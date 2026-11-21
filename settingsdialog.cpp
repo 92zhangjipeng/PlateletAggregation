@@ -13,6 +13,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCryptographicHash>
+#include <QDebug>
 #include <QDialog>
 #include <QFrame>
 #include <QGridLayout>
@@ -288,9 +289,11 @@ private:
     void tryAccept()
     {
         if (password() == QString::fromLatin1(kMaintenancePassword)) {
+            qInfo() << "维护登录成功";
             accept();
             return;
         }
+        qWarning() << "维护登录失败：密码错误";
         m_errorLabel->setText(tr("维护密码错误，请重新输入。"));
         m_passwordEdit->selectAll();
         m_passwordEdit->setFocus();
@@ -1389,14 +1392,14 @@ QWidget *SettingsDialog::createCoordinatePage()
     header->addWidget(title);
     header->addStretch();
 
-    auto *badge = new QLabel(tr("● 本地坐标文件"), page);
+    auto *badge = new QLabel(tr("● 程序目录坐标文件"), page);
     badge->setObjectName(QStringLiteral("maintenanceBadge"));
     header->addWidget(badge, 0, Qt::AlignVCenter);
     layout->addLayout(header);
 
     auto *subtitle = new QLabel(
                 tr("维护原点、清洗孔、弃杯孔、通道、试管、试剂位和样本孔的"
-                   "XY 与各 Z 轴高度；修改后写入本地坐标文件，"
+                   "XY 与各 Z 轴高度；修改后写入程序目录下的坐标文件，"
                    "软件启动时自动恢复。"), page);
     subtitle->setObjectName(QStringLiteral("dialogSubtitle"));
     subtitle->setWordWrap(true);

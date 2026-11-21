@@ -31,6 +31,7 @@
 | `testdatastore.h/.cpp` | 测试数据 SQLite 存储：样本、PPP/试剂、PRP0、PRP1~300 |
 | `instrumentcoordinates.h/.cpp` | 仪器坐标表：原点/清洗孔/弃杯孔/通道/试管/试剂位/样本孔的 XY 与 3 个 Z 轴高度 |
 | `coordinatefileio.h/.cpp` | 坐标 JSON 读写：导出/导入工位坐标，提供启动自动恢复的默认坐标文件 |
+| `applogger.h/.cpp` | 应用日志：按天写文件，保留 15 天，接管 qDebug/qInfo/qWarning 等 |
 | `resultstablewidget.h/.cpp` | 自绘测试结果表格：表头、斑马纹、网格线、行点击 |
 | `resultsinfowidget.h/.cpp` | 结果信息标签页：最近测试结果自绘表格 + 刷新 |
 | `querywidget.h/.cpp` | 查询标签页：按样本号/患者姓名过滤测试结果 |
@@ -417,10 +418,12 @@ Z 值为该工具在这个 XY 位置的下降高度；如果下位机使用相�
   导入结果同样立即写回默认坐标文件；
 - 坐标表与主窗口共享：`window.instrumentCoordinates()`，后续测试流程
   可直接用 `locate...()` 取 XY 和 Z 高度；
-- 默认坐标文件为 `QStandardPaths::AppDataLocation/platelet_coordinates.json`
-  （Windows 通常为 `%APPDATA%/PlateletAggregation/PlateletAggregation/`），
-  软件启动时由 `MainWindow::loadInstrumentCoordinates()` 自动读取到内存；
+- 默认坐标文件为**程序目录**下的 `platelet_coordinates.json`
+  （即与 `PlateletAggregation.exe` 同目录），软件启动时由
+  `MainWindow::loadInstrumentCoordinates()` 自动读取到内存；
   文件不存在或损坏时只写日志，不阻塞启动；
+- 旧版本曾把坐标文件放在 `AppDataLocation`，首次启动时若程序目录没有文件、
+  旧文件存在，会自动复制到程序目录，避免升级后丢失已录入坐标；
 - 左侧树下方的「定位校验」区是运动协议接入前的 UI 骨架：选择工具后显示
   当前目标的 X/Y/Z；点击「触发移动」只通过 `motionRequested(MoveTarget)`
   信号把目标交给外部，当前不会向仪器下发运动命令。
@@ -494,6 +497,21 @@ Z 值为该工具在这个 XY 位置的下降高度；如果下位机使用相�
 主窗口重写了 `closeEvent`：点击标题栏关闭按钮或 Alt+F4 时会弹框确认；
 如果当前有通道模拟测试在运行，会额外提示“关闭软件会中断测试”。
 选择“否”则保留窗口，选择“是”才真正退出。
+
+## 日志
+
+`AppLog` 在程序启动时接管 Qt 日志，按天写入文本文件：
+
+- 目录：程序目录下的 `logs/`，文件名 `PlateletAggregation_yyyy-MM-dd.log`；
+  程序目录不可写时自动回退到 `QStandardPaths::AppDataLocation/logs`；
+- 保留最近 15 天（含当天）：启动时和跨天换文件时自动删除更早的日志；
+- 每行格式：`yyyy-MM-dd HH:mm:ss.zzz [级别] 内容 (文件:行号)`；
+- 已记录的主要事件：程序启动/退出、操作员登录/切换用户、串口连接/断开/错误、
+  维护登录成功/失败、测试开始/暂停/继续/复位、坐标加载/保存/导入/导出、
+  定位校验请求；
+- 安装方式：`main.cpp` 调用 `AppLog::install()`，退出前 `AppLog::uninstall()`；
+  其他位置直接使用 `qDebug()/qInfo()/qWarning()/qCritical()` 即可；
+- 日志写入带互斥锁，通讯线程等后台线程记录日志也是安全的。
 
 ## 构建运行
 

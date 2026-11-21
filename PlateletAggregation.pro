@@ -6,6 +6,7 @@ TEMPLATE = app
 TARGET = PlateletAggregation
 
 DEFINES += QT_DEPRECATED_WARNINGS
+DEFINES += QT_MESSAGELOGCONTEXT
 
 RC_ICONS = img/appicon.ico
 
@@ -40,7 +41,8 @@ SOURCES += \
     querywidget.cpp \
     instrumentcoordinates.cpp \
     coordinatefileio.cpp \
-    coordinatemaintenancewidget.cpp
+    coordinatemaintenancewidget.cpp \
+    applogger.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -63,6 +65,7 @@ HEADERS += \
     instrumentcoordinates.h \
     coordinatefileio.h \
     coordinatemaintenancewidget.h \
+    applogger.h \
     SerialPortManager.h \
     ModuleAdPoller.h \
     mainboardpoller.h \

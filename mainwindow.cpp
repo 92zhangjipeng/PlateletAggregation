@@ -27,6 +27,7 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QEvent>
+#include <QFile>
 #include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -721,6 +722,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
         event->ignore();
         return;
     }
+    qInfo() << "用户确认退出程序";
     event->accept();
 }
 
@@ -1094,6 +1096,10 @@ QWidget *MainWindow::createMainPage()
 void MainWindow::handleLogin()
 {
     // 开发阶段：不校验用户名和密码，后期在这里接入用户管理
+    const QString userName = m_usernameEdit
+            ? m_usernameEdit->text().trimmed() : QString();
+    qInfo() << "操作员登录:"
+            << (userName.isEmpty() ? QStringLiteral("(未填写)") : userName);
     m_hasLoggedIn = true;
     if (m_passwordEdit) {
         m_passwordEdit->clear();
@@ -1110,6 +1116,7 @@ void MainWindow::returnToLogin()
     if (!m_stack || !m_loginPage) {
         return;
     }
+    qInfo() << "返回登录页，切换用户";
     // 只切换页面，不停止正在进行的测试；取消登录即可返回原主界面
     if (m_passwordEdit) {
         m_passwordEdit->clear();
@@ -1141,6 +1148,7 @@ void MainWindow::handleStartTest()
     }
 
     // 临时演示：开始按钮模拟通道1测试；接入真实流程后替换为下发启动命令
+    qInfo() << "开始测试：通道1模拟";
     m_moduleOverview->startChannelOneSimulation();
 }
 
@@ -1154,6 +1162,7 @@ void MainWindow::handlePauseResume()
     m_channelOneDemoPaused = !m_channelOneDemoPaused;
     m_moduleOverview->setChannelOneSimulationPaused(m_channelOneDemoPaused);
     updatePauseButtonAppearance();
+    qInfo() << (m_channelOneDemoPaused ? "测试已暂停" : "测试已继续");
 }
 
 void MainWindow::updatePauseButtonAppearance()
@@ -1176,6 +1185,7 @@ void MainWindow::handleResetTest()
     }
     m_moduleOverview->stopChannelOneSimulation();
     m_moduleOverview->resetAll();
+    qInfo() << "测试已复位";
     m_channelOneDemoPaused = false;
     if (m_startButton) {
         m_startButton->setEnabled(true);
@@ -2541,6 +2551,7 @@ void MainWindow::updateSerialStatus(bool connected, const QString &portName,
                                             "请关闭软件后重新启动，以保证仪器初始化正确。")
                                          .arg(port));
                 }
+                qWarning() << "仪器在启动超时后才连接:" << port;
                 return;
             }
 
@@ -2554,6 +2565,8 @@ void MainWindow::updateSerialStatus(bool connected, const QString &portName,
                             tr("仪器串口：%1\nVID 0x0483 / PID 0x5740\n波特率：%2")
                             .arg(port)
                             .arg(baudRate));
+        qInfo() << "仪器串口已连接:" << port
+                << "波特率:" << baudRate;
         startStartupCalibration();
         return;
     }
@@ -2565,10 +2578,13 @@ void MainWindow::updateSerialStatus(bool connected, const QString &portName,
         setConnectionStatus(tr("● 仪器未连接，正在重连…"), "offline",
                             tr("仪器串口已断开，正在自动重连。"));
     }
+    qWarning() << "仪器串口未连接，等待自动重连";
 }
 
 void MainWindow::handleSerialError(const QString &message, bool connected)
 {
+    qWarning() << "串口错误:" << message << "连接中:" << connected;
+
     if (!m_connectionStatus) {
         return;
     }
@@ -2827,16 +2843,33 @@ InstrumentCoordinates *MainWindow::instrumentCoordinates()
 void MainWindow::loadInstrumentCoordinates()
 {
     const QString path = CoordinateFileIo::defaultFilePath();
-    if (!QFileInfo::exists(path)) {
-        qInfo() << "Instrument coordinates file not found:" << path;
+    QString loadPath = path;
+
+    // 旧版本把坐标文件放在 AppData；首次升级时搬到程序目录。
+    if (!QFileInfo::exists(loadPath)) {
+        const QString legacyPath = CoordinateFileIo::legacyDefaultFilePath();
+        if (!legacyPath.isEmpty() && QFileInfo::exists(legacyPath)) {
+            if (QFile::copy(legacyPath, loadPath)) {
+                qInfo() << "已迁移旧坐标文件:" << legacyPath
+                        << "→" << loadPath;
+            } else {
+                qWarning() << "旧坐标文件迁移失败，继续读取旧文件:"
+                           << legacyPath << "→" << loadPath;
+                loadPath = legacyPath;
+            }
+        }
+    }
+
+    if (!QFileInfo::exists(loadPath)) {
+        qInfo() << "Instrument coordinates file not found:" << loadPath;
         return;
     }
 
     CoordinateDocument document;
     QString error;
-    if (!CoordinateFileIo::load(path, &document, &error)) {
+    if (!CoordinateFileIo::load(loadPath, &document, &error)) {
         qWarning() << "Instrument coordinates load failed:"
-                   << path << error;
+                   << loadPath << error;
         return;
     }
 
@@ -2850,7 +2883,7 @@ void MainWindow::loadInstrumentCoordinates()
 
     const CoordinateFileIo::ApplyResult result =
             CoordinateFileIo::apply(document, &m_instrumentCoordinates);
-    qInfo() << "Instrument coordinates loaded from" << path
+    qInfo() << "Instrument coordinates loaded from" << loadPath
             << "applied" << result.applied
             << "skipped" << result.skipped
             << "ignoredTools" << result.ignoredTools;

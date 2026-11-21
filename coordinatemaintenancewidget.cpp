@@ -12,6 +12,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -242,7 +243,7 @@ void CoordinateMaintenanceWidget::buildUi()
                 tr("三根 Z 轴水平位置不同，每个工具需要各自的 X/Y："
                    "选择左侧位置后，分别填写抓手、试剂针、样本针的 X、Y "
                    "和下降 Z。勾选“启用”表示该工具参与定位。坐标单位 mm。"
-                   "保存后自动写入本地坐标文件，软件启动时自动恢复。"),
+                   "保存后自动写入程序目录下的坐标文件，软件启动时自动恢复。"),
                 this);
     hint->setObjectName(QStringLiteral("coordinateHint"));
     hint->setWordWrap(true);
@@ -771,10 +772,14 @@ void CoordinateMaintenanceWidget::saveCurrent()
     loadSelection();
 
     if (!ok) {
+        qWarning() << "保存坐标失败：位置索引超出当前机型范围:" << name;
         setFeedback(tr("保存失败：位置索引超出当前机型范围"), true);
     } else if (persisted) {
+        qInfo() << "坐标已保存:" << name
+                << "→" << CoordinateFileIo::defaultFilePath();
         setFeedback(tr("已保存：%1（已写入坐标文件）").arg(name), false);
     } else {
+        qWarning() << "坐标写入文件失败:" << persistError;
         setFeedback(tr("已保存到内存，但写入坐标文件失败：%1")
                     .arg(persistError), true);
     }
@@ -797,6 +802,7 @@ void CoordinateMaintenanceWidget::importCoordinates()
     CoordinateDocument document;
     QString error;
     if (!CoordinateFileIo::load(path, &document, &error)) {
+        qWarning() << "坐标导入失败:" << path << error;
         setFeedback(tr("导入失败：%1").arg(error), true);
         QMessageBox::warning(
                     this, tr("导入坐标"),
@@ -856,6 +862,15 @@ void CoordinateMaintenanceWidget::importCoordinates()
         message += tr("，但写入坐标文件失败：%1").arg(persistError);
         hasError = true;
     }
+
+    qInfo() << "坐标导入完成:" << path
+            << "applied:" << result.applied
+            << "skipped:" << result.skipped
+            << "ignoredTools:" << result.ignoredTools
+            << "persisted:" << persisted;
+    if (!persisted) {
+        qWarning() << "坐标导入后写入文件失败:" << persistError;
+    }
     setFeedback(message, hasError);
 }
 
@@ -888,6 +903,7 @@ void CoordinateMaintenanceWidget::exportCoordinates()
 
     QString error;
     if (!CoordinateFileIo::save(*m_coordinates, path, &error)) {
+        qWarning() << "坐标导出失败:" << path << error;
         setFeedback(tr("导出失败：%1").arg(error), true);
         QMessageBox::warning(
                     this, tr("导出坐标"),
@@ -895,6 +911,7 @@ void CoordinateMaintenanceWidget::exportCoordinates()
         return;
     }
 
+    qInfo() << "坐标已导出:" << path;
     setFeedback(tr("已导出坐标：%1")
                 .arg(QDir::toNativeSeparators(path)), false);
 }
@@ -959,6 +976,10 @@ void CoordinateMaintenanceWidget::triggerVerificationMove()
         return;
     }
 
+    qInfo() << "定位校验请求:" << name
+            << InstrumentCoordinates::zAxisName(axis)
+            << "X:" << target.x << "Y:" << target.y << "Z:" << target.z
+            << "（运动协议未接入，未下发）";
     setFeedback(
                 tr("已生成运动目标：%1 · %2 → X %3, Y %4, Z %5；"
                    "运动协议未接入，未下发")

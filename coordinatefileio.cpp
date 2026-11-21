@@ -189,11 +189,16 @@ bool readTool(const QJsonValue &value, const QString &context,
 
 QString CoordinateFileIo::defaultFilePath()
 {
-    QString directory = QStandardPaths::writableLocation(
+    return QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("platelet_coordinates.json"));
+}
+
+QString CoordinateFileIo::legacyDefaultFilePath()
+{
+    const QString directory = QStandardPaths::writableLocation(
                 QStandardPaths::AppDataLocation);
     if (directory.isEmpty()) {
-        directory = QDir(QCoreApplication::applicationDirPath())
-                .filePath(QStringLiteral("data"));
+        return QString();
     }
     return QDir(directory).filePath(
                 QStringLiteral("platelet_coordinates.json"));
