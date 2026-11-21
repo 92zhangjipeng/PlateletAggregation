@@ -17,7 +17,7 @@ class QPaintEvent;
  * - 外部清洗液 S2
  * - 废液
  * - 4 个托盘
- * - 测高检测
+ * - 测高检测（仅全血模式显示，血浆模式隐藏）
  *
  * 正常时显示绿色状态点；异常时红色图标和状态点按约 450ms 闪烁。
  * 鼠标悬停可查看每个图标的具体状态。
@@ -32,6 +32,10 @@ public:
     void setStatus(bool s2Normal, bool wasteNormal,
                    const bool cupPresent[4], bool heightOk, int activeCupCount);
     void clearStatus(const QString &reason = QString());
+
+    /** 血浆模式不测高：隐藏最后一个测高检测图标并缩小状态栏图标宽度 */
+    void setHeightIconVisible(bool visible);
+    bool heightIconVisible() const;
 
     QSize sizeHint() const override;
 
@@ -63,10 +67,12 @@ private:
     int iconAt(const QPoint &pos) const;
     void paintIcon(QPainter &p, int index);
     void updateBlinkTimer();
+    void updateFixedSize();
 
     QVector<IconState> m_icons;
     QTimer m_blinkTimer;
     bool m_blinkOn = true;
+    bool m_heightIconVisible = true;
     int m_activeCupCount = 4;
     int m_hoverIndex = -1;
 };

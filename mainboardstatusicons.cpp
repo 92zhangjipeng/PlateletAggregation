@@ -26,8 +26,7 @@ MainBoardStatusIconBar::MainBoardStatusIconBar(QWidget *parent)
 {
     setObjectName(QStringLiteral("mainBoardStatusIcons"));
     setMouseTracking(true);
-    setFixedSize(IconCount * kIconCellWidth + (IconCount - 1) * kIconGap,
-                 kIconCellHeight + kIconTop * 2);
+    updateFixedSize();
 
     m_icons.resize(IconCount);
 
@@ -113,17 +112,47 @@ void MainBoardStatusIconBar::clearStatus(const QString &reason)
     updateBlinkTimer();
 }
 
+void MainBoardStatusIconBar::setHeightIconVisible(bool visible)
+{
+    if (m_heightIconVisible == visible) {
+        return;
+    }
+    m_heightIconVisible = visible;
+    if (!visible && m_hoverIndex == IconHeight) {
+        m_hoverIndex = -1;
+        QToolTip::hideText();
+    }
+    updateFixedSize();
+    updateBlinkTimer();
+    update();
+}
+
+bool MainBoardStatusIconBar::heightIconVisible() const
+{
+    return m_heightIconVisible;
+}
+
 QSize MainBoardStatusIconBar::sizeHint() const
 {
-    return QSize(IconCount * kIconCellWidth
-                 + (IconCount - 1) * kIconGap,
+    const int visibleCount = IconCount - (m_heightIconVisible ? 0 : 1);
+    return QSize(visibleCount * kIconCellWidth
+                 + qMax(0, visibleCount - 1) * kIconGap,
                  kIconCellHeight + kIconTop * 2);
+}
+
+void MainBoardStatusIconBar::updateFixedSize()
+{
+    setFixedSize(sizeHint());
 }
 
 void MainBoardStatusIconBar::updateBlinkTimer()
 {
     bool hasAlert = false;
-    for (const IconState &state : m_icons) {
+    for (int i = 0; i < m_icons.size(); ++i) {
+        if (i == IconHeight && !m_heightIconVisible) {
+            continue;
+        }
+        const IconState &state = m_icons.at(i);
         if (state.known && state.active && !state.normal) {
             hasAlert = true;
             break;
@@ -151,6 +180,9 @@ QRectF MainBoardStatusIconBar::iconRect(int index) const
 int MainBoardStatusIconBar::iconAt(const QPoint &pos) const
 {
     for (int i = 0; i < m_icons.size(); ++i) {
+        if (i == IconHeight && !m_heightIconVisible) {
+            continue;
+        }
         if (iconRect(i).contains(QPointF(pos))) {
             return i;
         }
@@ -167,6 +199,9 @@ void MainBoardStatusIconBar::paintEvent(QPaintEvent *event)
     p.setRenderHint(QPainter::TextAntialiasing, true);
 
     for (int i = 0; i < m_icons.size(); ++i) {
+        if (i == IconHeight && !m_heightIconVisible) {
+            continue;
+        }
         paintIcon(p, i);
     }
 }

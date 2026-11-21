@@ -230,6 +230,8 @@ private:
     TubeTrayDialog *m_tubeTrayDialog = nullptr;
     MainBoardStatus m_latestMainboardStatus;
     bool m_hasMainboardStatus = false;
+    bool m_lastHeightDetectionTrigger = false;
+    bool m_heightTriggerBaselineSet = false;
     int m_consumableBottles[MainBoardConsumable::kPositionCount] = {};
     int m_consumableRatios[MainBoardConsumable::kPositionCount] = {};
     bool m_consumableValid[MainBoardConsumable::kPositionCount] = {};

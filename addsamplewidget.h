@@ -52,6 +52,9 @@ public:
     /** 待测 + 测试中样本数；用于锁住会影响孔位的设置 */
     int activeSampleCount() const;
 
+    /** 全血模式主板测高上升沿触发：每次触发自动添加一个样本 */
+    void handleHeightDetectionTrigger();
+
     /** 已确认待测样本队列（测试流程后续从这里取样本） */
     TestQueue *testQueue();
     const TestQueue *testQueue() const;
@@ -67,6 +70,7 @@ private slots:
     void handleTableItemChanged(QTableWidgetItem *item);
 
 private:
+    void addSampleInternal(bool fromHeightTrigger);
     void buildUi();
     QFrame *createSampleTableCard();
     QFrame *createBloodAreaCard();
@@ -86,6 +90,8 @@ private:
     void syncBloodAreaSamples();
     void handleBloodAreaMoveCommitted(const QStringList &positions);
     void handleBloodAreaMoveCancelled();
+    void adjustSampleRowHeight(int row);
+    void adjustAllSampleRowHeights();
 
     QStringList allPositions() const;
     QStringList positionsForRow(int row) const;

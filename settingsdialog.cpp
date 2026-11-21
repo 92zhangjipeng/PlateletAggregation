@@ -887,6 +887,7 @@ QWidget *SettingsDialog::createBasicPage()
         QSettings s;
         s.setValue(QString::fromLatin1(sampleQualitySettingsKey()),
                    QStringLiteral("wholeBlood"));
+        emit sampleQualityChanged();
     });
     connect(plasma, &QRadioButton::toggled, this,
             [this, restoreQualitySelection](bool checked) {
@@ -900,6 +901,7 @@ QWidget *SettingsDialog::createBasicPage()
         QSettings s;
         s.setValue(QString::fromLatin1(sampleQualitySettingsKey()),
                    QStringLiteral("plasma"));
+        emit sampleQualityChanged();
     });
 
     auto *scanRow = new QHBoxLayout;

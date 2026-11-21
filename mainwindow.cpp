@@ -1162,6 +1162,7 @@ QWidget *MainWindow::createMainPage()
     // S2 外清洗液 / 废液 / 4 个托盘 / 测高检测：小图标，异常闪烁
     m_boardIndicators = new MainBoardStatusIconBar(bottomBar);
     m_boardIndicators->clearStatus(tr("等待主板状态"));
+    m_boardIndicators->setHeightIconVisible(!sampleQualityIsPlasma());
     bottomLayout->addWidget(m_boardIndicators, 0, Qt::AlignVCenter);
 
     m_actionHint = new QLabel(bottomBar);
@@ -1629,6 +1630,16 @@ void MainWindow::createSettingsTab()
     m_settingsDialog->setActiveSampleCountProvider([this]() {
         return m_addSampleWidget ? m_addSampleWidget->activeSampleCount()
                                  : 0;
+    });
+    connect(m_settingsDialog, &SettingsDialog::sampleQualityChanged,
+            this, [this]() {
+        if (m_boardIndicators) {
+            m_boardIndicators->setHeightIconVisible(
+                        !sampleQualityIsPlasma());
+        }
+        if (m_addSampleWidget) {
+            m_addSampleWidget->refreshMode();
+        }
     });
     connect(m_settingsDialog, &SettingsDialog::coordinateMotionRequested,
             m_verificationController,
@@ -3112,9 +3123,21 @@ void MainWindow::applyMainboardStatus(const MainBoardStatus &status)
 
     const int cupCount = activeCupCount(m_machineModel);
     if (m_boardIndicators) {
+        m_boardIndicators->setHeightIconVisible(!sampleQualityIsPlasma());
         m_boardIndicators->setStatus(status.cleanNormal, status.wasteNormal,
                                      status.cupPresent, status.heightOk,
                                      cupCount);
+    }
+
+    // 主板 byte5.bit1 为测高触发信号：只在全血模式按上升沿加一个样本。
+    const bool heightRising = m_heightTriggerBaselineSet
+            && status.heightOk && !m_lastHeightDetectionTrigger;
+    m_lastHeightDetectionTrigger = status.heightOk;
+    m_heightTriggerBaselineSet = true;
+    if (heightRising && m_hasLoggedIn && !sampleQualityIsPlasma()
+            && m_addSampleWidget) {
+        qInfo() << "Mainboard height detection trigger: add one sample";
+        m_addSampleWidget->handleHeightDetectionTrigger();
     }
 
     QStringList issues;
@@ -3171,8 +3194,10 @@ void MainWindow::applyMainboardStatus(const MainBoardStatus &status)
     }
     lines << tr("废液：%1")
              .arg(status.wasteNormal ? tr("正常") : tr("满/断开"));
-    lines << tr("测高检测：%1")
-             .arg(status.heightOk ? tr("成功") : tr("失败"));
+    if (!sampleQualityIsPlasma()) {
+        lines << tr("测高检测：%1")
+                 .arg(status.heightOk ? tr("成功") : tr("失败"));
+    }
     lines << tr("蜂鸣器：%1    制冷：%2")
              .arg(onOffText(status.fanOn), onOffText(status.coolOn));
     lines << tr("隔膜泵1：%1    隔膜泵2：%2")

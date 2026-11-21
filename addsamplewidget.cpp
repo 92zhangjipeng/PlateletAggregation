@@ -51,6 +51,9 @@
 #include <QStyleOptionViewItem>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTextLayout>
+#include <QTextLine>
+#include <QTextOption>
 #include <QToolTip>
 #include <QVBoxLayout>
 #include <QVector>
@@ -71,7 +74,7 @@ enum SampleColumn {
     SampleColumnCount
 };
 
-const int kSampleRowHeight = 28;
+const int kSampleRowHeight = 40;
 const int kHeightSourceRole = Qt::UserRole + 1;
 const char kPlasmaAutoHeightSource[] = "plasmaAuto";
 
@@ -765,12 +768,83 @@ public:
     }
 };
 
+/**
+ * 普通表格单元格：文本超宽时按字符换行（长数字/AA+ADP 这种无空格文本也会断行），
+ * 并保持水平/垂直居中。仅负责绘制，编辑框仍由 QStyledItemDelegate 提供。
+ */
+class WrappedItemDelegate : public QStyledItemDelegate
+{
+public:
+    explicit WrappedItemDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+        const QString text = opt.text;
+        opt.text.clear();
+
+        QStyle *style = opt.widget ? opt.widget->style()
+                                   : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter,
+                           opt.widget);
+        if (text.isEmpty()) {
+            return;
+        }
+
+        const QRect textRect = style->subElementRect(
+                    QStyle::SE_ItemViewItemText, &opt, opt.widget);
+        if (textRect.isEmpty()) {
+            return;
+        }
+
+        painter->save();
+        painter->setClipRect(textRect);
+        const QPalette::ColorGroup group =
+                (opt.state & QStyle::State_Enabled)
+                ? QPalette::Normal : QPalette::Disabled;
+        const QPalette::ColorRole role =
+                (opt.state & QStyle::State_Selected)
+                ? QPalette::HighlightedText : QPalette::Text;
+        painter->setPen(opt.palette.color(group, role));
+
+        QTextOption textOption;
+        textOption.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        textOption.setAlignment(opt.displayAlignment
+                                & Qt::AlignHorizontal_Mask);
+        QTextLayout layout(text, opt.font);
+        layout.setTextOption(textOption);
+        layout.beginLayout();
+        qreal textHeight = 0.0;
+        while (true) {
+            QTextLine line = layout.createLine();
+            if (!line.isValid()) {
+                break;
+            }
+            line.setLineWidth(textRect.width());
+            line.setPosition(QPointF(0.0, textHeight));
+            textHeight += line.height();
+        }
+        layout.endLayout();
+
+        const qreal y = textRect.top()
+                + qMax<qreal>(0.0,
+                              (textRect.height() - textHeight) / 2.0);
+        layout.draw(painter, QPointF(textRect.left(), y));
+        painter->restore();
+    }
+};
+
 /** 条码列编辑框只允许数字。 */
-class BarcodeDelegate : public QStyledItemDelegate
+class BarcodeDelegate : public WrappedItemDelegate
 {
 public:
     explicit BarcodeDelegate(QObject *parent = nullptr)
-        : QStyledItemDelegate(parent)
+        : WrappedItemDelegate(parent)
     {
     }
 
@@ -2603,7 +2677,8 @@ QFrame *AddSampleWidget::createSampleTableCard()
                                    | QAbstractItemView::EditKeyPressed);
     m_sampleTable->setAlternatingRowColors(true);
     m_sampleTable->setShowGrid(true);
-    m_sampleTable->setWordWrap(false);
+    m_sampleTable->setWordWrap(true);
+    m_sampleTable->setTextElideMode(Qt::ElideNone);
     m_sampleTable->setFrameShape(QFrame::NoFrame);
     m_sampleTable->setFocusPolicy(Qt::StrongFocus);
     m_sampleTable->setCornerButtonEnabled(false);
@@ -2622,6 +2697,14 @@ QFrame *AddSampleWidget::createSampleTableCard()
     m_sampleTable->setColumnWidth(PositionColumn, 65);
     m_sampleTable->setMinimumHeight(150);
 
+    connect(m_sampleTable->horizontalHeader(),
+            &QHeaderView::sectionResized, this,
+            [this](int, int, int) {
+        adjustAllSampleRowHeights();
+    });
+
+    m_sampleTable->setItemDelegate(
+                new WrappedItemDelegate(m_sampleTable));
     m_sampleTable->setItemDelegateForColumn(
                 StatusColumn, new SampleStatusDelegate(m_sampleTable));
     m_sampleTable->setItemDelegateForColumn(
@@ -2806,6 +2889,14 @@ void AddSampleWidget::updateSampleQuality()
     m_bloodArea->setMachineModel(m_model);
     m_bloodArea->setPlasma(plasma);
     m_bloodArea->update();
+    if (m_addSampleButton) {
+        m_addSampleButton->setEnabled(plasma);
+        m_addSampleButton->setToolTip(
+                    plasma
+                    ? tr("手动添加一个血浆样本")
+                    : tr("全血模式：由主板测高检测自动添加样本，"
+                         "每次触发加 1 个"));
+    }
     updateHeightHeader();
     updateSampleHeightValues();
     updateSampleCount();
@@ -2887,6 +2978,45 @@ void AddSampleWidget::updateSampleHeightValues()
     m_updatingTable = false;
 }
 
+void AddSampleWidget::adjustSampleRowHeight(int row)
+{
+    if (!m_sampleTable || row < 0
+            || row >= m_sampleTable->rowCount()) {
+        return;
+    }
+    // Qt 5.10 的 QTableWidget 对长数字/无空格文本的自动换行高度计算不完整，
+    // 这里按每列文字宽度估算所需行数，保证内容能换行且不被裁掉。
+    const QFontMetrics metrics(m_sampleTable->font());
+    int lines = 1;
+    for (int column = 0; column < SampleColumnCount; ++column) {
+        QTableWidgetItem *item = m_sampleTable->item(row, column);
+        if (!item || item->text().isEmpty()) {
+            continue;
+        }
+        const int available = qMax(20,
+                                   m_sampleTable->columnWidth(column) - 12);
+        const int textWidth = qMax(1, metrics.width(item->text()));
+        const int columnLines =
+                (textWidth + available - 1) / available;
+        lines = qMax(lines, qMax(1, columnLines));
+    }
+    const int height = qMax(kSampleRowHeight,
+                            lines * metrics.lineSpacing() + 12);
+    if (m_sampleTable->rowHeight(row) != height) {
+        m_sampleTable->setRowHeight(row, height);
+    }
+}
+
+void AddSampleWidget::adjustAllSampleRowHeights()
+{
+    if (!m_sampleTable) {
+        return;
+    }
+    for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
+        adjustSampleRowHeight(row);
+    }
+}
+
 void AddSampleWidget::updateSampleCount()
 {
     if (!m_countLabel || !m_sampleTable) {
@@ -2902,6 +3032,15 @@ void AddSampleWidget::updateSampleCount()
 void AddSampleWidget::updateScanHint()
 {
     if (!m_tableHint) {
+        return;
+    }
+    if (!sampleQualityIsPlasma()) {
+        m_tableHint->setText(
+                    addSampleScanBarcodeEnabled()
+                    ? tr("全血：主板测高触发自动加样 · 触发前先扫描/输入条码 · "
+                         "双击测试项目多选")
+                    : tr("全血：主板测高触发自动加样 · 每次触发加 1 个 · "
+                         "双击测试项目多选"));
         return;
     }
     if (addSampleScanBarcodeEnabled()) {
@@ -3140,6 +3279,7 @@ void AddSampleWidget::modifyTestItems(int row)
     item->setText(text);
     item->setData(Qt::UserRole, text);
     m_updatingTable = false;
+    adjustSampleRowHeight(row);
 }
 
 void AddSampleWidget::syncBloodAreaSamples()
@@ -3219,6 +3359,7 @@ void AddSampleWidget::handleBloodAreaMoveCommitted(
         m_updatingTable = false;
         qInfo() << "Move sample position:" << oldPosition
                 << "->" << position;
+        adjustSampleRowHeight(row);
     }
     syncBloodAreaSamples();
 }
@@ -3231,12 +3372,30 @@ void AddSampleWidget::handleBloodAreaMoveCancelled()
 
 void AddSampleWidget::addSample()
 {
+    // 全血模式不使用手动添加，等待主板测高上升沿触发。
+    if (!sampleQualityIsPlasma()) {
+        return;
+    }
+    addSampleInternal(false);
+}
+
+void AddSampleWidget::handleHeightDetectionTrigger()
+{
+    if (!m_sampleTable || sampleQualityIsPlasma()) {
+        return;
+    }
+    addSampleInternal(true);
+}
+
+void AddSampleWidget::addSampleInternal(bool fromHeightTrigger)
+{
     if (!m_sampleTable) {
         return;
     }
 
-    // 开启加样扫码时，必须先把已有样本的条码扫/输完，否则再添加会无法对应。
-    if (addSampleScanBarcodeEnabled()) {
+    // 开启加样扫码时，手动添加必须先把已有样本的条码扫/输完。
+    // 全血测高触发不受此限制：先加待定行，条码可稍后补扫。
+    if (!fromHeightTrigger && addSampleScanBarcodeEnabled()) {
         for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
             QTableWidgetItem *barcode = m_sampleTable->item(row,
                                                             BarcodeColumn);
@@ -3317,19 +3476,28 @@ void AddSampleWidget::addSample()
             ? m_quickBarcodeEdit->text().trimmed() : QString();
 
     appendSampleRow(sampleNumber, barcode, QString(), QString(), position);
-    qInfo() << "Add sample:" << sampleNumber << "position" << position;
+    qInfo() << (fromHeightTrigger ? "Height trigger add sample:"
+                                  : "Add sample:")
+            << sampleNumber << "position" << position;
+    if (fromHeightTrigger && addSampleScanBarcodeEnabled()
+            && barcode.isEmpty()) {
+        qWarning() << "Height trigger added sample without barcode:"
+                   << sampleNumber;
+    }
 
     const int row = m_sampleTable->rowCount() - 1;
-    m_sampleTable->scrollToBottom();
-    m_sampleTable->selectRow(row);
-    m_sampleTable->setCurrentCell(row, BarcodeColumn);
+    if (!fromHeightTrigger) {
+        m_sampleTable->scrollToBottom();
+        m_sampleTable->selectRow(row);
+        m_sampleTable->setCurrentCell(row, BarcodeColumn);
+    }
 
     if (m_quickBarcodeEdit) {
         m_quickBarcodeEdit->clear();
     }
     m_quickSampleNoEdited = false;
     updateQuickSampleNumber();
-    if (m_quickBarcodeEdit) {
+    if (!fromHeightTrigger && m_quickBarcodeEdit) {
         m_quickBarcodeEdit->setFocus();
         m_quickBarcodeEdit->selectAll();
     }
@@ -3582,6 +3750,7 @@ void AddSampleWidget::modifySampleNumber()
             m_updatingTable = false;
             qInfo() << "Sample number changed:" << oldNumber << "->"
                     << value;
+            adjustSampleRowHeight(row);
             updateQuickSampleNumber();
             m_sampleTable->setCurrentCell(row, SampleNoColumn);
             return;
@@ -3630,6 +3799,7 @@ void AddSampleWidget::handleTableItemChanged(QTableWidgetItem *item)
     m_updatingTable = true;
     item->setData(Qt::UserRole, item->text());
     m_updatingTable = false;
+    adjustSampleRowHeight(item->row());
 
     if (column == PositionColumn) {
         syncBloodAreaSamples();
@@ -3946,8 +4116,8 @@ void AddSampleWidget::appendSampleRow(const QString &sampleNumber,
         item->setToolTip(tr("血样孔号，例如 10；PPP+PRP 模式为 10+11"));
     }
 
-    m_sampleTable->setRowHeight(row, kSampleRowHeight);
     m_updatingTable = false;
+    adjustSampleRowHeight(row);
     updateSampleCount();
 }
 
@@ -3959,4 +4129,5 @@ void AddSampleWidget::restoreTableItem(QTableWidgetItem *item)
     m_updatingTable = true;
     item->setText(item->data(Qt::UserRole).toString());
     m_updatingTable = false;
+    adjustSampleRowHeight(item->row());
 }
