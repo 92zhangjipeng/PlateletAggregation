@@ -261,6 +261,8 @@ void CoordinateMaintenanceWidget::buildUi()
 
     m_verifyToolCombo = new MedicalComboBox(m_verifyPanel);
     m_verifyToolCombo->setObjectName(QStringLiteral("verifyTool"));
+    m_verifyToolCombo->setMinimumWidth(110);
+    m_verifyToolCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     m_verifyToolCombo->addItem(tr("抓手"),
                                static_cast<int>(ZAxis::Gripper));
     m_verifyToolCombo->addItem(tr("试剂针"),

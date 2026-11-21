@@ -13,12 +13,17 @@
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLineF>
+#include <QLinearGradient>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPen>
+#include <QPolygonF>
 #include <QPushButton>
+#include <QRadialGradient>
 #include <QStyle>
 #include <QTabWidget>
 #include <QToolTip>
@@ -29,28 +34,6 @@
 
 namespace {
 
-QColor stateFill(SampleTrayModel::TubeState state)
-{
-    switch (state) {
-    case SampleTrayModel::TubeState::Free: return QColor("#F4F8FB");
-    case SampleTrayModel::TubeState::Allocated: return QColor("#FFF4D9");
-    case SampleTrayModel::TubeState::Sampled: return QColor("#E6F4FE");
-    case SampleTrayModel::TubeState::Used: return QColor("#EAF8F1");
-    }
-    return QColor("#F4F8FB");
-}
-
-QColor stateBorder(SampleTrayModel::TubeState state)
-{
-    switch (state) {
-    case SampleTrayModel::TubeState::Free: return QColor("#D7E4EF");
-    case SampleTrayModel::TubeState::Allocated: return QColor("#E7C979");
-    case SampleTrayModel::TubeState::Sampled: return QColor("#A6CCE8");
-    case SampleTrayModel::TubeState::Used: return QColor("#A9D8BC");
-    }
-    return QColor("#D7E4EF");
-}
-
 QColor stateTextColor(SampleTrayModel::TubeState state)
 {
     switch (state) {
@@ -60,6 +43,28 @@ QColor stateTextColor(SampleTrayModel::TubeState state)
     case SampleTrayModel::TubeState::Used: return QColor("#1E7B45");
     }
     return QColor("#6B8194");
+}
+
+bool stateHasCup(SampleTrayModel::TubeState state)
+{
+    return state == SampleTrayModel::TubeState::Free
+            || state == SampleTrayModel::TubeState::Allocated;
+}
+
+QColor cupMouthColor(SampleTrayModel::TubeState state)
+{
+    switch (state) {
+    case SampleTrayModel::TubeState::Free: return QColor("#BFD9E8");
+    case SampleTrayModel::TubeState::Allocated: return QColor("#E0A21A");
+    case SampleTrayModel::TubeState::Sampled: return QColor("#1F6FA5");
+    case SampleTrayModel::TubeState::Used: return QColor("#1E7B45");
+    }
+    return QColor("#BFD9E8");
+}
+
+QPointF lerpPoint(const QPointF &from, const QPointF &to, qreal t)
+{
+    return from + (to - from) * t;
 }
 
 } // namespace
@@ -147,113 +152,7 @@ protected:
             return;
         }
 
-        const qreal rowHeaderWidth = 24.0;
-        const qreal columnHeaderHeight = 18.0;
-        const QRectF area(card.left() + 42.0,
-                          card.top() + 44.0,
-                          card.width() - 58.0,
-                          card.height() - 58.0);
-        const QRectF grid(area.left() + rowHeaderWidth,
-                          area.top() + columnHeaderHeight,
-                          area.width() - rowHeaderWidth,
-                          area.height() - columnHeaderHeight);
-        if (grid.width() < 300.0 || grid.height() < 200.0) {
-            return;
-        }
-
-        const qreal cellWidth = grid.width() / SampleTrayModel::ColumnsPerTray;
-        const qreal cellHeight = grid.height() / SampleTrayModel::RowsPerTray;
-
-        QFont headerFont(QStringLiteral("Microsoft YaHei"));
-        headerFont.setPixelSize(9);
-        p.setFont(headerFont);
-        p.setPen(QColor("#8A9CAB"));
-        for (int column = 0; column < SampleTrayModel::ColumnsPerTray;
-             ++column) {
-            const QRectF headerRect(grid.left() + column * cellWidth,
-                                    grid.top() - columnHeaderHeight,
-                                    cellWidth, columnHeaderHeight);
-            p.drawText(headerRect, Qt::AlignCenter,
-                       QString::number(column + 1));
-        }
-        for (int row = 0; row < SampleTrayModel::RowsPerTray; ++row) {
-            const QRectF headerRect(grid.left() - rowHeaderWidth,
-                                    grid.top() + row * cellHeight,
-                                    rowHeaderWidth - 4.0, cellHeight);
-            p.drawText(headerRect, Qt::AlignCenter,
-                       QString::number(row + 1));
-        }
-
-        QFont idFont(QStringLiteral("Microsoft YaHei"));
-        idFont.setPixelSize(10);
-        idFont.setBold(true);
-        QFont stateFont(QStringLiteral("Microsoft YaHei"));
-        stateFont.setPixelSize(8);
-
-        for (int row = 0; row < SampleTrayModel::RowsPerTray; ++row) {
-            for (int column = 0;
-                 column < SampleTrayModel::ColumnsPerTray; ++column) {
-                const int tubeIndex = SampleTrayModel::tubeIndex(
-                            m_trayIndex, row, column);
-                if (tubeIndex < 0) {
-                    continue;
-                }
-                const SampleTrayModel::TubeInfo info =
-                        m_model->tubeInfo(tubeIndex);
-                const QRectF cell(grid.left() + column * cellWidth + 2.0,
-                                  grid.top() + row * cellHeight + 2.0,
-                                  cellWidth - 4.0, cellHeight - 4.0);
-                if (cell.width() < 12.0 || cell.height() < 12.0) {
-                    continue;
-                }
-
-                const bool hovered = tubeIndex == m_hoverIndex;
-                QColor border = stateBorder(info.state);
-                if (hovered) {
-                    border = QColor("#2C7BBF");
-                }
-
-                // 试管俯视图：玻璃管圆环（外圈 + 内圈 + 高光弧）
-                const qreal diameter = qMax<qreal>(
-                            8.0, qMin(cell.width(), cell.height()) - 6.0);
-                const QRectF ring(cell.center().x() - diameter / 2.0,
-                                  cell.center().y() - diameter / 2.0,
-                                  diameter, diameter);
-
-                QColor fill = stateFill(info.state);
-                fill.setAlpha(190);
-                p.setPen(QPen(border, hovered ? 2.2 : 1.4));
-                p.setBrush(fill);
-                p.drawEllipse(ring);
-
-                p.setBrush(Qt::NoBrush);
-                p.setPen(QPen(QColor(255, 255, 255, 210), 1.0));
-                p.drawEllipse(ring.adjusted(2.5, 2.5, -2.5, -2.5));
-
-                p.setPen(QPen(QColor(255, 255, 255, 235), 1.3));
-                p.drawArc(ring.adjusted(4.0, 4.0, -4.0, -4.0),
-                          35 * 16, 100 * 16);
-
-                // 管号画在圆环中心
-                p.setFont(idFont);
-                p.setPen(stateTextColor(info.state));
-                p.drawText(ring.adjusted(2.0, 2.0, -2.0, -2.0),
-                           Qt::AlignCenter, QString::number(tubeIndex));
-
-                // 圆环下方还有空间时显示状态文字
-                if (cell.height() - diameter >= 13.0) {
-                    QFont smallStateFont = stateFont;
-                    p.setFont(smallStateFont);
-                    QColor stateColor = stateTextColor(info.state);
-                    stateColor.setAlpha(205);
-                    p.setPen(stateColor);
-                    p.drawText(QRectF(cell.left(), cell.bottom() - 13.0,
-                                      cell.width(), 12.0),
-                               Qt::AlignHCenter | Qt::AlignBottom,
-                               SampleTrayModel::stateText(info.state));
-                }
-            }
-        }
+        paintRack(p, card);
     }
 
     void mouseMoveEvent(QMouseEvent *event) override
@@ -310,17 +209,447 @@ protected:
     }
 
 private:
-    QRectF gridRect() const
+    struct RackGeometry {
+        QPolygonF topFace;
+        QPolygonF frontFace;
+        QPolygonF leftFace;
+        QPolygonF rightFace;
+        QVector<QPointF> centers;
+        QVector<qreal> radiusX;
+        QVector<qreal> radiusY;
+        qreal topY = 0.0;
+        qreal bottomY = 0.0;
+        qreal thickness = 0.0;
+        qreal bottomWidth = 0.0;
+
+        bool valid() const
+        {
+            return centers.size() == SampleTrayModel::TubesPerTray;
+        }
+    };
+
+    RackGeometry rackGeometry() const
     {
+        RackGeometry geometry;
         const QRectF card = QRectF(rect()).adjusted(1.0, 1.0, -1.0, -1.0);
-        const QRectF area(card.left() + 42.0,
-                          card.top() + 44.0,
-                          card.width() - 58.0,
-                          card.height() - 58.0);
-        return QRectF(area.left() + 24.0,
-                      area.top() + 18.0,
-                      area.width() - 24.0,
-                      area.height() - 18.0);
+        const qreal titleBand = 40.0;
+        const QRectF area(card.left() + 30.0,
+                          card.top() + titleBand,
+                          card.width() - 60.0,
+                          card.height() - titleBand - 24.0);
+        if (area.width() < 120.0 || area.height() < 180.0) {
+            return geometry;
+        }
+
+        geometry.topY = area.top() + 12.0;
+        geometry.bottomY = area.bottom() - 2.0;
+        const qreal height = qMax<qreal>(160.0,
+                                         geometry.bottomY - geometry.topY);
+        geometry.bottomWidth = qMin(area.width() - 16.0, height * 0.90);
+        const qreal topWidth = geometry.bottomWidth * 0.80;
+        const qreal centerX = area.center().x();
+
+        geometry.topFace
+                << QPointF(centerX - topWidth / 2.0, geometry.topY)
+                << QPointF(centerX + topWidth / 2.0, geometry.topY)
+                << QPointF(centerX + geometry.bottomWidth / 2.0,
+                           geometry.bottomY)
+                << QPointF(centerX - geometry.bottomWidth / 2.0,
+                           geometry.bottomY);
+
+        geometry.thickness = qBound<qreal>(10.0, height * 0.045, 18.0);
+        const QPointF depth(0.0, geometry.thickness);
+        geometry.frontFace
+                << geometry.topFace.at(3) << geometry.topFace.at(2)
+                << geometry.topFace.at(2) + depth
+                << geometry.topFace.at(3) + depth;
+        geometry.leftFace
+                << geometry.topFace.at(0) << geometry.topFace.at(3)
+                << geometry.topFace.at(3) + depth
+                << geometry.topFace.at(0) + depth;
+        geometry.rightFace
+                << geometry.topFace.at(1) << geometry.topFace.at(2)
+                << geometry.topFace.at(2) + depth
+                << geometry.topFace.at(1) + depth;
+
+        const int rows = SampleTrayModel::RowsPerTray;
+        const int columns = SampleTrayModel::ColumnsPerTray;
+        const qreal marginU = 0.11;
+        const qreal marginV = 0.09;
+        const QPointF topLeft = geometry.topFace.at(0);
+        const QPointF topRight = geometry.topFace.at(1);
+        const QPointF bottomRight = geometry.topFace.at(2);
+        const QPointF bottomLeft = geometry.topFace.at(3);
+
+        for (int row = 0; row < rows; ++row) {
+            const qreal v = marginV
+                    + (1.0 - 2.0 * marginV)
+                      * (rows > 1 ? qreal(row) / (rows - 1) : 0.5);
+            for (int column = 0; column < columns; ++column) {
+                const qreal u = marginU
+                        + (1.0 - 2.0 * marginU)
+                          * (columns > 1
+                             ? qreal(column) / (columns - 1) : 0.5);
+                const QPointF topPoint = lerpPoint(topLeft, topRight, u);
+                const QPointF bottomPoint = lerpPoint(bottomLeft,
+                                                      bottomRight, u);
+                geometry.centers.append(
+                            lerpPoint(topPoint, bottomPoint, v));
+            }
+        }
+
+        for (int row = 0; row < rows; ++row) {
+            for (int column = 0; column < columns; ++column) {
+                const int index = row * columns + column;
+                const QPointF &center = geometry.centers.at(index);
+                qreal horizontal = 1.0e9;
+                qreal vertical = 1.0e9;
+                if (column > 0) {
+                    horizontal = qMin(
+                                horizontal,
+                                QLineF(center,
+                                       geometry.centers.at(index - 1))
+                                .length());
+                }
+                if (column < columns - 1) {
+                    horizontal = qMin(
+                                horizontal,
+                                QLineF(center,
+                                       geometry.centers.at(index + 1))
+                                .length());
+                }
+                if (row > 0) {
+                    vertical = qMin(
+                                vertical,
+                                QLineF(center,
+                                       geometry.centers.at(index - columns))
+                                .length());
+                }
+                if (row < rows - 1) {
+                    vertical = qMin(
+                                vertical,
+                                QLineF(center,
+                                       geometry.centers.at(index + columns))
+                                .length());
+                }
+                const qreal radius = qMax<qreal>(
+                            7.0, qMin(horizontal * 0.36, vertical * 0.62));
+                geometry.radiusX.append(radius);
+                geometry.radiusY.append(radius * 0.60);
+            }
+        }
+        return geometry;
+    }
+
+    void paintRack(QPainter &p, const QRectF &card) const
+    {
+        Q_UNUSED(card);
+        if (!m_model) {
+            return;
+        }
+        const RackGeometry geometry = rackGeometry();
+        if (!geometry.valid()) {
+            return;
+        }
+
+        // 桌面阴影
+        const qreal shadowWidth = geometry.bottomWidth * 0.94;
+        const QRectF shadowRect(
+                    geometry.topFace.at(3).x()
+                    + geometry.bottomWidth * 0.03,
+                    geometry.bottomY + geometry.thickness - 4.0,
+                    shadowWidth, 20.0);
+        QRadialGradient shadow(shadowRect.center(),
+                               qMax<qreal>(8.0, shadowWidth / 2.0));
+        shadow.setColorAt(0.0, QColor(31, 78, 121, 60));
+        shadow.setColorAt(1.0, QColor(31, 78, 121, 0));
+        p.setPen(Qt::NoPen);
+        p.setBrush(shadow);
+        p.drawEllipse(shadowRect);
+
+        // 玻璃板厚度
+        QLinearGradient sideGradient(0.0, geometry.bottomY,
+                                     0.0, geometry.bottomY
+                                     + geometry.thickness);
+        sideGradient.setColorAt(0.0, QColor(176, 213, 233, 230));
+        sideGradient.setColorAt(1.0, QColor(138, 184, 211, 245));
+        p.setPen(QPen(QColor(132, 178, 205, 225), 1.0));
+        p.setBrush(sideGradient);
+        p.drawPolygon(geometry.leftFace);
+        p.drawPolygon(geometry.rightFace);
+        p.drawPolygon(geometry.frontFace);
+
+        // 透明玻璃台面
+        QLinearGradient topGradient(0.0, geometry.topY,
+                                    0.0, geometry.bottomY);
+        topGradient.setColorAt(0.0, QColor(242, 252, 255, 205));
+        topGradient.setColorAt(0.45, QColor(220, 242, 252, 188));
+        topGradient.setColorAt(1.0, QColor(193, 226, 243, 205));
+        p.setPen(QPen(QColor(146, 190, 214, 240), 1.2));
+        p.setBrush(topGradient);
+        p.drawPolygon(geometry.topFace);
+
+        p.setPen(QPen(QColor(255, 255, 255, 235), 1.4));
+        p.drawLine(geometry.topFace.at(0), geometry.topFace.at(1));
+        p.setPen(QPen(QColor(255, 255, 255, 165), 1.0));
+        p.drawLine(geometry.topFace.at(0), geometry.topFace.at(3));
+        p.setPen(QPen(QColor(255, 255, 255, 85), 1.0));
+        p.drawLine(geometry.topFace.at(1), geometry.topFace.at(2));
+
+        p.save();
+        QPainterPath clip;
+        clip.addPolygon(geometry.topFace);
+        clip.closeSubpath();
+        p.setClipPath(clip);
+        p.setPen(QPen(QColor(255, 255, 255, 45), 10.0));
+        p.drawLine(
+                    QPointF(geometry.topFace.at(3).x()
+                            + geometry.bottomWidth * 0.10,
+                            geometry.bottomY),
+                    QPointF(geometry.topFace.at(0).x()
+                            + geometry.bottomWidth * 0.45,
+                            geometry.topY));
+        p.setPen(QPen(QColor(255, 255, 255, 30), 4.0));
+        p.drawLine(
+                    QPointF(geometry.topFace.at(3).x()
+                            + geometry.bottomWidth * 0.42,
+                            geometry.bottomY),
+                    QPointF(geometry.topFace.at(0).x()
+                            + geometry.bottomWidth * 0.70,
+                            geometry.topY));
+        p.restore();
+
+        const int rows = SampleTrayModel::RowsPerTray;
+        const int columns = SampleTrayModel::ColumnsPerTray;
+
+        // 行号/列号
+        QFont headerFont(QStringLiteral("Microsoft YaHei"));
+        headerFont.setPixelSize(8);
+        p.setFont(headerFont);
+        p.setPen(QColor("#7A8FA3"));
+        const qreal marginU = 0.11;
+        const qreal marginV = 0.09;
+        for (int column = 0; column < columns; ++column) {
+            const qreal u = marginU
+                    + (1.0 - 2.0 * marginU)
+                      * (columns > 1
+                         ? qreal(column) / (columns - 1) : 0.5);
+            const QPointF topPoint = lerpPoint(
+                        geometry.topFace.at(0),
+                        geometry.topFace.at(1), u);
+            p.drawText(QRectF(topPoint.x() - 10.0,
+                              geometry.topY - 14.0, 20.0, 12.0),
+                       Qt::AlignCenter, QString::number(column + 1));
+        }
+        for (int row = 0; row < rows; ++row) {
+            const qreal v = marginV
+                    + (1.0 - 2.0 * marginV)
+                      * (rows > 1 ? qreal(row) / (rows - 1) : 0.5);
+            const QPointF leftPoint = lerpPoint(
+                        geometry.topFace.at(0),
+                        geometry.topFace.at(3), v);
+            p.drawText(QRectF(leftPoint.x() - 22.0,
+                              leftPoint.y() - 6.0, 18.0, 12.0),
+                       Qt::AlignRight | Qt::AlignVCenter,
+                       QString::number(row + 1));
+        }
+
+        QFont numberFont(QStringLiteral("Microsoft YaHei"));
+        numberFont.setPixelSize(7);
+
+        for (int row = 0; row < rows; ++row) {
+            for (int column = 0; column < columns; ++column) {
+                const int localIndex = row * columns + column;
+                const QPointF center = geometry.centers.at(localIndex);
+                const qreal rx = geometry.radiusX.at(localIndex);
+                const qreal ry = geometry.radiusY.at(localIndex);
+                const int tubeIndex = SampleTrayModel::tubeIndex(
+                            m_trayIndex, row, column);
+                if (tubeIndex < 0) {
+                    continue;
+                }
+
+                const SampleTrayModel::TubeInfo info =
+                        m_model->tubeInfo(tubeIndex);
+                const bool hasCup = stateHasCup(info.state);
+                const bool hovered = tubeIndex == m_hoverIndex;
+
+                paintHoleBase(p, center, rx, ry, info.state,
+                              hovered, hasCup);
+                if (hasCup) {
+                    paintCup(p, center, rx, ry, info.state, hovered);
+                }
+
+                p.setFont(numberFont);
+                p.setPen(hasCup ? stateTextColor(info.state)
+                                : QColor("#E8F4FA"));
+                p.drawText(QRectF(center.x() - rx, center.y() - ry,
+                                  rx * 2.0, ry * 2.0),
+                           Qt::AlignCenter, QString::number(tubeIndex));
+            }
+        }
+    }
+
+    void paintHoleBase(QPainter &p, const QPointF &center,
+                       qreal rx, qreal ry,
+                       SampleTrayModel::TubeState state,
+                       bool hovered, bool hasCup) const
+    {
+        if (hovered) {
+            QRadialGradient glow(center, qMax<qreal>(12.0, rx * 2.2));
+            glow.setColorAt(0.0, QColor(44, 123, 191, 95));
+            glow.setColorAt(0.65, QColor(44, 123, 191, 35));
+            glow.setColorAt(1.0, QColor(44, 123, 191, 0));
+            p.setPen(Qt::NoPen);
+            p.setBrush(glow);
+            p.drawEllipse(center, rx * 1.75, ry * 1.95);
+        }
+
+        p.setPen(QPen(hovered ? QColor("#2C7BBF")
+                              : QColor(150, 192, 216, 235),
+                      hovered ? 1.8 : 1.1));
+        p.setBrush(QColor(232, 246, 252, 170));
+        p.drawEllipse(center, rx, ry);
+
+        const QPointF inner = center + QPointF(0.0, ry * 0.12);
+        QRadialGradient depth(inner, qMax<qreal>(8.0, rx));
+        depth.setColorAt(0.0, QColor(46, 70, 84, 150));
+        depth.setColorAt(0.60, QColor(100, 132, 149, 95));
+        depth.setColorAt(1.0, QColor(205, 230, 243, 55));
+        p.setPen(Qt::NoPen);
+        p.setBrush(depth);
+        p.drawEllipse(inner, rx * 0.80, ry * 0.78);
+
+        p.setPen(QPen(QColor(255, 255, 255, 220), 1.0));
+        p.setBrush(Qt::NoBrush);
+        p.drawArc(QRectF(center.x() - rx, center.y() - ry,
+                         rx * 2.0, ry * 2.0),
+                  35 * 16, 110 * 16);
+
+        if (!hasCup) {
+            QColor tint = cupMouthColor(state);
+            tint.setAlpha(195);
+            p.setPen(QPen(tint, 1.8));
+            p.drawEllipse(center, rx * 0.86, ry * 0.84);
+
+            // 只加很淡的状态色，让孔内保持“空孔”的深色透明感
+            QColor tintFill = cupMouthColor(state);
+            tintFill.setAlpha(35);
+            p.setPen(Qt::NoPen);
+            p.setBrush(tintFill);
+            p.drawEllipse(inner, rx * 0.72, ry * 0.70);
+        }
+    }
+
+    void paintCup(QPainter &p, const QPointF &center,
+                  qreal rx, qreal ry,
+                  SampleTrayModel::TubeState state, bool hovered) const
+    {
+        Q_UNUSED(hovered);
+        const qreal halfWidth = rx * 0.64;
+        const qreal mouthRadiusY = ry * 0.78;
+        const qreal bodyBottom = center.y() + ry * 1.45;
+        const qreal bottomRadiusY = mouthRadiusY * 0.85;
+
+        QPainterPath body;
+        body.moveTo(center.x() - halfWidth, center.y());
+        body.lineTo(center.x() - halfWidth, bodyBottom);
+        body.arcTo(QRectF(center.x() - halfWidth,
+                          bodyBottom - bottomRadiusY,
+                          halfWidth * 2.0, bottomRadiusY * 2.0),
+                   180.0, -180.0);
+        body.lineTo(center.x() + halfWidth, center.y());
+        body.closeSubpath();
+
+        QLinearGradient glass(center.x() - halfWidth, 0.0,
+                              center.x() + halfWidth, 0.0);
+        glass.setColorAt(0.0, QColor(255, 255, 255, 225));
+        glass.setColorAt(0.18, QColor(234, 248, 254, 185));
+        glass.setColorAt(0.55, QColor(252, 255, 255, 120));
+        glass.setColorAt(0.82, QColor(205, 234, 247, 150));
+        glass.setColorAt(1.0, QColor(176, 214, 235, 200));
+        p.setPen(QPen(QColor(151, 199, 224, 220), 1.0));
+        p.setBrush(glass);
+        p.drawPath(body);
+
+        const QPointF bottomCenter(center.x(), bodyBottom);
+        QRadialGradient bottomGradient(
+                    bottomCenter + QPointF(0.0, bottomRadiusY * 0.3),
+                    qMax<qreal>(6.0, halfWidth));
+        bottomGradient.setColorAt(0.0, QColor(235, 249, 255, 210));
+        bottomGradient.setColorAt(0.70, QColor(205, 233, 247, 160));
+        bottomGradient.setColorAt(1.0, QColor(170, 209, 231, 110));
+        p.setPen(QPen(QColor(150, 198, 224, 170), 0.8));
+        p.setBrush(bottomGradient);
+        p.drawEllipse(bottomCenter, halfWidth * 0.88,
+                      bottomRadiusY * 0.82);
+
+        paintStirBar(p, bottomCenter, halfWidth * 1.05,
+                     qMax<qreal>(2.2, halfWidth * 0.16));
+
+        p.setPen(QPen(QColor(255, 255, 255, 180), 1.4));
+        p.setBrush(Qt::NoBrush);
+        p.drawLine(QPointF(center.x() - halfWidth * 0.62,
+                           center.y() + mouthRadiusY * 0.4),
+                   QPointF(center.x() - halfWidth * 0.62,
+                           bodyBottom - bottomRadiusY * 0.8));
+
+        const QRectF mouth(center.x() - halfWidth,
+                           center.y() - mouthRadiusY,
+                           halfWidth * 2.0, mouthRadiusY * 2.0);
+        const QColor marker = cupMouthColor(state);
+        QColor mouthFill(255, 255, 255, 45);
+        if (state == SampleTrayModel::TubeState::Allocated) {
+            mouthFill = QColor(255, 215, 110, 85);
+        }
+        p.setPen(QPen(marker,
+                      state == SampleTrayModel::TubeState::Allocated
+                      ? 2.3 : 1.3));
+        p.setBrush(mouthFill);
+        p.drawEllipse(mouth);
+
+        p.setPen(QPen(QColor(255, 255, 255, 210), 0.8));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(mouth.adjusted(1.6, 1.0, -1.6, -1.0));
+
+        p.setPen(QPen(QColor(255, 255, 255, 235), 1.2));
+        p.drawArc(mouth.adjusted(2.0, 1.5, -2.0, -1.5),
+                  38 * 16, 105 * 16);
+
+        if (state == SampleTrayModel::TubeState::Allocated) {
+            QColor glow = marker;
+            glow.setAlpha(60);
+            p.setPen(QPen(glow, 5.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(mouth.adjusted(-2.0, -1.5, 2.0, 1.5));
+        }
+    }
+
+    void paintStirBar(QPainter &p, const QPointF &center,
+                      qreal length, qreal thickness) const
+    {
+        p.save();
+        p.translate(center);
+        p.scale(1.0, 0.45);
+        p.rotate(-14.0);
+
+        const QRectF bar(-length / 2.0, -thickness / 2.0,
+                         length, thickness);
+        QLinearGradient gradient(bar.topLeft(), bar.bottomLeft());
+        gradient.setColorAt(0.0, QColor("#C9D5DD"));
+        gradient.setColorAt(0.45, QColor("#6F8290"));
+        gradient.setColorAt(1.0, QColor("#33414C"));
+        p.setPen(QPen(QColor("#27323A"), 0.7));
+        p.setBrush(gradient);
+        p.drawRoundedRect(bar, thickness / 2.0, thickness / 2.0);
+
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor("#253039"));
+        p.drawEllipse(QPointF(-length / 2.0 + thickness * 0.32, 0.0),
+                      thickness * 0.32, thickness * 0.32);
+        p.drawEllipse(QPointF(length / 2.0 - thickness * 0.32, 0.0),
+                      thickness * 0.32, thickness * 0.32);
+        p.restore();
     }
 
     int tubeAt(const QPoint &pos) const
@@ -328,17 +657,32 @@ private:
         if (!m_active) {
             return -1;
         }
-        const QRectF grid = gridRect();
-        if (!grid.contains(QPointF(pos))) {
+        const RackGeometry geometry = rackGeometry();
+        if (!geometry.valid()) {
             return -1;
         }
-        const qreal cellWidth = grid.width() / SampleTrayModel::ColumnsPerTray;
-        const qreal cellHeight = grid.height() / SampleTrayModel::RowsPerTray;
-        if (cellWidth <= 1.0 || cellHeight <= 1.0) {
+
+        int best = -1;
+        qreal bestScore = 1.0;
+        for (int i = 0; i < geometry.centers.size(); ++i) {
+            const qreal rx = geometry.radiusX.at(i);
+            const qreal ry = geometry.radiusY.at(i);
+            const qreal dx = (pos.x() - geometry.centers.at(i).x())
+                    / (rx * 1.5);
+            const qreal dy = (pos.y() - (geometry.centers.at(i).y()
+                                         + ry * 0.5))
+                    / (ry * 1.9);
+            const qreal score = dx * dx + dy * dy;
+            if (score <= 1.0 && score < bestScore) {
+                bestScore = score;
+                best = i;
+            }
+        }
+        if (best < 0) {
             return -1;
         }
-        const int column = int((pos.x() - grid.left()) / cellWidth);
-        const int row = int((pos.y() - grid.top()) / cellHeight);
+        const int row = best / SampleTrayModel::ColumnsPerTray;
+        const int column = best % SampleTrayModel::ColumnsPerTray;
         return SampleTrayModel::tubeIndex(m_trayIndex, row, column);
     }
 
@@ -468,10 +812,13 @@ TubeTrayDialog::TubeTrayDialog(SampleTrayModel *model, QWidget *parent)
     root->addWidget(m_tabs, 1);
 
     auto *legend = new QLabel(
-                tr("<span style='color:#6B8194;'>■</span> 空闲&nbsp;&nbsp;"
-                   "<span style='color:#966A16;'>■</span> 分配&nbsp;&nbsp;"
-                   "<span style='color:#1F6FA5;'>■</span> 已加样&nbsp;&nbsp;"
-                   "<span style='color:#1E7B45;'>■</span> 已使用"),
+                tr("<span style='color:#6B8194;'>○</span> 空闲（透明杯）"
+                   "&nbsp;&nbsp;<span style='color:#E0A21A;'>●</span> "
+                   "分配（杯口标记）"
+                   "&nbsp;&nbsp;<span style='color:#1F6FA5;'>○</span> "
+                   "已加样（孔内无杯）"
+                   "&nbsp;&nbsp;<span style='color:#1E7B45;'>○</span> "
+                   "已使用（孔内无杯）"),
                 content);
     legend->setObjectName(QStringLiteral("trayLegend"));
     legend->setTextFormat(Qt::RichText);
