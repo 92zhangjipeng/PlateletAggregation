@@ -44,7 +44,8 @@ SOURCES += \
     coordinatemaintenancewidget.cpp \
     applogger.cpp \
     motionprotocol.cpp \
-    motioncontroller.cpp
+    motioncontroller.cpp \
+    coordinateverificationcontroller.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -70,6 +71,7 @@ HEADERS += \
     applogger.h \
     motionprotocol.h \
     motioncontroller.h \
+    coordinateverificationcontroller.h \
     SerialPortManager.h \
     ModuleAdPoller.h \
     mainboardpoller.h \

@@ -7,6 +7,7 @@
 #include "settingsdialog.h"
 #include "CommunicationWorker.h"
 #include "coordinatefileio.h"
+#include "coordinateverificationcontroller.h"
 #include "motioncontroller.h"
 #include "AppIcon.h"
 #include "CustomTitleBar.h"
@@ -673,6 +674,30 @@ MainWindow::MainWindow(QWidget *parent)
     }
     // 单动作运动控制接口；通讯线程创建后绑定 CommunicationWorker。
     m_motionController = new platelet::MotionController(this);
+
+    // 坐标维护「触发移动」：先复位三个 Z 轴，收到全部完成回执后才允许 XY。
+    m_verificationController = new CoordinateVerificationController(this);
+    m_verificationController->setProtocol(&m_motionController->protocol());
+    connect(m_motionController, &platelet::MotionController::reportReceived,
+            m_verificationController,
+            &CoordinateVerificationController::handleReport);
+    connect(m_verificationController,
+            &CoordinateVerificationController::sendRequested,
+            m_motionController, &platelet::MotionController::sendCommand);
+    connect(m_verificationController,
+            &CoordinateVerificationController::statusChanged,
+            this, [this](const QString &status) {
+        showActionHint(status);
+    });
+    connect(m_verificationController,
+            &CoordinateVerificationController::finished,
+            this, [this](bool ok, const QString &message) {
+        showActionHint(message);
+        if (!ok) {
+            QMessageBox::warning(this, tr("定位校验"), message);
+        }
+    });
+
     createResultTabs();
     createEmptyPlaceholderTabs();
 
@@ -1366,6 +1391,9 @@ void MainWindow::createSettingsTab()
     m_settingsDialog = new SettingsDialog(m_commWorker,
                                           &m_instrumentCoordinates,
                                           m_mainTabs, m_machineModel);
+    connect(m_settingsDialog, &SettingsDialog::coordinateMotionRequested,
+            m_verificationController,
+            &CoordinateVerificationController::start);
     connect(m_settingsDialog, &SettingsDialog::channelEnabledChanged,
             this, [this](int globalChannel, bool enabled) {
         if (!m_moduleOverview) {

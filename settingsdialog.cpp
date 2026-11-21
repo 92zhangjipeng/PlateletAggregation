@@ -1406,6 +1406,9 @@ QWidget *SettingsDialog::createCoordinatePage()
     layout->addWidget(subtitle);
 
     m_coordinateWidget = new CoordinateMaintenanceWidget(m_coordinates, page);
+    connect(m_coordinateWidget,
+            &CoordinateMaintenanceWidget::motionRequested,
+            this, &SettingsDialog::coordinateMotionRequested);
     layout->addWidget(m_coordinateWidget, 1);
 
     return page;

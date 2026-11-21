@@ -34,6 +34,7 @@
 | `applogger.h/.cpp` | 应用日志：按天写文件，保留 15 天，接管 qDebug/qInfo/qWarning 等 |
 | `motionprotocol.h/.cpp` | 运动协议 0x17：15 字节帧构帧/解帧（单动作） |
 | `motioncontroller.h/.cpp` | 单动作运动发送接口：XY/抓手/试剂针/样本针/血样泵/试剂泵/复位 |
+| `coordinateverificationcontroller.h/.cpp` | 定位校验流程：三个 Z 复位完成门禁 → XY 移动 → 目标 Z 下降 |
 | `resultstablewidget.h/.cpp` | 自绘测试结果表格：表头、斑马纹、网格线、行点击 |
 | `resultsinfowidget.h/.cpp` | 结果信息标签页：最近测试结果自绘表格 + 刷新 |
 | `querywidget.h/.cpp` | 查询标签页：按样本号/患者姓名过滤测试结果 |
@@ -467,17 +468,21 @@ Z 值为该工具在这个 XY 位置的下降高度；如果下位机使用相�
 - `xyValid` / `zValid` 为 `false` 时对应坐标不生效；导入会先清空全部内存坐标；
 - 导出只写入当前机型下已设置过坐标的工位，文件可在同机型设备间复制使用。
 
-### 定位校验（UI 骨架）
+### 定位校验（先复位 Z 再动 XY）
 
 坐标维护页左侧树下方提供「定位校验」区：
 
 - 工具下拉框：抓手 / 试剂针 / 样本针；
 - 目标显示当前树选中位置，X/Y/Z 来自 `locate(kind, index, axis)`；
-- 「触发移动」要求 XY 和 Z 都已设置，点击后只生成
-  `InstrumentCoordinates::MoveTarget` 并发出 `motionRequested` 信号，
-  同时反馈“尚未下发到仪器”；
-- 单动作发送接口已由 `MotionController` 提供；后续把该信号连接过去，
-  按“先 XY 定位、再 Z 下降”组合即可，界面暂未自动下发。
+- 「触发移动」要求 XY 和 Z 都已设置，点击后由
+  `CoordinateVerificationController` 执行以下流程：
+  1. 同时下发三个 Z 轴复位命令（默认速度 100）；
+  2. **只有三个 Z 轴都收到“执行完成”报告后，才发送 XY 移动**；
+  3. XY 收到“执行完成”后，再让所选工具下降到目标 Z；
+- 任何一步收到错误/故障码或超时（Z 复位 20s、XY 30s、Z 下降 30s）
+  都会立即中止；Z 轴未全部复位时绝不会发送 XY；
+- 进度显示在底部状态栏，失败时弹窗提示；完成后工具停在目标 Z 不自动抬起，
+  下次触发会重新先复位三个 Z 轴。
 
 ## 运动控制接口（单动作）
 
@@ -527,7 +532,9 @@ motion->resetBloodPump();               // 默认速度 2160
   仪器报告帧看 `reportReceived`；组合动作（先 XY、再下针、再泵等）
   后续在流程层组合这些方法；
 - 所有命令走现有通讯线程 `CommunicationWorker::sendFrameRequested`，
-  不在 GUI 线程直接操作串口。
+  不在 GUI 线程直接操作串口；
+- 坐标维护页的定位校验由 `CoordinateVerificationController` 串行驱动：
+  三个 Z 复位全部完成回执后才发 XY，XY 到位后才下针。
 
 ## 结果信息与查询
 

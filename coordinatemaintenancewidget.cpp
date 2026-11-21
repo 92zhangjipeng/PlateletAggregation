@@ -315,12 +315,14 @@ void CoordinateMaintenanceWidget::buildUi()
     m_verifyButton->setObjectName(QStringLiteral("coordPrimary"));
     m_verifyButton->setCursor(Qt::PointingHandCursor);
     m_verifyButton->setToolTip(
-                tr("生成当前目标 + 工具的运动目标；尚未连接到运动控制接口"));
+                tr("先复位三个 Z 轴，收到全部完成回执后再移动 XY，"
+                   "最后下降到目标 Z"));
     verifyControlRow->addWidget(m_verifyButton);
     verifyLayout->addLayout(verifyControlRow);
 
     m_verifyHintLabel = new QLabel(
-                tr("定位校验暂只计算目标位置，尚未连接到运动控制接口。"),
+                tr("触发后先复位三个 Z 轴；全部完成回执后才移动 XY，"
+                   "最后让所选工具下降到目标 Z。"),
                 m_verifyPanel);
     m_verifyHintLabel->setObjectName(QStringLiteral("verifyHint"));
     m_verifyHintLabel->setWordWrap(true);
@@ -953,7 +955,7 @@ void CoordinateMaintenanceWidget::updateVerificationPanel()
     m_verifyButton->setEnabled(target.valid());
     m_verifyButton->setToolTip(
                 target.valid()
-                ? tr("生成当前目标 + 工具的运动目标；尚未连接到运动控制接口")
+                ? tr("先复位三个 Z 轴，再移动 XY，最后下降到目标 Z")
                 : tr("该工具的 XY 或 Z 尚未设置完整"));
 }
 
@@ -978,11 +980,10 @@ void CoordinateMaintenanceWidget::triggerVerificationMove()
 
     qInfo() << "定位校验请求:" << name
             << InstrumentCoordinates::zAxisName(axis)
-            << "X:" << target.x << "Y:" << target.y << "Z:" << target.z
-            << "（尚未下发到仪器）";
+            << "X:" << target.x << "Y:" << target.y << "Z:" << target.z;
     setFeedback(
-                tr("已生成运动目标：%1 · %2 → X %3, Y %4, Z %5；"
-                   "尚未下发到仪器")
+                tr("已提交定位校验请求：%1 · %2 → X %3, Y %4, Z %5；"
+                   "正在复位 Z 轴…")
                 .arg(name, InstrumentCoordinates::zAxisName(axis))
                 .arg(target.x, 0, 'f', 3)
                 .arg(target.y, 0, 'f', 3)

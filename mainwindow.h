@@ -16,6 +16,7 @@
 
 class CommunicationWorker;
 class ConsumablesDialog;
+class CoordinateVerificationController;
 class CustomTitleBar;
 class MainBoardStatusIconBar;
 class ModuleOverviewWidget;
@@ -208,6 +209,7 @@ private:
     QueryWidget *m_queryWidget = nullptr;
     TestDataStore *m_testDataStore = nullptr;
     platelet::MotionController *m_motionController = nullptr;
+    CoordinateVerificationController *m_verificationController = nullptr;
     SampleTrayModel *m_trayModel = nullptr;
     TubeTrayDialog *m_tubeTrayDialog = nullptr;
     MainBoardStatus m_latestMainboardStatus;
