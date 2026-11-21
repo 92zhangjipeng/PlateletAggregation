@@ -37,13 +37,6 @@ void PerfusionController::setCleaningTimeMs(int ms)
     }
 }
 
-void PerfusionController::setWashDownHeightMm(int mm)
-{
-    if (mm > 0) {
-        m_washDownHeightMm = mm;
-    }
-}
-
 void PerfusionController::setStageTimeouts(int zResetMs, int xyMs,
                                            int zMoveMs, int pumpMs,
                                            int pumpCleanMs)
@@ -156,12 +149,18 @@ bool PerfusionController::buildSequence(QString *error)
             m_coordinates->locateOrigin(ZAxis::SampleNeedle);
     const InstrumentCoordinates::MoveTarget reagentOrigin =
             m_coordinates->locateOrigin(ZAxis::ReagentNeedle);
-    if (!sampleOrigin.xyValid || !reagentOrigin.xyValid) {
+    if (!sampleOrigin.valid() || !reagentOrigin.valid()) {
         if (error) {
-            *error = tr("原点坐标的样本针/试剂针 XY 未设置，无法执行开机灌注");
+            *error = tr("原点坐标的样本针/试剂针 XY 或下降高度 Z 未设置，"
+                        "无法执行开机灌注");
         }
         return false;
     }
+
+    // 灌注下针高度使用坐标表「原点」里各工具自己的下降高度 Z，
+    // 由维护人员现场调整；不再使用固定值。
+    const int sampleDown = qRound(sampleOrigin.z);
+    const int reagentDown = qRound(reagentOrigin.z);
 
     constexpr quint8 kZAxis = MotionProtocol::ZAxisBoard;
     constexpr quint8 kMainBoard = MotionProtocol::MainBoard;
@@ -202,9 +201,8 @@ bool PerfusionController::buildSequence(QString *error)
     }
 
     // 3. 样本针 + 大泵：排空 → 吸 60% → 下针排空清洗 → 回吸空气
-    if (!add(m_protocol->moveSampleNeedleTo(m_washDownHeightMm, Area::Test,
-                                            false),
-             tr("灌注：样本针下到清洗高度"),
+    if (!add(m_protocol->moveSampleNeedleTo(sampleDown, Area::Test, false),
+             tr("灌注：样本针下到 Z=%1").arg(sampleDown),
              kZAxis, Axis::SampleNeedle, m_zMoveTimeoutMs)
             || !add(m_protocol->moveBloodPump(0, false),
                     tr("灌注：血样泵排空"),
@@ -215,9 +213,9 @@ bool PerfusionController::buildSequence(QString *error)
             || !add(m_protocol->moveBloodPump(kInitialFill, true),
                     tr("灌注：血样泵吸满 60%"),
                     kMainBoard, Axis::BloodPump, m_pumpTimeoutMs)
-            || !add(m_protocol->moveSampleNeedleTo(m_washDownHeightMm,
-                                                   Area::Test, false),
-                    tr("灌注：样本针下到清洗高度"),
+            || !add(m_protocol->moveSampleNeedleTo(sampleDown, Area::Test,
+                                                   false),
+                    tr("灌注：样本针下到 Z=%1").arg(sampleDown),
                     kZAxis, Axis::SampleNeedle, m_zMoveTimeoutMs)
             || !add(m_protocol->moveBloodPump(0, false, true,
                                               m_cleaningTimeMs),
@@ -238,9 +236,9 @@ bool PerfusionController::buildSequence(QString *error)
                                 Reference::ReagentNeedle, Area::Test),
              tr("灌注：XY 到试剂针原点"),
              kMainBoard, Axis::Xy, m_xyTimeoutMs)
-            || !add(m_protocol->moveReagentNeedleTo(m_washDownHeightMm,
+            || !add(m_protocol->moveReagentNeedleTo(reagentDown,
                                                     Area::Test, false),
-                    tr("灌注：试剂针下到清洗高度"),
+                    tr("灌注：试剂针下到 Z=%1").arg(reagentDown),
                     kZAxis, Axis::ReagentNeedle, m_zMoveTimeoutMs)
             || !add(m_protocol->moveReagentPump(0, false),
                     tr("灌注：试剂泵排空"),
@@ -252,9 +250,9 @@ bool PerfusionController::buildSequence(QString *error)
                                                 true),
                     tr("灌注：试剂泵吸满"),
                     kMainBoard, Axis::ReagentPump, m_pumpTimeoutMs)
-            || !add(m_protocol->moveReagentNeedleTo(m_washDownHeightMm,
+            || !add(m_protocol->moveReagentNeedleTo(reagentDown,
                                                     Area::Test, false),
-                    tr("灌注：试剂针下到清洗高度"),
+                    tr("灌注：试剂针下到 Z=%1").arg(reagentDown),
                     kZAxis, Axis::ReagentNeedle, m_zMoveTimeoutMs)
             || !add(m_protocol->moveReagentPump(0, false, true,
                                                 m_cleaningTimeMs),

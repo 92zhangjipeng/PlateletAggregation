@@ -43,8 +43,6 @@ public:
 
     /** 泵清洗时间，默认 6000ms（老软件 Config.ini 的 WashesTime） */
     void setCleaningTimeMs(int ms);
-    /** 开机清洗下针高度，默认 40mm */
-    void setWashDownHeightMm(int mm);
 
     /** 各阶段超时，默认 Z 复位 20s、XY 30s、Z 30s、泵 30s、带清洗泵 45s */
     void setStageTimeouts(int zResetMs, int xyMs, int zMoveMs,
@@ -93,7 +91,6 @@ private:
     bool m_busy = false;
 
     int m_cleaningTimeMs = 6000;
-    int m_washDownHeightMm = 40;
     int m_zResetTimeoutMs = 20000;
     int m_xyTimeoutMs = 30000;
     int m_zMoveTimeoutMs = 30000;
