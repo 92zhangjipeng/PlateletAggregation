@@ -36,7 +36,8 @@ public:
 signals:
     /**
      * 定位校验触发：当前选中目标 + 工具已生成完整 XY/Z。
-     * 运动控制协议接入后，由外部连接到通讯层下发命令；当前只发出信号。
+     * 单动作发送接口见 MotionController；组合动作接入后，
+     * 由外部连接此信号按“先 XY、再 Z”下发。
      */
     void motionRequested(const InstrumentCoordinates::MoveTarget &target);
 

@@ -7,6 +7,7 @@
 #include "settingsdialog.h"
 #include "CommunicationWorker.h"
 #include "coordinatefileio.h"
+#include "motioncontroller.h"
 #include "AppIcon.h"
 #include "CustomTitleBar.h"
 #include "FramelessWindowSupport.h"
@@ -670,6 +671,8 @@ MainWindow::MainWindow(QWidget *parent)
     if (!m_testDataStore->open(&databaseError)) {
         qWarning() << "TestDataStore open failed:" << databaseError;
     }
+    // 单动作运动控制接口；通讯线程创建后绑定 CommunicationWorker。
+    m_motionController = new platelet::MotionController(this);
     createResultTabs();
     createEmptyPlaceholderTabs();
 
@@ -2382,6 +2385,9 @@ void MainWindow::setupCommunicationThread()
     m_commThread = new QThread(this);
     m_commWorker = new CommunicationWorker;
     m_commWorker->moveToThread(m_commThread);
+    if (m_motionController) {
+        m_motionController->setCommunicationWorker(m_commWorker);
+    }
 
     connect(m_commThread, &QThread::started,
             m_commWorker, &CommunicationWorker::startCommunication);
@@ -2838,6 +2844,11 @@ SampleTrayModel *MainWindow::trayModel() const
 InstrumentCoordinates *MainWindow::instrumentCoordinates()
 {
     return &m_instrumentCoordinates;
+}
+
+platelet::MotionController *MainWindow::motionController() const
+{
+    return m_motionController;
 }
 
 void MainWindow::loadInstrumentCoordinates()

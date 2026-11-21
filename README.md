@@ -32,6 +32,8 @@
 | `instrumentcoordinates.h/.cpp` | 仪器坐标表：原点/清洗孔/弃杯孔/通道/试管/试剂位/样本孔的 XY 与 3 个 Z 轴高度 |
 | `coordinatefileio.h/.cpp` | 坐标 JSON 读写：导出/导入工位坐标，提供启动自动恢复的默认坐标文件 |
 | `applogger.h/.cpp` | 应用日志：按天写文件，保留 15 天，接管 qDebug/qInfo/qWarning 等 |
+| `motionprotocol.h/.cpp` | 运动协议 0x17：15 字节帧构帧/解帧（单动作） |
+| `motioncontroller.h/.cpp` | 单动作运动发送接口：XY/抓手/试剂针/样本针/血样泵/试剂泵/复位 |
 | `resultstablewidget.h/.cpp` | 自绘测试结果表格：表头、斑马纹、网格线、行点击 |
 | `resultsinfowidget.h/.cpp` | 结果信息标签页：最近测试结果自绘表格 + 刷新 |
 | `querywidget.h/.cpp` | 查询标签页：按样本号/患者姓名过滤测试结果 |
@@ -473,10 +475,59 @@ Z 值为该工具在这个 XY 位置的下降高度；如果下位机使用相�
 - 目标显示当前树选中位置，X/Y/Z 来自 `locate(kind, index, axis)`；
 - 「触发移动」要求 XY 和 Z 都已设置，点击后只生成
   `InstrumentCoordinates::MoveTarget` 并发出 `motionRequested` 信号，
-  同时反馈“运动协议未接入，未下发”；
-- 运动控制协议接入后，把 `motionRequested` 连接到通讯层，按“先 XY 定位、
-  到位后 Z 下降”的顺序下发即可；协议需要定义命令帧、速度、到位/错误应答、
-  超时和急停。
+  同时反馈“尚未下发到仪器”；
+- 单动作发送接口已由 `MotionController` 提供；后续把该信号连接过去，
+  按“先 XY 定位、再 Z 下降”组合即可，界面暂未自动下发。
+
+## 运动控制接口（单动作）
+
+`motionprotocol.h/.cpp` 负责功能码 0x17 的 15 字节帧构帧/解帧，
+`motioncontroller.h/.cpp` 负责把命令排队到通讯线程发送。
+主窗口通过 `window.motionController()` 取接口。
+
+```cpp
+auto *motion = window.motionController();
+
+// XY 联动移动到坐标表里的抓手位置 (100, 200)
+motion->moveXy(100, 200, MotionProtocol::XyReference::Gripper);
+
+// 单轴下降
+motion->moveGripperTo(20);
+motion->moveReagentNeedleTo(35, MotionProtocol::Area::Test, true);
+motion->moveSampleNeedleTo(42);
+
+// 复位
+motion->resetXy();               // 默认速度 720
+motion->resetGripper();          // 默认速度 100
+motion->resetSampleNeedle();
+
+// 血样泵（1000ul）/试剂泵（100ul），行程 0~7200
+motion->moveBloodPump(7200, true);      // 吸样
+motion->moveReagentPump(3600, false);   // 吐样
+motion->resetBloodPump();               // 默认速度 2160
+```
+
+协议要点：
+
+| 轴号 | 含义 | 从机地址 |
+|------|------|----------|
+| 0 | Z1 抓手 | 0x04 |
+| 1 | Z2 试剂针 | 0x04 |
+| 2 | Z3 样本针；发到主控板时同一轴号为 1000ul 血样泵 | 0x04 / 0x05 |
+| 3 | 100ul 试剂泵 | 0x05 |
+| 4 | XY 联动 | 0x05 |
+
+- 帧长固定 15 字节，功能码 0x17，命令编号 1~255 自动轮转；
+- ctrl 字节：axis(bit7~5) | operation_mode(bit4~3) |
+  cmd_status(bit2~1) | type(bit0)；
+- 4 字节距离为小端有符号整数；XY/Z 与坐标表同为整数 mm，
+  柱塞泵行程 0~7200；
+- `cmd_size` 默认 0，与旧上位机一致；
+- 单动作只负责发送，不等待执行完成；发送结果看 `commandSent`，
+  仪器报告帧看 `reportReceived`；组合动作（先 XY、再下针、再泵等）
+  后续在流程层组合这些方法；
+- 所有命令走现有通讯线程 `CommunicationWorker::sendFrameRequested`，
+  不在 GUI 线程直接操作串口。
 
 ## 结果信息与查询
 

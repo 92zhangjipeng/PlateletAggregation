@@ -33,6 +33,10 @@ class QLineEdit;
 class QPushButton;
 class QShowEvent;
 class QStackedWidget;
+
+namespace platelet {
+class MotionController;
+}
 class QTabWidget;
 class QThread;
 class QTimer;
@@ -78,6 +82,8 @@ public:
     SampleTrayModel *trayModel() const;
     /** 仪器坐标内存表（原点/清洗孔/通道/试管/试剂位/样本孔） */
     InstrumentCoordinates *instrumentCoordinates();
+    /** 单动作运动控制接口（XY/抓手/试剂针/样本针/血样泵/试剂泵） */
+    platelet::MotionController *motionController() const;
 
 private slots:
     void handleLogin();
@@ -201,6 +207,7 @@ private:
     ResultsInfoWidget *m_resultsInfoWidget = nullptr;
     QueryWidget *m_queryWidget = nullptr;
     TestDataStore *m_testDataStore = nullptr;
+    platelet::MotionController *m_motionController = nullptr;
     SampleTrayModel *m_trayModel = nullptr;
     TubeTrayDialog *m_tubeTrayDialog = nullptr;
     MainBoardStatus m_latestMainboardStatus;

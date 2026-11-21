@@ -315,12 +315,12 @@ void CoordinateMaintenanceWidget::buildUi()
     m_verifyButton->setObjectName(QStringLiteral("coordPrimary"));
     m_verifyButton->setCursor(Qt::PointingHandCursor);
     m_verifyButton->setToolTip(
-                tr("生成当前目标 + 工具的运动目标；运动协议未接入前不会下发"));
+                tr("生成当前目标 + 工具的运动目标；尚未连接到运动控制接口"));
     verifyControlRow->addWidget(m_verifyButton);
     verifyLayout->addLayout(verifyControlRow);
 
     m_verifyHintLabel = new QLabel(
-                tr("运动控制协议未接入：点击只计算目标位置，不会驱动仪器。"),
+                tr("定位校验暂只计算目标位置，尚未连接到运动控制接口。"),
                 m_verifyPanel);
     m_verifyHintLabel->setObjectName(QStringLiteral("verifyHint"));
     m_verifyHintLabel->setWordWrap(true);
@@ -953,7 +953,7 @@ void CoordinateMaintenanceWidget::updateVerificationPanel()
     m_verifyButton->setEnabled(target.valid());
     m_verifyButton->setToolTip(
                 target.valid()
-                ? tr("生成当前目标 + 工具的运动目标；运动协议未接入前不会下发")
+                ? tr("生成当前目标 + 工具的运动目标；尚未连接到运动控制接口")
                 : tr("该工具的 XY 或 Z 尚未设置完整"));
 }
 
@@ -979,10 +979,10 @@ void CoordinateMaintenanceWidget::triggerVerificationMove()
     qInfo() << "定位校验请求:" << name
             << InstrumentCoordinates::zAxisName(axis)
             << "X:" << target.x << "Y:" << target.y << "Z:" << target.z
-            << "（运动协议未接入，未下发）";
+            << "（尚未下发到仪器）";
     setFeedback(
                 tr("已生成运动目标：%1 · %2 → X %3, Y %4, Z %5；"
-                   "运动协议未接入，未下发")
+                   "尚未下发到仪器")
                 .arg(name, InstrumentCoordinates::zAxisName(axis))
                 .arg(target.x, 0, 'f', 3)
                 .arg(target.y, 0, 'f', 3)
