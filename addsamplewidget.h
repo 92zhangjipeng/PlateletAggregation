@@ -59,6 +59,8 @@ private:
     void updateSampleCount();
     void updateScanHint();
     void focusBarcodeCell(int row);
+    void modifyTestItems(int row);
+    void syncBloodAreaSamples();
 
     QStringList allPositions() const;
     QStringList positionsForRow(int row) const;

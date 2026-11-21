@@ -347,7 +347,7 @@ void CoordinateMaintenanceWidget::buildUi()
         poseGrid->addWidget(m_ySpins[axis], axis + 1, 2);
         poseGrid->addWidget(m_zSpins[axis], axis + 1, 3);
 
-        m_toolChecks[axis] = new QCheckBox(m_editorPanel);
+        m_toolChecks[axis] = new MedicalCheckBox(m_editorPanel);
         m_toolChecks[axis]->setToolTip(tr("启用该工具坐标"));
         poseGrid->addWidget(m_toolChecks[axis], axis + 1, 4,
                              Qt::AlignCenter);

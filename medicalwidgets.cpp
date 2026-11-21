@@ -5,6 +5,7 @@
 #include "medicalwidgets.h"
 
 #include <QAbstractItemView>
+#include <QFontMetrics>
 #include <QPainterPath>
 #include <QPolygonF>
 
@@ -156,6 +157,200 @@ void paintSpinButtons(QPainter &painter, const QRect &rect,
 }
 
 } // namespace medicalui
+
+MedicalCheckBox::MedicalCheckBox(QWidget *parent)
+    : QCheckBox(parent)
+{
+    setMinimumHeight(medicalui::kCheckBoxHeight);
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    setCursor(Qt::PointingHandCursor);
+
+    QPalette boxPalette = palette();
+    boxPalette.setColor(QPalette::WindowText, QColor(QStringLiteral("#3A5065")));
+    setPalette(boxPalette);
+
+    QFont boxFont = font();
+    boxFont.setFamily(QStringLiteral("Microsoft YaHei"));
+    boxFont.setPixelSize(12);
+    setFont(boxFont);
+
+    connect(this, &QCheckBox::stateChanged, this,
+            [this](int) { update(); });
+}
+
+MedicalCheckBox::MedicalCheckBox(const QString &text, QWidget *parent)
+    : MedicalCheckBox(parent)
+{
+    setText(text);
+}
+
+QSize MedicalCheckBox::sizeHint() const
+{
+    const QFontMetrics metrics(font());
+    const int textWidth = text().isEmpty() ? 0 : metrics.width(text());
+    const int gap = text().isEmpty() ? 0 : 8;
+    const int width = 2 + medicalui::kCheckIndicatorSize + gap
+            + textWidth + 4;
+    const int height = qMax(medicalui::kCheckBoxHeight,
+                            metrics.height() + 8);
+    return QSize(width, height);
+}
+
+QSize MedicalCheckBox::minimumSizeHint() const
+{
+    return sizeHint();
+}
+
+void MedicalCheckBox::paintEvent(QPaintEvent *)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+    const bool enabled = isEnabled();
+    const Qt::CheckState state = checkState();
+    const bool checked = state == Qt::Checked;
+    const bool partial = state == Qt::PartiallyChecked;
+    const bool focused = hasFocus();
+
+    const int side = medicalui::kCheckIndicatorSize;
+    const QRectF indicator(2.0, (height() - side) / 2.0, side, side);
+
+    if (focused && enabled) {
+        painter.setPen(QPen(QColor(44, 123, 191, 90), 1.4));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(indicator.adjusted(-2.5, -2.5, 2.5, 2.5),
+                                6.0, 6.0);
+    }
+
+    QColor fill = enabled ? QColor(QStringLiteral("#FFFFFF"))
+                          : QColor(QStringLiteral("#F2F5F8"));
+    QColor border = enabled ? QColor(QStringLiteral("#A9C8DF"))
+                            : QColor(QStringLiteral("#D5DEE6"));
+    if (enabled && (checked || partial)) {
+        fill = m_pressed ? QColor(QStringLiteral("#2468A3"))
+                         : (m_hovered ? QColor(QStringLiteral("#3C8BCF"))
+                                      : QColor(QStringLiteral("#2C7BBF")));
+        border = fill;
+    } else if (!enabled && (checked || partial)) {
+        fill = QColor(QStringLiteral("#B9C7D3"));
+        border = fill;
+    } else if (enabled && m_hovered) {
+        fill = QColor(QStringLiteral("#F7FBFF"));
+        border = QColor(QStringLiteral("#7FAFCF"));
+    }
+    if (enabled && focused) {
+        border = QColor(QStringLiteral("#2C7BBF"));
+    }
+
+    painter.setPen(QPen(border, focused ? 2.0 : 1.2));
+    painter.setBrush(fill);
+    painter.drawRoundedRect(indicator, 4.0, 4.0);
+
+    if (checked || partial) {
+        QPen checkPen(enabled ? QColor(QStringLiteral("#FFFFFF"))
+                              : QColor(QStringLiteral("#F7FAFC")),
+                      2.0);
+        checkPen.setCapStyle(Qt::RoundCap);
+        checkPen.setJoinStyle(Qt::RoundJoin);
+        painter.setPen(checkPen);
+        painter.setBrush(Qt::NoBrush);
+
+        if (partial) {
+            painter.drawLine(
+                        QPointF(indicator.left() + side * 0.26,
+                                indicator.center().y()),
+                        QPointF(indicator.right() - side * 0.26,
+                                indicator.center().y()));
+        } else {
+            QPainterPath check;
+            check.moveTo(indicator.left() + side * 0.24,
+                         indicator.center().y());
+            check.lineTo(indicator.left() + side * 0.44,
+                         indicator.bottom() - side * 0.26);
+            check.lineTo(indicator.right() - side * 0.20,
+                         indicator.top() + side * 0.28);
+            painter.drawPath(check);
+        }
+    }
+
+    const int textLeft = int(indicator.right()) + 8;
+    const QRect textRect(textLeft, 0, qMax(0, width() - textLeft - 2),
+                         height());
+
+    QColor textColor = enabled
+            ? palette().color(QPalette::WindowText)
+            : palette().color(QPalette::Disabled, QPalette::WindowText);
+    if (property("state").toString() == QLatin1String("disabled")) {
+        textColor = QColor(QStringLiteral("#C0392B"));
+    } else if (!enabled
+               && textColor == palette().color(QPalette::WindowText)) {
+        textColor = QColor(QStringLiteral("#9AA9B5"));
+    }
+
+    painter.setPen(textColor);
+    painter.setFont(font());
+    const QFontMetrics metrics(font());
+    const QString elided = metrics.elidedText(
+                text(), Qt::ElideRight, textRect.width());
+    painter.drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, elided);
+}
+
+void MedicalCheckBox::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && isEnabled()) {
+        m_pressed = true;
+        update();
+    }
+    QCheckBox::mousePressEvent(event);
+}
+
+void MedicalCheckBox::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (m_pressed) {
+        m_pressed = false;
+        update();
+    }
+    QCheckBox::mouseReleaseEvent(event);
+}
+
+void MedicalCheckBox::enterEvent(QEvent *event)
+{
+    m_hovered = true;
+    update();
+    QCheckBox::enterEvent(event);
+}
+
+void MedicalCheckBox::leaveEvent(QEvent *event)
+{
+    m_hovered = false;
+    m_pressed = false;
+    update();
+    QCheckBox::leaveEvent(event);
+}
+
+void MedicalCheckBox::focusInEvent(QFocusEvent *event)
+{
+    QCheckBox::focusInEvent(event);
+    update();
+}
+
+void MedicalCheckBox::focusOutEvent(QFocusEvent *event)
+{
+    QCheckBox::focusOutEvent(event);
+    update();
+}
+
+void MedicalCheckBox::changeEvent(QEvent *event)
+{
+    QCheckBox::changeEvent(event);
+    if (event->type() == QEvent::EnabledChange
+            || event->type() == QEvent::PaletteChange
+            || event->type() == QEvent::FontChange
+            || event->type() == QEvent::StyleChange) {
+        update();
+    }
+}
 
 MedicalComboBox::MedicalComboBox(QWidget *parent)
     : QComboBox(parent)

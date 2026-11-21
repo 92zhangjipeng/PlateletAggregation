@@ -824,7 +824,7 @@ QWidget *SettingsDialog::createBasicPage()
     scanRow->setSpacing(12);
     auto *scanCaption = new QLabel(tr("加样扫码"), basicGroup);
     scanCaption->setObjectName(QStringLiteral("paramCaption"));
-    auto *scanCheck = new QCheckBox(
+    auto *scanCheck = new MedicalCheckBox(
                 tr("每添加一个样本必须扫描/输入条码"), basicGroup);
     scanCheck->setObjectName(QStringLiteral("scanCheck"));
     scanCheck->setChecked(addSampleScanBarcodeEnabled());
@@ -866,7 +866,7 @@ QWidget *SettingsDialog::createBasicPage()
     channelGrid->setVerticalSpacing(6);
     const int channelCount = machineModuleCount(m_machineModel) * 4;
     for (int channel = 1; channel <= channelCount; ++channel) {
-        auto *check = new QCheckBox(basicGroup);
+        auto *check = new MedicalCheckBox(basicGroup);
         check->setObjectName(QStringLiteral("channelCheck"));
         const bool enabled = channelEnabledFromSettings(m_machineModel, channel);
         refreshChannelCheckBox(check, channel, enabled);

@@ -1,6 +1,7 @@
 #ifndef MEDICALWIDGETS_H
 #define MEDICALWIDGETS_H
 
+#include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -34,6 +35,8 @@ class QPainter;
 namespace medicalui {
 
 constexpr int kControlHeight = 32;
+constexpr int kCheckBoxHeight = 30;
+constexpr int kCheckIndicatorSize = 18;
 constexpr int kSpinButtonWidth = 22;
 
 QColor controlTextColor(bool enabled);
@@ -67,6 +70,33 @@ protected:
 
 private:
     bool m_hovered = false;
+};
+
+/** 医疗器械风格复选框：自绘方形勾选框、焦点/悬停/按下/禁用状态 */
+class MedicalCheckBox : public QCheckBox
+{
+    Q_OBJECT
+
+public:
+    explicit MedicalCheckBox(QWidget *parent = nullptr);
+    explicit MedicalCheckBox(const QString &text, QWidget *parent = nullptr);
+
+    QSize sizeHint() const override;
+    QSize minimumSizeHint() const override;
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void enterEvent(QEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+    void focusInEvent(QFocusEvent *event) override;
+    void focusOutEvent(QFocusEvent *event) override;
+    void changeEvent(QEvent *event) override;
+
+private:
+    bool m_hovered = false;
+    bool m_pressed = false;
 };
 
 /**

@@ -4,6 +4,8 @@
 
 #include "testcurvewidget.h"
 
+#include "medicalwidgets.h"
+
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QFontMetrics>
@@ -333,8 +335,8 @@ TestCurveWidget::TestCurveWidget(QWidget *parent)
     bottomLayout->setContentsMargins(2, 0, 2, 0);
     bottomLayout->setSpacing(24);
 
-    m_testCheck = new QCheckBox(tr("测试曲线"), bottomWidget);
-    m_aggregationCheck = new QCheckBox(tr("集聚曲线"), bottomWidget);
+    m_testCheck = new MedicalCheckBox(tr("测试曲线"), bottomWidget);
+    m_aggregationCheck = new MedicalCheckBox(tr("集聚曲线"), bottomWidget);
     m_testCheck->setCursor(Qt::PointingHandCursor);
     m_aggregationCheck->setCursor(Qt::PointingHandCursor);
 
