@@ -24,13 +24,15 @@ public:
     explicit TubeTrayDialog(SampleTrayModel *model,
                             QWidget *parent = nullptr);
 
+signals:
+    /** 请求更换某盘：由主窗口检查测试状态、二次确认并更新主板余量 */
+    void trayReplaceRequested(int trayIndex);
+
 private slots:
     void refresh();
 
 private:
     void handleTubeClicked(int tubeIndex, const QPoint &globalPos);
-    /** 更换某盘：将该盘所有试管恢复为空闲 */
-    void replaceTray(int trayIndex);
     /** 按当前机型盘数重建水平排列的试管盘 */
     void rebuildTrayWidgets();
 

@@ -906,7 +906,9 @@ void TubeTrayDialog::rebuildTrayWidgets()
         replaceButton->setToolTip(
                     tr("将该盘全部试管恢复为空闲，用于更换新盘"));
         connect(replaceButton, &QPushButton::clicked,
-                this, [this, tray]() { replaceTray(tray); });
+                this, [this, tray]() {
+            emit trayReplaceRequested(tray);
+        });
         replaceRow->addWidget(replaceButton);
         wrapperLayout->addLayout(replaceRow);
 
@@ -996,27 +998,3 @@ void TubeTrayDialog::handleTubeClicked(int tubeIndex,
     }
 }
 
-void TubeTrayDialog::replaceTray(int trayIndex)
-{
-    if (!m_model || !m_model->isTrayActive(trayIndex)) {
-        return;
-    }
-
-    const int nonFreeCount = SampleTrayModel::TubesPerTray
-            - m_model->countStateInTray(
-                trayIndex, SampleTrayModel::TubeState::Free);
-    if (nonFreeCount > 0) {
-        const QMessageBox::StandardButton answer = QMessageBox::question(
-                    this, tr("更换试管盘"),
-                    tr("确定更换试管盘 %1 吗？\n\n"
-                       "盘内 %2 支非空闲试管将全部恢复为空闲。")
-                    .arg(trayIndex + 1)
-                    .arg(nonFreeCount),
-                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-        if (answer != QMessageBox::Yes) {
-            return;
-        }
-    }
-
-    m_model->clearTray(trayIndex);
-}

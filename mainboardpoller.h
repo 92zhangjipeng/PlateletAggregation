@@ -37,6 +37,15 @@ public:
     /** 读取指定位置耗材余量的命令（position 0~12） */
     static QByteArray consumableRequestFrame(int position);
 
+    /**
+     * 写入指定位置耗材余量（更换试管盘用）。
+     * position 0~12；count 为板/瓶数；老协议写入比例固定 521；
+     * cache=true 与老上位机更换试管盘的写法一致。
+     */
+    static QByteArray consumableWriteFrame(int position, int count,
+                                           quint16 ratio = 521,
+                                           bool cache = true);
+
     /** 按主板信息 V1.0.1 解析 15 字节状态帧 */
     static MainBoardStatus parseStatusFrame(const QByteArray &frame,
                                             bool *ok = nullptr);

@@ -114,6 +114,31 @@ QByteArray MainBoardPoller::consumableRequestFrame(int position)
     return frame;
 }
 
+QByteArray MainBoardPoller::consumableWriteFrame(int position, int count,
+                                                 quint16 ratio, bool cache)
+{
+    if (position < 0 || position >= MainBoardConsumable::kPositionCount
+            || count < 0 || count > 0xFF) {
+        return QByteArray();
+    }
+
+    QByteArray frame(SerialPortManager::kFrameLength, '\0');
+    frame[0] = static_cast<char>(kMainBoardAddress);
+    frame[1] = static_cast<char>(kMainBoardFuncCode);
+    frame[2] = static_cast<char>(position);   // 老协议：命令号=耗材位置
+    frame[3] = '\0';                          // cmd_size
+    frame[4] = '\0';                          // 写
+    // 老上位机：bit0=1 表示缓存写入；bit0=7 表示直接写入。
+    const quint8 positionByte = static_cast<quint8>(
+                (position << 4) | (cache ? 0x01 : 0x07));
+    frame[8] = static_cast<char>(positionByte);
+    frame[9] = static_cast<char>(count & 0xFF);
+    frame[10] = static_cast<char>(cache ? positionByte : 0x00);
+    frame[11] = static_cast<char>(ratio & 0xFF);
+    frame[12] = static_cast<char>((ratio >> 8) & 0xFF);
+    return frame;
+}
+
 MainBoardStatus MainBoardPoller::parseStatusFrame(const QByteArray &frame,
                                                   bool *ok)
 {

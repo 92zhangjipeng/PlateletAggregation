@@ -165,6 +165,8 @@ private:
     void refreshConsumablesTab();
     void openConsumables();
     void openTubeTrays();
+    /** 更换试管盘：测试中禁止，二次确认后余量减 1 并写入主板 */
+    void handleTrayReplaceRequested(int trayIndex);
     void openResults();
     void openQuery();
     void openQuality();
@@ -229,6 +231,7 @@ private:
     InstrumentCoordinates m_instrumentCoordinates;
 
     bool m_connectionStarted = false;
+    bool m_serialConnected = false;       // 当前串口是否连接
     bool m_startupConnected = false;      // 30 秒内成功连上过
     bool m_startupTimedOut = false;       // 30 秒超时
     bool m_lateRestartPromptShown = false;

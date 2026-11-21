@@ -17,6 +17,7 @@
 #include "modulerackwidget.h"
 #include "reagentbottlepanel.h"
 #include "mainboardstatusicons.h"
+#include "mainboardpoller.h"
 #include "querywidget.h"
 #include "resultsinfowidget.h"
 #include "sampletraymodel.h"
@@ -1280,6 +1281,8 @@ void MainWindow::createTubeTrayTab()
         return;
     }
     m_tubeTrayDialog = new TubeTrayDialog(m_trayModel, m_mainTabs);
+    connect(m_tubeTrayDialog, &TubeTrayDialog::trayReplaceRequested,
+            this, &MainWindow::handleTrayReplaceRequested);
     m_tubeTrayDialog->embedAsPage();
     QScrollArea *scroll = makePageScroll(m_tubeTrayDialog, m_mainTabs);
     m_tubeTrayTabIndex = m_mainTabs->addTab(scroll, tr("试管盘"));
@@ -1490,6 +1493,127 @@ void MainWindow::openTubeTrays()
     if (m_mainTabs && m_tubeTrayTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_tubeTrayTabIndex);
     }
+}
+
+void MainWindow::handleTrayReplaceRequested(int trayIndex)
+{
+    if (!m_trayModel || !m_trayModel->isTrayActive(trayIndex)) {
+        return;
+    }
+
+    // 测试中禁止更换
+    if (testingActive()
+            || (m_moduleOverview
+                && m_moduleOverview->isChannelOneSimulationRunning())) {
+        QMessageBox::warning(
+                    this, tr("更换试管盘"),
+                    tr("当前正在测试，不能更换试管盘。\n"
+                       "请等待所有通道测试结束后再更换。"));
+        return;
+    }
+
+    if (!m_serialConnected) {
+        QMessageBox::warning(
+                    this, tr("更换试管盘"),
+                    tr("仪器未连接，无法更新主板试管盘余量。\n"
+                       "请连接仪器后再更换。"));
+        return;
+    }
+
+    const int position = MainBoardConsumable::TestTube;
+    if (!m_consumableValid[position] || m_consumableBottles[position] < 0) {
+        QMessageBox::warning(
+                    this, tr("更换试管盘"),
+                    tr("尚未读取到主板试管盘余量，请稍后重试。"));
+        return;
+    }
+
+    const int currentTrays = m_consumableBottles[position];
+    if (currentTrays <= 0) {
+        QMessageBox::warning(
+                    this, tr("更换试管盘"),
+                    tr("试管盘余量不足（0 板），请先刷卡充值后再更换。"));
+        return;
+    }
+
+    const int nonFreeCount = SampleTrayModel::TubesPerTray
+            - m_trayModel->countStateInTray(
+                trayIndex, SampleTrayModel::TubeState::Free);
+
+    QString firstText;
+    if (nonFreeCount > 0) {
+        firstText = tr("确定更换试管盘 %1 吗？\n\n"
+                       "盘内 %2 支非空闲试管将全部恢复为空闲。\n"
+                       "当前试管盘余量：%3 板，更换后减 1。")
+                .arg(trayIndex + 1)
+                .arg(nonFreeCount)
+                .arg(currentTrays);
+    } else {
+        firstText = tr("试管盘 %1 当前全部空闲。\n\n"
+                       "当前试管盘余量：%2 板，更换后减 1。\n"
+                       "确定更换吗？")
+                .arg(trayIndex + 1)
+                .arg(currentTrays);
+    }
+    if (QMessageBox::question(this, tr("更换试管盘"), firstText,
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+
+    // 二次确认：重新读取余量，避免轮询期间数值变化
+    if (!m_serialConnected || !m_consumableValid[position]
+            || m_consumableBottles[position] <= 0) {
+        QMessageBox::warning(
+                    this, tr("更换试管盘"),
+                    tr("试管盘余量已变化或仪器已断开，请重试。"));
+        return;
+    }
+    const int latestTrays = m_consumableBottles[position];
+    const int newTrayCount = latestTrays - 1;
+    const QString secondText =
+            tr("再次确认：更换试管盘 %1 后，该盘恢复为空闲，\n"
+               "试管盘余量由 %2 板减为 %3 板。\n\n"
+               "确定继续吗？")
+            .arg(trayIndex + 1)
+            .arg(latestTrays)
+            .arg(newTrayCount);
+    if (QMessageBox::question(this, tr("再次确认更换"), secondText,
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+
+    if (!m_commWorker) {
+        QMessageBox::warning(
+                    this, tr("更换试管盘"),
+                    tr("通讯线程未启动，无法更新主板数量。"));
+        return;
+    }
+
+    const QByteArray frame = MainBoardPoller::consumableWriteFrame(
+                position, newTrayCount, 521, true);
+    if (frame.isEmpty()) {
+        QMessageBox::warning(
+                    this, tr("更换试管盘"),
+                    tr("生成主板写入命令失败，请重试。"));
+        return;
+    }
+
+    QMetaObject::invokeMethod(
+                m_commWorker, "sendFrameRequested", Qt::QueuedConnection,
+                Q_ARG(QByteArray, frame),
+                Q_ARG(QString, tr("更换试管盘：写入试管盘余量 %1 板")
+                      .arg(newTrayCount)));
+
+    updateConsumableAmount(position, newTrayCount, 521);
+    m_trayModel->clearTray(trayIndex);
+
+    qInfo() << "更换试管盘" << (trayIndex + 1)
+            << "，余量" << latestTrays << "->" << newTrayCount;
+    showActionHint(tr("试管盘 %1 已更换，余量 %2 板")
+                   .arg(trayIndex + 1)
+                   .arg(newTrayCount));
 }
 
 void MainWindow::showPendingFunction(const QString &name)
@@ -2584,6 +2708,7 @@ void MainWindow::updateSerialStatus(bool connected, const QString &portName,
     if (!m_connectionStarted) {
         return;
     }
+    m_serialConnected = connected;
 
     if (!connected) {
         abortStartupCalibration(QString(), false);
