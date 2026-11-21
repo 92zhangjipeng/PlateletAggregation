@@ -33,6 +33,7 @@ SOURCES += \
     sampletraymodel.cpp \
     tubetraydialog.cpp \
     testdatastore.cpp \
+    testsamplequeue.cpp \
     testcurvewidget.cpp \
     testcurvedialog.cpp \
     testsession.cpp \
@@ -62,6 +63,7 @@ HEADERS += \
     sampletraymodel.h \
     tubetraydialog.h \
     testdatastore.h \
+    testsamplequeue.h \
     testcurvewidget.h \
     testcurvedialog.h \
     testsession.h \

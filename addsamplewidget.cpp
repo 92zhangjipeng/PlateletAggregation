@@ -14,16 +14,19 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDate>
+#include <QDateTime>
 #include <QDebug>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QEvent>
 #include <QFont>
+#include <QFontMetrics>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLineF>
@@ -250,8 +253,10 @@ public:
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing, true);
         const bool selected = (option.state & QStyle::State_Selected);
-        QColor dot(QStringLiteral("#E6A23C"));
-        if (text == QStringLiteral("测试中")) {
+        QColor dot(QStringLiteral("#8A9CAB"));   // 待定
+        if (text == QStringLiteral("待测")) {
+            dot = QColor(QStringLiteral("#E6A23C"));
+        } else if (text == QStringLiteral("测试中")) {
             dot = QColor(QStringLiteral("#2C7BBF"));
         }
 
@@ -328,6 +333,7 @@ public:
     {
         setMouseTracking(true);
         setMinimumSize(600, 440);
+        setFocusPolicy(Qt::StrongFocus);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     }
 
@@ -382,6 +388,59 @@ public:
         update();
     }
 
+    using MoveHandler = std::function<void(const QStringList &)>;
+    using CancelHandler = std::function<void()>;
+
+    void setMoveHandlers(MoveHandler commit, CancelHandler cancel)
+    {
+        m_moveCommit = std::move(commit);
+        m_moveCancel = std::move(cancel);
+    }
+
+    void startMoving(const QStringList &positions)
+    {
+        QStringList cleaned;
+        for (const QString &position : positions) {
+            const QString trimmed = position.trimmed();
+            if (!trimmed.isEmpty()) {
+                cleaned << trimmed;
+            }
+        }
+        if (cleaned.isEmpty()) {
+            return;
+        }
+        m_moving = true;
+        m_movingPositions = cleaned;
+        m_previewPositions = cleaned;
+        m_previewPppPositions.clear();
+        if (cleaned.size() >= 2) {
+            m_previewPppPositions.insert(cleaned.first());
+        }
+        m_previewValid = true;
+        m_hasPreviewTarget = false;
+        m_hoverWell = -1;
+        QToolTip::hideText();
+        setFocus(Qt::MouseFocusReason);
+        setCursor(Qt::ClosedHandCursor);
+        update();
+    }
+
+    void cancelMoving()
+    {
+        if (!m_moving) {
+            return;
+        }
+        resetMoving();
+        if (m_moveCancel) {
+            m_moveCancel();
+        }
+    }
+
+    bool isMoving() const
+    {
+        return m_moving;
+    }
+
     void setSelectedPositions(const QStringList &positions)
     {
         QSet<QString> next;
@@ -423,16 +482,81 @@ protected:
                 if (!m_samplePositions.contains(well.position)) {
                     continue;
                 }
+                if (m_moving
+                        && m_movingPositions.contains(well.position)) {
+                    continue;   // 正在移动的管从原位隐藏
+                }
                 paintTube(p, well, index == m_hoverWell,
                           m_selectedPositions.contains(well.position));
             }
         }
 
+        // 拖动预览：目标孔处画高亮管（PPP+PRP 两根一起）。
+        if (m_moving) {
+            for (int row = 0; row < geometry.rows; ++row) {
+                for (int column = 0; column < geometry.columns;
+                     ++column) {
+                    const int index = row * geometry.columns + column;
+                    const Well &well = geometry.wells.at(index);
+                    if (!m_previewPositions.contains(well.position)) {
+                        continue;
+                    }
+                    paintTube(p, well, false, true, true,
+                              m_previewValid);
+                }
+            }
+        }
+
         paintGroupLabels(p, geometry);
+        if (m_moving) {
+            paintMoveBadge(p, geometry);
+            paintMoveBanner(p, geometry);
+        }
     }
 
     void mouseMoveEvent(QMouseEvent *event) override
     {
+        if (m_moving) {
+            const int index = wellAt(event->pos());
+            if (m_hasPreviewTarget != (index >= 0)) {
+                m_hasPreviewTarget = index >= 0;
+                update();
+            }
+            if (index >= 0) {
+                const Geometry geometry = rackGeometry();
+                const Well &well = geometry.wells.at(index);
+                QStringList target;
+                if (m_movingPositions.size() >= 2) {
+                    const int base = well.group * 10 + well.row * 2;
+                    target << QString::number(base)
+                           << QString::number(base + 1);
+                } else {
+                    target << well.position;
+                }
+
+                bool valid = true;
+                for (const QString &position : target) {
+                    if (m_samplePositions.contains(position)
+                            && !m_movingPositions.contains(position)) {
+                        valid = false;
+                    }
+                }
+                if (target != m_previewPositions
+                        || valid != m_previewValid) {
+                    m_previewPositions = target;
+                    m_previewPppPositions.clear();
+                    if (target.size() >= 2) {
+                        m_previewPppPositions.insert(target.first());
+                    }
+                    m_previewValid = valid;
+                    update();
+                }
+            }
+            QToolTip::hideText();
+            QWidget::mouseMoveEvent(event);
+            return;
+        }
+
         const int index = wellAt(event->pos());
         if (index != m_hoverWell) {
             m_hoverWell = index;
@@ -454,7 +578,9 @@ protected:
                     }
                     QString liquid;
                     if (isPpp) {
-                        liquid = tr("PPP：透亮淡黄色");
+                        liquid = m_plasma
+                                ? tr("PPP：透亮淡黄色")
+                                : tr("PPP：下层红色血液 / 上层透亮淡黄");
                     } else if (m_plasma) {
                         liquid = tr("血浆：整管淡黄色");
                     } else {
@@ -487,6 +613,40 @@ protected:
         QWidget::mouseMoveEvent(event);
     }
 
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (m_moving) {
+            if (event->button() == Qt::LeftButton) {
+                if (m_hasPreviewTarget && m_previewValid
+                        && !m_previewPositions.isEmpty()) {
+                    const QStringList positions = m_previewPositions;
+                    resetMoving();
+                    if (m_moveCommit) {
+                        m_moveCommit(positions);
+                    }
+                }
+                event->accept();
+                return;
+            }
+            if (event->button() == Qt::RightButton) {
+                cancelMoving();
+                event->accept();
+                return;
+            }
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if (m_moving && event->key() == Qt::Key_Escape) {
+            cancelMoving();
+            event->accept();
+            return;
+        }
+        QWidget::keyPressEvent(event);
+    }
+
     void leaveEvent(QEvent *event) override
     {
         m_hoverWell = -1;
@@ -496,6 +656,20 @@ protected:
     }
 
 private:
+    void resetMoving()
+    {
+        m_moving = false;
+        m_movingPositions.clear();
+        m_previewPositions.clear();
+        m_previewPppPositions.clear();
+        m_previewValid = true;
+        m_hasPreviewTarget = false;
+        m_hoverWell = -1;
+        unsetCursor();
+        QToolTip::hideText();
+        update();
+    }
+
     struct Well {
         QPointF center;      // 上层平板孔中心
         qreal holeRx = 0.0;
@@ -980,7 +1154,9 @@ private:
             }
 
             const bool selected = m_selectedPositions.contains(
-                        well.position);
+                        well.position)
+                    && !(m_moving
+                         && m_movingPositions.contains(well.position));
             if (i == m_hoverWell || selected) {
                 p.setPen(QPen(QColor(44, 123, 191,
                                      selected ? 235 : 200),
@@ -1038,8 +1214,97 @@ private:
         }
     }
 
+    void paintMoveBadge(QPainter &p, const Geometry &geometry) const
+    {
+        if (!m_moving || m_previewPositions.isEmpty()) {
+            return;
+        }
+        qreal left = 0.0;
+        qreal right = 0.0;
+        qreal top = 0.0;
+        bool found = false;
+        for (const Well &well : geometry.wells) {
+            if (!m_previewPositions.contains(well.position)) {
+                continue;
+            }
+            const qreal wellLeft = well.center.x() - well.bodyRadius;
+            const qreal wellRight = well.center.x() + well.bodyRadius;
+            const qreal wellTop = well.center.y() - well.tubeHeight;
+            if (!found) {
+                left = wellLeft;
+                right = wellRight;
+                top = wellTop;
+                found = true;
+            } else {
+                left = qMin(left, wellLeft);
+                right = qMax(right, wellRight);
+                top = qMin(top, wellTop);
+            }
+        }
+        if (!found) {
+            return;
+        }
+
+        const QString text = m_previewValid
+                ? tr("移动中") : tr("目标孔被占用");
+        QFont font(QStringLiteral("Microsoft YaHei"));
+        font.setPixelSize(10);
+        font.setBold(true);
+        p.setFont(font);
+        const QFontMetrics metrics(font);
+        const qreal width = metrics.width(text) + 14.0;
+        const qreal height = 16.0;
+        const qreal x = (left + right) / 2.0 - width / 2.0;
+        const qreal y = qMax<qreal>(2.0, top - height - 5.0);
+        const QRectF rect(x, y, width, height);
+        const QColor color = m_previewValid
+                ? QColor(QStringLiteral("#2C7BBF"))
+                : QColor(QStringLiteral("#D9534F"));
+        p.setPen(QPen(color, 1.0));
+        p.setBrush(QColor(255, 255, 255, 238));
+        p.drawRoundedRect(rect, 5.0, 5.0);
+        p.setPen(color);
+        p.drawText(rect, Qt::AlignCenter, text);
+    }
+
+    void paintMoveBanner(QPainter &p, const Geometry &geometry) const
+    {
+        if (!m_moving) {
+            return;
+        }
+        QString text;
+        if (!m_hasPreviewTarget) {
+            text = tr("移动样本：把鼠标移到目标孔，左键放置，右键取消");
+        } else if (m_previewValid) {
+            text = tr("移动样本：左键放到目标孔，右键取消");
+        } else {
+            text = tr("目标孔被占用：请换一个孔，右键取消");
+        }
+        QFont font(QStringLiteral("Microsoft YaHei"));
+        font.setPixelSize(11);
+        font.setBold(true);
+        p.setFont(font);
+        const QFontMetrics metrics(font);
+        const qreal width = metrics.width(text) + 24.0;
+        const qreal height = 20.0;
+        const qreal x = geometry.frontLeft
+                + (geometry.bottomWidth - width) / 2.0;
+        const qreal y = geometry.bottomFace.at(3).y() - height - 8.0;
+        const QRectF rect(x, y, width, height);
+
+        const QColor color = m_previewValid
+                ? QColor(QStringLiteral("#2C7BBF"))
+                : QColor(QStringLiteral("#D9534F"));
+        p.setPen(QPen(color, 1.2));
+        p.setBrush(QColor(255, 255, 255, 238));
+        p.drawRoundedRect(rect, 6.0, 6.0);
+        p.setPen(color);
+        p.drawText(rect, Qt::AlignCenter, text);
+    }
+
     void paintTube(QPainter &p, const Well &well, bool hovered,
-                   bool selected) const
+                   bool selected, bool preview = false,
+                   bool previewValid = true) const
     {
         const qreal bodyRadius = well.bodyRadius;
         // 敞口采血管：顶部没有管帽，直接在管口画玻璃壁和内腔。
@@ -1051,21 +1316,30 @@ private:
             return;
         }
 
-        if (hovered || selected) {
+        const bool previewInvalid = preview && !previewValid;
+        if (hovered || selected || preview) {
+            const QColor glowColor = previewInvalid
+                    ? QColor(217, 83, 79) : QColor(44, 123, 191);
+            const int centerAlpha = preview
+                    ? (previewInvalid ? 115 : 150)
+                    : (selected ? 120 : 95);
             QRadialGradient glow(well.center
                                  + QPointF(0.0, -well.tubeHeight * 0.45),
                                  qMax<qreal>(14.0,
                                              well.tubeHeight * 0.62));
-            glow.setColorAt(0.0, QColor(44, 123, 191,
-                                         selected ? 120 : 95));
-            glow.setColorAt(0.65, QColor(44, 123, 191,
-                                          selected ? 42 : 30));
-            glow.setColorAt(1.0, QColor(44, 123, 191, 0));
+            glow.setColorAt(0.0, QColor(glowColor.red(), glowColor.green(),
+                                        glowColor.blue(), centerAlpha));
+            glow.setColorAt(0.65, QColor(glowColor.red(), glowColor.green(),
+                                         glowColor.blue(),
+                                         preview ? 55 : (selected ? 42 : 30)));
+            glow.setColorAt(1.0, QColor(glowColor.red(), glowColor.green(),
+                                        glowColor.blue(), 0));
             p.setPen(Qt::NoPen);
             p.setBrush(glow);
             p.drawEllipse(well.center + QPointF(0.0,
                                                 -well.tubeHeight * 0.45),
-                          bodyRadius * (selected ? 2.1 : 1.9),
+                          bodyRadius * (preview ? 2.45
+                                                : (selected ? 2.1 : 1.9)),
                           well.tubeHeight * 0.72);
         }
 
@@ -1111,24 +1385,23 @@ private:
         const QColor yellowTop(247, 233, 181);
         const QColor yellowBottom(233, 212, 140);
 
-        const bool isPpp = m_pppPositions.contains(well.position);
-        if (isPpp) {
-            // PPP 管：更透亮的淡黄色
-            QLinearGradient pppYellow(0.0, liquidTop, 0.0, liquidBottom);
-            pppYellow.setColorAt(0.0, QColor(255, 250, 208, 225));
-            pppYellow.setColorAt(0.55, QColor(255, 238, 164, 225));
-            pppYellow.setColorAt(1.0, QColor(255, 226, 126, 220));
-            p.fillRect(QRectF(well.center.x() - bodyRadius, liquidTop,
-                              bodyRadius * 2.0, liquidHeight),
-                       pppYellow);
-        } else if (m_plasma) {
+        const bool isPpp = m_pppPositions.contains(well.position)
+                || m_previewPppPositions.contains(well.position);
+        if (m_plasma) {
             QLinearGradient yellow(0.0, liquidTop, 0.0, liquidBottom);
-            yellow.setColorAt(0.0, yellowTop);
-            yellow.setColorAt(1.0, yellowBottom);
+            if (isPpp) {
+                yellow.setColorAt(0.0, QColor(255, 250, 208, 225));
+                yellow.setColorAt(0.55, QColor(255, 238, 164, 225));
+                yellow.setColorAt(1.0, QColor(255, 226, 126, 220));
+            } else {
+                yellow.setColorAt(0.0, yellowTop);
+                yellow.setColorAt(1.0, yellowBottom);
+            }
             p.fillRect(QRectF(well.center.x() - bodyRadius, liquidTop,
                               bodyRadius * 2.0, liquidHeight),
                        yellow);
         } else {
+            // 全血：两支管底部都是血液；PPP 管上部用更透亮的 PPP 黄色。
             QLinearGradient red(0.0, boundary, 0.0, liquidBottom);
             red.setColorAt(0.0, redTop);
             red.setColorAt(1.0, redBottom);
@@ -1137,8 +1410,13 @@ private:
                        red);
 
             QLinearGradient yellow(0.0, liquidTop, 0.0, boundary);
-            yellow.setColorAt(0.0, yellowTop);
-            yellow.setColorAt(1.0, QColor(240, 218, 154));
+            if (isPpp) {
+                yellow.setColorAt(0.0, QColor(255, 250, 208, 230));
+                yellow.setColorAt(1.0, QColor(255, 229, 132, 225));
+            } else {
+                yellow.setColorAt(0.0, yellowTop);
+                yellow.setColorAt(1.0, QColor(240, 218, 154));
+            }
             p.fillRect(QRectF(well.center.x() - bodyRadius, liquidTop,
                               bodyRadius * 2.0, boundary - liquidTop),
                        yellow);
@@ -1240,18 +1518,43 @@ private:
         p.setBrush(Qt::NoBrush);
         p.drawArc(holeRect, 195 * 16, 150 * 16);
 
+        if (preview) {
+            const QColor color = previewValid
+                    ? QColor(QStringLiteral("#2C7BBF"))
+                    : QColor(QStringLiteral("#D9534F"));
+            QPen outlinePen(color, 2.2, Qt::DashLine);
+            outlinePen.setCapStyle(Qt::RoundCap);
+            p.setPen(outlinePen);
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(QRectF(well.center.x() - bodyRadius - 2.0,
+                                     bodyTop - 2.0,
+                                     bodyRadius * 2.0 + 4.0,
+                                     bodyHeight + 4.0),
+                              bodyRadius * 0.95, bodyRadius * 0.95);
+            p.setPen(QPen(color, 2.6, Qt::DashLine));
+            p.drawEllipse(well.center, well.holeRx * 1.55,
+                          well.holeRy * 1.55);
+            if (!previewValid) {
+                p.save();
+                p.setClipPath(bodyPath);
+                p.fillRect(bodyRect, QColor(217, 83, 79, 55));
+                p.restore();
+            }
+        }
+
         // 下层托板上的可见管段：从上层平板前缘下方延伸到托底支撑。
         const qreal lowerTop = well.lowerTopY;
         const qreal lowerBottom = well.tubeBottomY - 1.0;
         if (lowerBottom - lowerTop > 3.0) {
             paintLowerTubeSegment(p, well, lowerTop, lowerBottom,
-                                  selected);
+                                  selected, preview, previewValid);
         }
     }
 
     void paintLowerTubeSegment(QPainter &p, const Well &well,
                                qreal top, qreal bottom,
-                               bool selected) const
+                               bool selected, bool preview = false,
+                               bool previewValid = true) const
     {
         const qreal r = well.bodyRadius;
         const qreal left = well.center.x() - r;
@@ -1282,14 +1585,18 @@ private:
         p.save();
         p.setClipPath(bodyPath);
         QLinearGradient liquid(0.0, top, 0.0, bottom);
-        if (m_pppPositions.contains(well.position)) {
-            liquid.setColorAt(0.0, QColor(255, 250, 208, 225));
-            liquid.setColorAt(0.55, QColor(255, 238, 164, 225));
-            liquid.setColorAt(1.0, QColor(255, 226, 126, 220));
-        } else if (m_plasma) {
-            liquid.setColorAt(0.0, QColor(247, 233, 181));
-            liquid.setColorAt(1.0, QColor(233, 212, 140));
+        if (m_plasma) {
+            if (m_pppPositions.contains(well.position)
+                    || m_previewPppPositions.contains(well.position)) {
+                liquid.setColorAt(0.0, QColor(255, 250, 208, 225));
+                liquid.setColorAt(0.55, QColor(255, 238, 164, 225));
+                liquid.setColorAt(1.0, QColor(255, 226, 126, 220));
+            } else {
+                liquid.setColorAt(0.0, QColor(247, 233, 181));
+                liquid.setColorAt(1.0, QColor(233, 212, 140));
+            }
         } else {
+            // 全血 PPP/PRP 管下层都是血液。
             liquid.setColorAt(0.0, QColor(196, 58, 70));
             liquid.setColorAt(1.0, QColor(158, 31, 43));
         }
@@ -1325,7 +1632,23 @@ private:
         p.setPen(QPen(QColor(112, 144, 166, 180), 0.9));
         p.setBrush(Qt::NoBrush);
         p.drawPath(bodyPath);
-        if (selected) {
+        if (preview) {
+            const QColor color = previewValid
+                    ? QColor(QStringLiteral("#2C7BBF"))
+                    : QColor(QStringLiteral("#D9534F"));
+            p.setPen(QPen(color, 2.2, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(QRectF(left, top, r * 2.0, height)
+                              .adjusted(-2.0, -2.0, 2.0, 2.0),
+                              r * 0.7, r * 0.7);
+            if (!previewValid) {
+                p.save();
+                p.setClipPath(bodyPath);
+                p.fillRect(QRectF(left, top, r * 2.0, height),
+                           QColor(217, 83, 79, 55));
+                p.restore();
+            }
+        } else if (selected) {
             p.setPen(QPen(QColor(44, 123, 191, 200), 1.4));
             p.drawRoundedRect(QRectF(left, top, r * 2.0, height)
                               .adjusted(-1.0, -1.0, 1.0, 1.0),
@@ -1397,6 +1720,14 @@ private:
     QSet<QString> m_samplePositions;
     QSet<QString> m_selectedPositions;
     QSet<QString> m_pppPositions;   // PPP+PRP 模式下每对的第一个孔为 PPP
+    QSet<QString> m_previewPppPositions;
+    QStringList m_movingPositions;
+    QStringList m_previewPositions;
+    MoveHandler m_moveCommit;
+    CancelHandler m_moveCancel;
+    bool m_moving = false;
+    bool m_previewValid = true;
+    bool m_hasPreviewTarget = false;
     int m_hoverWell = -1;
 };
 
@@ -1550,6 +1881,16 @@ void AddSampleWidget::refreshMode()
     updateSampleQuality();
 }
 
+TestQueue *AddSampleWidget::testQueue()
+{
+    return &m_testQueue;
+}
+
+const TestQueue *AddSampleWidget::testQueue() const
+{
+    return &m_testQueue;
+}
+
 void AddSampleWidget::setSampleTesting(const QString &sampleNumber,
                                        bool testing)
 {
@@ -1569,6 +1910,20 @@ void AddSampleWidget::setSampleTesting(const QString &sampleNumber,
             status->setText(testing ? tr("测试中") : tr("待测"));
             m_updatingTable = false;
         }
+        // 测试开始时样本已离开待测队列；测试结束回到待测时重新排队。
+        if (testing) {
+            m_testQueue.removeBySampleNumber(trimmed);
+        } else {
+            QueuedSample sample;
+            if (queuedSampleFromRow(row, &sample)
+                    && !m_testQueue.contains(sample.sampleNumber)) {
+                QString error;
+                if (!m_testQueue.enqueue(sample, &error)) {
+                    qWarning() << "Re-enqueue sample failed:" << error;
+                }
+            }
+        }
+        updateRowEditability(row);
         if (testing) {
             m_sampleTable->selectRow(row);
         }
@@ -1744,11 +2099,6 @@ QFrame *AddSampleWidget::createSampleTableCard()
                 StatusColumn, new SampleStatusDelegate(m_sampleTable));
     m_sampleTable->setItemDelegateForColumn(
                 BarcodeColumn, new BarcodeDelegate(m_sampleTable));
-    m_sampleTable->setItemDelegateForColumn(
-                PositionColumn,
-                new PositionDelegate(
-                    [this](int row) { return positionsForRow(row); },
-                    m_sampleTable));
 
     auto *statusHeader = m_sampleTable->horizontalHeaderItem(StatusColumn);
     if (statusHeader) {
@@ -1813,8 +2163,46 @@ QFrame *AddSampleWidget::createSampleTableCard()
             modifyTestItems(row);
         }
     });
+    connect(m_sampleTable, &QTableWidget::cellClicked,
+            this, [this](int row, int column) {
+        if (column != PositionColumn) {
+            return;
+        }
+        QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+        if (!status || status->text() != tr("待定")) {
+            if (m_movingRow >= 0) {
+                m_movingRow = -1;
+                m_bloodArea->cancelMoving();
+            }
+            QMessageBox::information(
+                        this, tr("移动样本位置"),
+                        tr("只有待定样本可以移动孔位；"
+                           "已确认或测试中的样本不能移动。"));
+            return;
+        }
+        QTableWidgetItem *position = m_sampleTable->item(row,
+                                                         PositionColumn);
+        if (!position) {
+            return;
+        }
+        const QStringList parts = positionParts(position->text());
+        if (parts.isEmpty()) {
+            return;
+        }
+        m_movingRow = row;
+        m_sampleTable->selectRow(row);
+        m_sampleTable->setCurrentCell(row, PositionColumn);
+        m_bloodArea->startMoving(parts);
+    });
     connect(m_sampleTable, &QTableWidget::itemSelectionChanged,
-            this, [this]() { syncBloodAreaSamples(); });
+            this, [this]() {
+        if (m_movingRow >= 0
+                && m_sampleTable->currentRow() != m_movingRow) {
+            m_movingRow = -1;
+            m_bloodArea->cancelMoving();
+        }
+        syncBloodAreaSamples();
+    });
 
     m_sampleTable->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_sampleTable, &QTableWidget::customContextMenuRequested,
@@ -1861,6 +2249,14 @@ QFrame *AddSampleWidget::createBloodAreaCard()
     layout->addLayout(header);
 
     m_bloodArea = new BloodSampleAreaWidget(m_model, card);
+    m_bloodArea->setObjectName(QStringLiteral("bloodArea"));
+    m_bloodArea->setMoveHandlers(
+                [this](const QStringList &positions) {
+        handleBloodAreaMoveCommitted(positions);
+    },
+                [this]() {
+        handleBloodAreaMoveCancelled();
+    });
     layout->addWidget(m_bloodArea, 1);
     return card;
 }
@@ -1970,11 +2366,86 @@ void AddSampleWidget::updatePositionEditability()
     if (!m_sampleTable) {
         return;
     }
-    const bool editable = !testModeIsPppPrp();
     for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
-        QTableWidgetItem *item = m_sampleTable->item(row, PositionColumn);
-        if (!item) {
+        updateRowEditability(row);
+    }
+    if (QTableWidgetItem *header =
+            m_sampleTable->horizontalHeaderItem(PositionColumn)) {
+        header->setToolTip(
+                    tr("待定样本点击位置单元格后，在血样区把采血管拖到目标孔"));
+    }
+}
+
+bool AddSampleWidget::queuedSampleFromRow(int row, QueuedSample *sample) const
+{
+    if (!m_sampleTable || !sample || row < 0
+            || row >= m_sampleTable->rowCount()) {
+        return false;
+    }
+    QTableWidgetItem *sampleNo = m_sampleTable->item(row, SampleNoColumn);
+    if (!sampleNo || sampleNo->text().trimmed().isEmpty()) {
+        return false;
+    }
+
+    sample->sampleNumber = sampleNo->text().trimmed();
+    QTableWidgetItem *barcode = m_sampleTable->item(row, BarcodeColumn);
+    sample->barcode = barcode ? barcode->text().trimmed() : QString();
+    sample->testItems.clear();
+    if (QTableWidgetItem *testItem =
+            m_sampleTable->item(row, TestItemColumn)) {
+        const QStringList items = testItem->text().split(
+                    QLatin1Char('+'), QString::SkipEmptyParts);
+        for (const QString &item : items) {
+            const QString trimmed = item.trimmed();
+            if (!trimmed.isEmpty()) {
+                sample->testItems << trimmed;
+            }
+        }
+    }
+    QTableWidgetItem *height = m_sampleTable->item(row, HeightColumn);
+    sample->height = height ? height->text().trimmed() : QString();
+    QTableWidgetItem *position = m_sampleTable->item(row, PositionColumn);
+    sample->positions = position ? positionParts(position->text())
+                                 : QStringList();
+    sample->pppPrp = testModeIsPppPrp();
+    sample->queuedAt = QDateTime::currentDateTime();
+    return true;
+}
+
+void AddSampleWidget::rebuildTestQueueFromConfirmedRows()
+{
+    if (!m_sampleTable) {
+        return;
+    }
+    m_testQueue.clear();
+    for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
+        QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+        if (!status || status->text() != tr("待测")) {
             continue;
+        }
+        QueuedSample sample;
+        if (!queuedSampleFromRow(row, &sample)) {
+            continue;
+        }
+        QString error;
+        if (!m_testQueue.enqueue(sample, &error)) {
+            qWarning() << "Rebuild test queue failed:" << error;
+        }
+    }
+}
+
+void AddSampleWidget::updateRowEditability(int row)
+{
+    if (!m_sampleTable || row < 0
+            || row >= m_sampleTable->rowCount()) {
+        return;
+    }
+    QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+    const bool draft = status && status->text() == tr("待定");
+
+    auto setEditable = [this](QTableWidgetItem *item, bool editable) {
+        if (!item) {
+            return;
         }
         Qt::ItemFlags flags = item->flags();
         if (editable) {
@@ -1987,14 +2458,14 @@ void AddSampleWidget::updatePositionEditability()
             item->setFlags(flags);
             m_updatingTable = false;
         }
-    }
-    if (QTableWidgetItem *header =
-            m_sampleTable->horizontalHeaderItem(PositionColumn)) {
-        header->setToolTip(
-                    editable
-                    ? tr("双击选择血样孔号，例如 10")
-                    : tr("PPP+PRP 模式自动分配两个孔，例如 10+11"));
-    }
+    };
+
+    setEditable(m_sampleTable->item(row, BarcodeColumn), draft);
+    // 位置列不再通过下拉框编辑，改成点击后在血样区拖动。
+    setEditable(m_sampleTable->item(row, PositionColumn), false);
+    setEditable(m_sampleTable->item(row, SampleNoColumn), false);
+    setEditable(m_sampleTable->item(row, TestItemColumn), false);
+    setEditable(m_sampleTable->item(row, HeightColumn), false);
 }
 
 void AddSampleWidget::reallocatePositionsForMode()
@@ -2037,6 +2508,7 @@ void AddSampleWidget::reallocatePositionsForMode()
     m_updatingTable = false;
 
     updatePositionEditability();
+    rebuildTestQueueFromConfirmedRows();
     updateSampleCount();
     updateQuickSampleNumber();
     syncBloodAreaSamples();
@@ -2068,6 +2540,14 @@ void AddSampleWidget::modifyTestItems(int row)
 {
     if (!m_sampleTable || row < 0
             || row >= m_sampleTable->rowCount()) {
+        return;
+    }
+    QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+    if (!status || status->text() != tr("待定")) {
+        QMessageBox::information(
+                    this, tr("测试项目"),
+                    tr("只有待定样本可以修改测试项目；"
+                       "已确认或测试中的样本不能修改。"));
         return;
     }
     QTableWidgetItem *item = m_sampleTable->item(row, TestItemColumn);
@@ -2129,6 +2609,51 @@ void AddSampleWidget::syncBloodAreaSamples()
         }
     }
     m_bloodArea->setSelectedPositions(selectedPositions);
+}
+
+void AddSampleWidget::handleBloodAreaMoveCommitted(
+        const QStringList &positions)
+{
+    const int row = m_movingRow;
+    m_movingRow = -1;
+
+    if (!m_sampleTable || row < 0
+            || row >= m_sampleTable->rowCount()) {
+        syncBloodAreaSamples();
+        return;
+    }
+    QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+    if (!status || status->text() != tr("待定")) {
+        syncBloodAreaSamples();
+        return;
+    }
+
+    const QString position = positions.join(QLatin1Char('+'));
+    if (!positionStringValid(position, row)) {
+        QMessageBox::warning(
+                    this, tr("移动样本位置"),
+                    tr("目标孔位无效或已被其他样本占用。"));
+        syncBloodAreaSamples();
+        return;
+    }
+
+    if (QTableWidgetItem *item =
+            m_sampleTable->item(row, PositionColumn)) {
+        const QString oldPosition = item->text();
+        m_updatingTable = true;
+        item->setText(position);
+        item->setData(Qt::UserRole, position);
+        m_updatingTable = false;
+        qInfo() << "Move sample position:" << oldPosition
+                << "->" << position;
+    }
+    syncBloodAreaSamples();
+}
+
+void AddSampleWidget::handleBloodAreaMoveCancelled()
+{
+    m_movingRow = -1;
+    syncBloodAreaSamples();
 }
 
 void AddSampleWidget::addSample()
@@ -2253,14 +2778,13 @@ void AddSampleWidget::confirmSamples()
     const bool needBarcode = addSampleScanBarcodeEnabled();
     QStringList problems;
     int firstProblemRow = -1;
-    int pendingCount = 0;
+    QList<int> draftRows;
 
     for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
         QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
-        if (status && status->text() == tr("测试中")) {
+        if (!status || status->text() != tr("待定")) {
             continue;
         }
-        ++pendingCount;
 
         QTableWidgetItem *sampleNo = m_sampleTable->item(row,
                                                          SampleNoColumn);
@@ -2294,7 +2818,17 @@ void AddSampleWidget::confirmSamples()
             if (firstProblemRow < 0) {
                 firstProblemRow = row;
             }
+            continue;
         }
+        if (m_testQueue.contains(sampleNo->text())) {
+            problems << tr("第 %1 行：待测队列中已存在该样本号")
+                        .arg(row + 1);
+            if (firstProblemRow < 0) {
+                firstProblemRow = row;
+            }
+            continue;
+        }
+        draftRows << row;
     }
 
     if (!problems.isEmpty()) {
@@ -2307,16 +2841,45 @@ void AddSampleWidget::confirmSamples()
         return;
     }
 
-    if (pendingCount == 0) {
+    if (draftRows.isEmpty()) {
         QMessageBox::information(this, tr("确认加样"),
-                                 tr("当前没有待测样本。"));
+                                 tr("当前没有待定样本。"));
         return;
     }
 
-    qInfo() << "Confirm samples:" << pendingCount;
+    // 先全部入队，再改状态；入队失败则不改任何行。
+    for (int row : draftRows) {
+        QueuedSample sample;
+        if (!queuedSampleFromRow(row, &sample)) {
+            QMessageBox::warning(this, tr("确认加样"),
+                                 tr("第 %1 行样本数据不完整。")
+                                 .arg(row + 1));
+            return;
+        }
+        QString error;
+        if (!m_testQueue.enqueue(sample, &error)) {
+            QMessageBox::warning(this, tr("确认加样"), error);
+            return;
+        }
+    }
+
+    for (int row : draftRows) {
+        if (QTableWidgetItem *status =
+                m_sampleTable->item(row, StatusColumn)) {
+            m_updatingTable = true;
+            status->setText(tr("待测"));
+            m_updatingTable = false;
+        }
+        updateRowEditability(row);
+    }
+
+    qInfo() << "Confirm samples:" << draftRows.size()
+            << "queue size:" << m_testQueue.size();
     QMessageBox::information(
                 this, tr("确认加样"),
-                tr("已确认 %1 个待测样本。").arg(pendingCount));
+                tr("已确认 %1 个样本进入待测队列（当前队列 %2 个）。")
+                .arg(draftRows.size())
+                .arg(m_testQueue.size()));
 }
 
 void AddSampleWidget::removeSelectedSamples()
@@ -2355,6 +2918,16 @@ void AddSampleWidget::removeSelectedSamples()
         return;
     }
 
+    for (int row : rows) {
+        QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+        if (status && status->text() == tr("待测")) {
+            if (QTableWidgetItem *sampleNo =
+                    m_sampleTable->item(row, SampleNoColumn)) {
+                m_testQueue.removeBySampleNumber(sampleNo->text());
+            }
+        }
+    }
+
     m_updatingTable = true;
     for (int row = m_sampleTable->rowCount() - 1; row >= 0; --row) {
         if (rows.contains(row)) {
@@ -2385,6 +2958,15 @@ void AddSampleWidget::modifySampleNumber()
     if (row < 0 || row >= m_sampleTable->rowCount()) {
         QMessageBox::information(this, tr("修改样本号"),
                                  tr("请先选择一行样本。"));
+        return;
+    }
+
+    QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+    if (!status || status->text() != tr("待定")) {
+        QMessageBox::information(
+                    this, tr("修改样本号"),
+                    tr("只有待定样本可以修改样本号；"
+                       "已确认或测试中的样本不能修改。"));
         return;
     }
 
@@ -2434,6 +3016,14 @@ void AddSampleWidget::handleTableItemChanged(QTableWidgetItem *item)
     }
 
     const int column = item->column();
+    if (column == BarcodeColumn || column == PositionColumn) {
+        QTableWidgetItem *status = m_sampleTable->item(item->row(),
+                                                       StatusColumn);
+        if (!status || status->text() != tr("待定")) {
+            restoreTableItem(item);
+            return;
+        }
+    }
     if (column == PositionColumn) {
         const QString text = item->text().trimmed();
         if (!positionStringValid(text, item->row())) {
@@ -2727,7 +3317,7 @@ void AddSampleWidget::appendSampleRow(const QString &sampleNumber,
     };
 
     m_sampleTable->setItem(row, StatusColumn,
-                           makeItem(tr("待测"), false));
+                           makeItem(tr("待定"), false));
     m_sampleTable->setItem(row, SampleNoColumn,
                            makeItem(sampleNumber, false));
     m_sampleTable->setItem(row, BarcodeColumn, makeItem(barcode, true));
@@ -2736,10 +3326,12 @@ void AddSampleWidget::appendSampleRow(const QString &sampleNumber,
     m_sampleTable->setItem(row, HeightColumn,
                            makeItem(height, false));
     m_sampleTable->setItem(row, PositionColumn,
-                           makeItem(position, !testModeIsPppPrp()));
+                           makeItem(position, false));
 
     if (QTableWidgetItem *item = m_sampleTable->item(row, StatusColumn)) {
-        item->setToolTip(tr("待测：等待测试；测试中：不能删除"));
+        item->setToolTip(
+                    tr("待定：可编辑/移动孔位；待测：已确认进入队列；"
+                       "测试中：不能删除"));
     }
     if (QTableWidgetItem *item = m_sampleTable->item(row, SampleNoColumn)) {
         item->setToolTip(tr("双击可修改样本号"));
