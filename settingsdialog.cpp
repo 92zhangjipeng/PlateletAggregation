@@ -487,7 +487,7 @@ SettingsDialog::SettingsDialog(CommunicationWorker *commWorker,
         "  font-size: 12px;"
         "  spacing: 6px;"
         "}"
-        "QCheckBox#channelCheck {"
+        "QCheckBox#channelCheck, QCheckBox#scanCheck {"
         "  color: #3A5065;"
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 12px;"
@@ -778,7 +778,7 @@ QWidget *SettingsDialog::createBasicPage()
 
     auto *basicGroup = new QGroupBox(tr("基础参数"), content);
     basicGroup->setObjectName(QStringLiteral("basicParamGroup"));
-    basicGroup->setMinimumHeight(280);
+    basicGroup->setMinimumHeight(330);
     auto *basicLayout = new QVBoxLayout(basicGroup);
     basicLayout->setContentsMargins(16, 20, 16, 14);
     basicLayout->setSpacing(10);
@@ -818,6 +818,31 @@ QWidget *SettingsDialog::createBasicPage()
         QSettings s;
         s.setValue(QString::fromLatin1(sampleQualitySettingsKey()),
                    QStringLiteral("plasma"));
+    });
+
+    auto *scanRow = new QHBoxLayout;
+    scanRow->setSpacing(12);
+    auto *scanCaption = new QLabel(tr("加样扫码"), basicGroup);
+    scanCaption->setObjectName(QStringLiteral("paramCaption"));
+    auto *scanCheck = new QCheckBox(
+                tr("每添加一个样本必须扫描/输入条码"), basicGroup);
+    scanCheck->setObjectName(QStringLiteral("scanCheck"));
+    scanCheck->setChecked(addSampleScanBarcodeEnabled());
+    scanRow->addWidget(scanCaption);
+    scanRow->addWidget(scanCheck);
+    scanRow->addStretch(1);
+    basicLayout->addLayout(scanRow);
+
+    auto *scanHint = new QLabel(
+                tr("开启后添加样本会立即定位到条码栏，扫描或手动输入条码后"
+                   "才能继续添加；关闭时条码可留空。"),
+                basicGroup);
+    scanHint->setObjectName(QStringLiteral("paramHint"));
+    scanHint->setWordWrap(true);
+    basicLayout->addWidget(scanHint);
+
+    connect(scanCheck, &QCheckBox::toggled, this, [](bool checked) {
+        setAddSampleScanBarcodeEnabled(checked);
     });
 
     auto *separator = new QFrame(basicGroup);

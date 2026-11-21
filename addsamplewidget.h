@@ -57,6 +57,8 @@ private:
     void updateSampleQuality();
     void updateHeightHeader();
     void updateSampleCount();
+    void updateScanHint();
+    void focusBarcodeCell(int row);
 
     QStringList allPositions() const;
     QStringList positionsForRow(int row) const;
@@ -80,6 +82,7 @@ private:
     QLabel *m_subtitle = nullptr;
     QLabel *m_bloodCaption = nullptr;
     QLabel *m_countLabel = nullptr;
+    QLabel *m_tableHint = nullptr;
     QTableWidget *m_sampleTable = nullptr;
     QPushButton *m_addSampleButton = nullptr;
     QPushButton *m_removeSampleButton = nullptr;

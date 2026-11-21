@@ -25,6 +25,27 @@ inline bool sampleQualityIsPlasma()
     return sampleQualityFromSettings() == QLatin1String("plasma");
 }
 
+/** 基础参数中“加样扫码”的 QSettings key：开启后每添加一个样本必须扫码 */
+inline const char *addSampleScanBarcodeSettingsKey()
+{
+    return "basic/addSampleScanBarcode";
+}
+
+inline bool addSampleScanBarcodeEnabled()
+{
+    QSettings settings;
+    return settings.value(
+                QString::fromLatin1(addSampleScanBarcodeSettingsKey()), false)
+            .toBool();
+}
+
+inline void setAddSampleScanBarcodeEnabled(bool enabled)
+{
+    QSettings settings;
+    settings.setValue(QString::fromLatin1(addSampleScanBarcodeSettingsKey()),
+                      enabled);
+}
+
 /** 按机型保存每个全局通道的启用/禁用状态 */
 inline QString channelStateSettingsKey(MachineModel model, int globalChannel)
 {

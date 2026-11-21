@@ -1082,11 +1082,9 @@ QFrame *AddSampleWidget::createSampleTableCard()
         toolRow->addWidget(button);
     }
     toolRow->addStretch(1);
-    auto *hint = new QLabel(
-                tr("样本号默认 T+日期+4位序号；双击单元格编辑，"
-                   "双击样本号可修改"), card);
-    hint->setObjectName(QStringLiteral("tableHint"));
-    toolRow->addWidget(hint);
+    m_tableHint = new QLabel(card);
+    m_tableHint->setObjectName(QStringLiteral("tableHint"));
+    toolRow->addWidget(m_tableHint);
     layout->addLayout(toolRow);
 
     m_sampleTable = new QTableWidget(card);
@@ -1208,11 +1206,13 @@ void AddSampleWidget::updateSampleQuality()
     }
 
     const bool plasma = sampleQualityIsPlasma();
+    const bool scanBarcode = addSampleScanBarcodeEnabled();
     m_bloodArea->setMachineModel(m_model);
     m_bloodArea->setPlasma(plasma);
     m_bloodArea->update();
     updateHeightHeader();
     updateSampleCount();
+    updateScanHint();
 
     const int groups = machineBloodSampleGroupCount(m_model);
     const int wells = machineBloodSampleWellCount(m_model);
@@ -1221,9 +1221,11 @@ void AddSampleWidget::updateSampleQuality()
             .arg(groupLetter(groups - 1));
 
     m_subtitle->setText(
-                tr("%1 · 样本质量：%2 · 血样区 %3 组（%4）× 10 孔 = %5 孔")
+                tr("%1 · 样本质量：%2 · 加样扫码：%3 · "
+                   "血样区 %4 组（%5）× 10 孔 = %6 孔")
                 .arg(QString::fromLatin1(machineModelName(m_model)))
                 .arg(plasma ? tr("血浆") : tr("全血"))
+                .arg(scanBarcode ? tr("开") : tr("关"))
                 .arg(groups)
                 .arg(groupRange)
                 .arg(wells));
@@ -1262,10 +1264,62 @@ void AddSampleWidget::updateSampleCount()
                 .arg(machineBloodSampleWellCount(m_model)));
 }
 
+void AddSampleWidget::updateScanHint()
+{
+    if (!m_tableHint) {
+        return;
+    }
+    if (addSampleScanBarcodeEnabled()) {
+        m_tableHint->setText(
+                    tr("扫码开：添加后需立即扫描/输入条码 · "
+                       "样本号 T+日期+4位"));
+    } else {
+        m_tableHint->setText(
+                    tr("扫码关：条码可留空/手动输入 · "
+                       "样本号 T+日期+4位"));
+    }
+}
+
+void AddSampleWidget::focusBarcodeCell(int row)
+{
+    if (!m_sampleTable || row < 0 || row >= m_sampleTable->rowCount()) {
+        return;
+    }
+    m_sampleTable->setFocus();
+    m_sampleTable->selectRow(row);
+    m_sampleTable->setCurrentCell(row, BarcodeColumn);
+    if (QTableWidgetItem *item = m_sampleTable->item(row, BarcodeColumn)) {
+        m_sampleTable->editItem(item);
+    }
+}
+
 void AddSampleWidget::addSample()
 {
     if (!m_sampleTable) {
         return;
+    }
+
+    // 开启加样扫码时，必须先把已有样本的条码扫/输完，否则再添加会无法对应。
+    if (addSampleScanBarcodeEnabled()) {
+        for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
+            QTableWidgetItem *barcode = m_sampleTable->item(row,
+                                                            BarcodeColumn);
+            if (barcode && !barcode->text().trimmed().isEmpty()) {
+                continue;
+            }
+
+            QString number = tr("当前样本");
+            if (QTableWidgetItem *sampleNo =
+                    m_sampleTable->item(row, SampleNoColumn)) {
+                number = sampleNo->text();
+            }
+            QMessageBox::information(
+                        this, tr("请先扫描条码"),
+                        tr("加样扫码已开启。\n请先为样本 %1 扫描或输入"
+                           "条码，再添加下一个样本。").arg(number));
+            focusBarcodeCell(row);
+            return;
+        }
     }
 
     const QString position = nextFreePosition();
@@ -1293,9 +1347,13 @@ void AddSampleWidget::addSample()
     qInfo() << "Add sample:" << sampleNumber << "position" << position;
 
     const int row = m_sampleTable->rowCount() - 1;
-    m_sampleTable->selectRow(row);
-    m_sampleTable->setCurrentCell(row, BarcodeColumn);
     m_sampleTable->scrollToBottom();
+    if (addSampleScanBarcodeEnabled()) {
+        focusBarcodeCell(row);
+    } else {
+        m_sampleTable->selectRow(row);
+        m_sampleTable->setCurrentCell(row, BarcodeColumn);
+    }
 }
 
 void AddSampleWidget::removeSelectedSamples()
