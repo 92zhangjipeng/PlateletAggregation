@@ -6,8 +6,8 @@
 #include <QPoint>
 #include <QVector>
 
+class QHBoxLayout;
 class QLabel;
-class QTabWidget;
 class SampleTrayModel;
 class TrayGridWidget;
 
@@ -29,11 +29,14 @@ private slots:
 
 private:
     void handleTubeClicked(int tubeIndex, const QPoint &globalPos);
-    void clearCurrentTray();
-    void clearAllTrays();
+    /** 更换某盘：将该盘所有试管恢复为空闲 */
+    void replaceTray(int trayIndex);
+    /** 按当前机型盘数重建水平排列的试管盘 */
+    void rebuildTrayWidgets();
 
     SampleTrayModel *m_model = nullptr;
-    QTabWidget *m_tabs = nullptr;
+    QWidget *m_trayRow = nullptr;
+    QHBoxLayout *m_trayLayout = nullptr;
     QVector<TrayGridWidget *> m_grids;
     QLabel *m_subtitleLabel = nullptr;
     QLabel *m_summaryLabel = nullptr;

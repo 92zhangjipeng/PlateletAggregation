@@ -12,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLayoutItem>
 #include <QLineEdit>
 #include <QLineF>
 #include <QLinearGradient>
@@ -25,7 +26,6 @@
 #include <QPushButton>
 #include <QRadialGradient>
 #include <QStyle>
-#include <QTabWidget>
 #include <QToolTip>
 #include <QVBoxLayout>
 
@@ -69,7 +69,7 @@ public:
         , m_trayIndex(trayIndex)
     {
         setMouseTracking(true);
-        setMinimumSize(620, 420);
+        setMinimumSize(250, 400);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     }
 
@@ -718,8 +718,10 @@ TubeTrayDialog::TubeTrayDialog(SampleTrayModel *model, QWidget *parent)
     , m_model(model)
 {
     setModal(false);
-    resize(940, 680);
-    setMinimumSize(820, 600);
+    const int trayCount = m_model
+            ? m_model->activeTrayCount() : SampleTrayModel::MaxTrays;
+    resize(qMax(940, 40 + trayCount * 290 + (trayCount - 1) * 12), 700);
+    setMinimumSize(720, 560);
 
     setStyleSheet(QStringLiteral(
         "QDialog#framelessDialog {"
@@ -748,30 +750,6 @@ TubeTrayDialog::TubeTrayDialog(SampleTrayModel *model, QWidget *parent)
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 11px;"
         "}"
-        "QTabWidget::pane {"
-        "  border: 1px solid #DCE7F1;"
-        "  border-radius: 10px;"
-        "  background: #F8FBFD;"
-        "  top: -1px;"
-        "}"
-        "QTabBar::tab {"
-        "  background: #EAF2F8;"
-        "  color: #5A7086;"
-        "  border: 1px solid #D4E3EF;"
-        "  border-bottom: none;"
-        "  border-top-left-radius: 6px;"
-        "  border-top-right-radius: 6px;"
-        "  padding: 7px 18px;"
-        "  margin-right: 2px;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
-        "}"
-        "QTabBar::tab:selected {"
-        "  background: #FFFFFF;"
-        "  color: #1F4E79;"
-        "  font-weight: 600;"
-        "}"
-        "QTabBar::tab:disabled { color: #AFC0CC; background: #F2F6F9; }"
         "QPushButton#trayActionButton {"
         "  background: #FFFFFF;"
         "  color: #1F4E79;"
@@ -814,22 +792,13 @@ TubeTrayDialog::TubeTrayDialog(SampleTrayModel *model, QWidget *parent)
     header->addWidget(m_summaryLabel, 0, Qt::AlignVCenter);
     root->addLayout(header);
 
-    m_tabs = new QTabWidget(content);
-    m_tabs->setDocumentMode(true);
-    m_tabs->setTabPosition(QTabWidget::North);
-    for (int tray = 0; tray < SampleTrayModel::MaxTrays; ++tray) {
-        auto *grid = new TrayGridWidget(m_model, tray, m_tabs);
-        grid->setClickHandler([this](int index, const QPoint &globalPos) {
-            handleTubeClicked(index, globalPos);
-        });
-        m_grids.append(grid);
-        const int start = tray * SampleTrayModel::TubesPerTray;
-        m_tabs->addTab(grid, tr("试管盘 %1  (%2–%3)")
-                       .arg(tray + 1)
-                       .arg(start)
-                       .arg(start + SampleTrayModel::TubesPerTray - 1));
-    }
-    root->addWidget(m_tabs, 1);
+    m_trayRow = new QWidget(content);
+    m_trayRow->setObjectName(QStringLiteral("trayRow"));
+    m_trayLayout = new QHBoxLayout(m_trayRow);
+    m_trayLayout->setContentsMargins(0, 0, 0, 0);
+    m_trayLayout->setSpacing(12);
+    root->addWidget(m_trayRow, 1);
+    rebuildTrayWidgets();
 
     auto *legend = new QLabel(
                 tr("<span style='color:#6B8194;'>○</span> 空闲（透明杯）"
@@ -846,26 +815,11 @@ TubeTrayDialog::TubeTrayDialog(SampleTrayModel *model, QWidget *parent)
 
     auto *footer = new QHBoxLayout;
     m_hintLabel = new QLabel(
-                tr("维护提示：点击试管可打开状态维护菜单；正常测试流程应通过 "
-                   "SampleTrayModel 接口自动维护。"),
+                tr("维护提示：点击试管可打开状态维护菜单；每盘下方「更换」会将"
+                   "该盘全部试管恢复为空闲。"),
                 content);
     m_hintLabel->setObjectName(QStringLiteral("trayHint"));
     footer->addWidget(m_hintLabel, 1);
-
-    auto *clearTrayButton = new QPushButton(tr("清空当前盘"), content);
-    clearTrayButton->setObjectName(QStringLiteral("trayActionButton"));
-    clearTrayButton->setCursor(Qt::PointingHandCursor);
-    connect(clearTrayButton, &QPushButton::clicked,
-            this, &TubeTrayDialog::clearCurrentTray);
-    footer->addWidget(clearTrayButton);
-
-    auto *clearAllButton = new QPushButton(tr("全部清空"), content);
-    clearAllButton->setObjectName(QStringLiteral("trayActionButton"));
-    clearAllButton->setCursor(Qt::PointingHandCursor);
-    connect(clearAllButton, &QPushButton::clicked,
-            this, &TubeTrayDialog::clearAllTrays);
-    footer->addWidget(clearAllButton);
-
     root->addLayout(footer);
     setContentWidget(content);
 
@@ -904,16 +858,60 @@ void TubeTrayDialog::refresh()
                 .arg(m_model->countState(SampleTrayModel::TubeState::Sampled))
                 .arg(m_model->countState(SampleTrayModel::TubeState::Used)));
 
-    for (int tray = 0; tray < m_grids.size(); ++tray) {
-        const bool active = tray < activeTrays;
-        m_grids[tray]->setActive(active);
-        m_tabs->setTabEnabled(tray, active);
-        m_tabs->setTabToolTip(
-                    tray, active ? tr("可用") : tr("当前机型未使用"));
-        m_grids[tray]->update();
+    if (m_grids.size() != activeTrays) {
+        rebuildTrayWidgets();
     }
-    if (m_tabs->currentIndex() >= activeTrays) {
-        m_tabs->setCurrentIndex(0);
+    for (TrayGridWidget *grid : m_grids) {
+        grid->setActive(true);
+        grid->update();
+    }
+}
+
+void TubeTrayDialog::rebuildTrayWidgets()
+{
+    if (!m_model || !m_trayLayout || !m_trayRow) {
+        return;
+    }
+
+    const int trayCount = m_model->activeTrayCount();
+    if (m_grids.size() == trayCount && m_trayLayout->count() == trayCount) {
+        return;
+    }
+
+    while (QLayoutItem *item = m_trayLayout->takeAt(0)) {
+        if (QWidget *widget = item->widget()) {
+            widget->deleteLater();
+        }
+        delete item;
+    }
+    m_grids.clear();
+
+    for (int tray = 0; tray < trayCount; ++tray) {
+        auto *wrapper = new QWidget(m_trayRow);
+        auto *wrapperLayout = new QVBoxLayout(wrapper);
+        wrapperLayout->setContentsMargins(0, 0, 0, 0);
+        wrapperLayout->setSpacing(8);
+
+        auto *grid = new TrayGridWidget(m_model, tray, wrapper);
+        grid->setClickHandler([this](int index, const QPoint &globalPos) {
+            handleTubeClicked(index, globalPos);
+        });
+        wrapperLayout->addWidget(grid, 1);
+
+        auto *replaceRow = new QHBoxLayout;
+        replaceRow->addStretch(1);
+        auto *replaceButton = new QPushButton(tr("更换"), wrapper);
+        replaceButton->setObjectName(QStringLiteral("trayActionButton"));
+        replaceButton->setCursor(Qt::PointingHandCursor);
+        replaceButton->setToolTip(
+                    tr("将该盘全部试管恢复为空闲，用于更换新盘"));
+        connect(replaceButton, &QPushButton::clicked,
+                this, [this, tray]() { replaceTray(tray); });
+        replaceRow->addWidget(replaceButton);
+        wrapperLayout->addLayout(replaceRow);
+
+        m_trayLayout->addWidget(wrapper, 1);
+        m_grids.append(grid);
     }
 }
 
@@ -998,35 +996,27 @@ void TubeTrayDialog::handleTubeClicked(int tubeIndex,
     }
 }
 
-void TubeTrayDialog::clearCurrentTray()
+void TubeTrayDialog::replaceTray(int trayIndex)
 {
-    if (!m_model || !m_tabs) {
+    if (!m_model || !m_model->isTrayActive(trayIndex)) {
         return;
     }
-    const int tray = m_tabs->currentIndex();
-    if (tray < 0 || tray >= m_model->activeTrayCount()) {
-        return;
-    }
-    const QMessageBox::StandardButton answer = QMessageBox::question(
-                this, tr("清空试管盘"),
-                tr("确定将试管盘 %1 的 60 支试管全部重置为空闲吗？")
-                .arg(tray + 1),
-                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-    if (answer == QMessageBox::Yes) {
-        m_model->clearTray(tray);
-    }
-}
 
-void TubeTrayDialog::clearAllTrays()
-{
-    if (!m_model) {
-        return;
+    const int nonFreeCount = SampleTrayModel::TubesPerTray
+            - m_model->countStateInTray(
+                trayIndex, SampleTrayModel::TubeState::Free);
+    if (nonFreeCount > 0) {
+        const QMessageBox::StandardButton answer = QMessageBox::question(
+                    this, tr("更换试管盘"),
+                    tr("确定更换试管盘 %1 吗？\n\n"
+                       "盘内 %2 支非空闲试管将全部恢复为空闲。")
+                    .arg(trayIndex + 1)
+                    .arg(nonFreeCount),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
     }
-    const QMessageBox::StandardButton answer = QMessageBox::question(
-                this, tr("清空全部试管盘"),
-                tr("确定将当前机型使用的所有试管全部重置为空闲吗？"),
-                QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-    if (answer == QMessageBox::Yes) {
-        m_model->clearAll();
-    }
+
+    m_model->clearTray(trayIndex);
 }
