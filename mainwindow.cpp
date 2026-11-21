@@ -66,7 +66,7 @@ constexpr int kStartupConnectTimeoutMs = 30000;   // 启动后 30 秒内必须�
 
 // 联机启动校准参数
 constexpr double kModuleTargetTemperatureCelsius = 37.0;
-constexpr int kHeatingTimeoutMs = 60000;          // 超过 1 分钟先灌注清洗
+constexpr int kHeatingTimeoutMs = 5 * 60 * 1000;  // 升温 37℃ 超时保护
 constexpr int kDimmingTargetAd = 3300;
 constexpr int kDimmingResidualThreshold = 100;    // 超 ±100 视为疑似残留试杯
 constexpr int kLedTuningTolerance = 3;            // AD 允许 ±3
@@ -708,7 +708,7 @@ MainWindow::MainWindow(QWidget *parent)
             m_perfusionController, &PerfusionController::handleReport);
     connect(m_perfusionController, &PerfusionController::progressChanged,
             this, [this](int completed, int total, const QString &status) {
-        if (m_startupState != StartupCalibrationState::Cleaning) {
+        if (m_startupState != StartupCalibrationState::Perfusion) {
             return;
         }
         const int percent = total > 0
@@ -717,11 +717,11 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_perfusionController, &PerfusionController::finished,
             this, [this](bool ok, const QString &message) {
-        if (m_startupState != StartupCalibrationState::Cleaning) {
+        if (m_startupState != StartupCalibrationState::Perfusion) {
             return;
         }
         if (ok) {
-            beginStartupDimming();
+            beginStartupHeating();
         } else {
             abortStartupCalibration(message, true);
         }
@@ -1165,6 +1165,9 @@ void MainWindow::handleLogin()
         m_actionHint->clear();
     }
     m_stack->setCurrentWidget(m_mainPage);
+    // 坐标在登录前已从 JSON 读入内存；登录后若已联机，立即开始
+    // “开机灌注 → 升温到 37℃ → 调光”。
+    maybeStartStartupCalibration();
     // 注意：这里不重置通道/模拟状态，保证「切换用户 → 取消」能回到原主界面
 }
 
@@ -1835,22 +1838,40 @@ bool MainWindow::allModulesAtTargetTemperature() const
     return true;
 }
 
-void MainWindow::startStartupCalibration()
+void MainWindow::maybeStartStartupCalibration()
 {
-    if (m_startupState != StartupCalibrationState::Idle || !m_commWorker
+    if (!m_hasLoggedIn || !m_startupConnected || !m_commWorker) {
+        return;
+    }
+    if (m_startupState != StartupCalibrationState::Idle
             || m_startupCalibrationAttempted) {
         return;
     }
-    m_startupCalibrationAttempted = true;
-
-    // 测试进行中掉线重连时不要打断测试去做升温调光。
+    // 测试进行中掉线重连时不要打断测试去做灌注/升温/调光。
     if (testingActive()
             || (m_moduleOverview
                 && m_moduleOverview->isChannelOneSimulationRunning())) {
         return;
     }
+    startStartupCalibration();
+}
 
-    m_startupState = StartupCalibrationState::Heating;
+void MainWindow::startStartupCalibration()
+{
+    if (m_startupState != StartupCalibrationState::Idle || !m_commWorker
+            || m_startupCalibrationAttempted
+            || !m_hasLoggedIn || !m_startupConnected) {
+        return;
+    }
+
+    // 测试进行中掉线重连时不要打断测试去做灌注/升温/调光。
+    if (testingActive()
+            || (m_moduleOverview
+                && m_moduleOverview->isChannelOneSimulationRunning())) {
+        return;
+    }
+    m_startupCalibrationAttempted = true;
+
     m_dimmingCheckWaitCount = 0;
     m_cupRetryCount = 0;
     m_ledCurrentReadLocked = false;
@@ -1866,9 +1887,35 @@ void MainWindow::startStartupCalibration()
     }
 
     setMainPageInteractionEnabled(false);
+    beginStartupPerfusion();
+}
+
+void MainWindow::beginStartupPerfusion()
+{
+    m_startupState = StartupCalibrationState::Perfusion;
+    setStartupMaskStatus(
+                tr("开机灌注中"),
+                tr("正在复位三根 Z 轴，随后灌注样本泵和试剂泵；"
+                   "请勿操作仪器。"),
+                true, 0);
+
+    if (!m_perfusionController) {
+        abortStartupCalibration(tr("灌注控制器未初始化"), true);
+        return;
+    }
+    m_perfusionController->start();
+}
+
+void MainWindow::beginStartupHeating()
+{
+    if (m_startupState != StartupCalibrationState::Perfusion) {
+        return;
+    }
+
+    m_startupState = StartupCalibrationState::Heating;
     setStartupMaskStatus(
                 tr("模组升温中"),
-                tr("正在将所有模组升温至 37℃；超过 1 分钟将先进行灌注清洗。"),
+                tr("正在将所有模组升温至 37℃，达到后开始调光。"),
                 false, 0);
 
     const int moduleCount = machineModuleCount(m_machineModel);
@@ -1912,27 +1959,12 @@ void MainWindow::handleStartupTick()
         if (m_startupCheckTimer) {
             m_startupCheckTimer->stop();
         }
-        beginStartupCleaning();
+        abortStartupCalibration(
+                    tr("模组升温超时，%1 分钟内未达到 37℃，"
+                       "已停止启动校准。")
+                    .arg(kHeatingTimeoutMs / 60000),
+                    true);
     }
-}
-
-void MainWindow::beginStartupCleaning()
-{
-    if (m_startupState != StartupCalibrationState::Heating) {
-        return;
-    }
-    m_startupState = StartupCalibrationState::Cleaning;
-    setStartupMaskStatus(
-                tr("开机灌注中"),
-                tr("正在复位三根 Z 轴，随后灌注样本泵和试剂泵；"
-                   "请勿操作仪器。"),
-                true, 0);
-
-    if (!m_perfusionController) {
-        abortStartupCalibration(tr("灌注控制器未初始化"), true);
-        return;
-    }
-    m_perfusionController->start();
 }
 
 void MainWindow::beginStartupDimming()
@@ -2629,7 +2661,7 @@ void MainWindow::updateSerialStatus(bool connected, const QString &portName,
                             .arg(baudRate));
         qInfo() << "仪器串口已连接:" << port
                 << "波特率:" << baudRate;
-        startStartupCalibration();
+        maybeStartStartupCalibration();
         return;
     }
 

@@ -102,7 +102,7 @@ private:
     enum class StartupCalibrationState {
         Idle,
         Heating,
-        Cleaning,
+        Perfusion,
         Dimming,
         ReadingLedCurrent,
         LedTuning,
@@ -122,11 +122,14 @@ private:
     /** 联机升温 → 灌注清洗（超时）→ 调光 → LED 电流微调 → 保存参数 */
     void createStartupMask();
     void setMainPageInteractionEnabled(bool enabled);
+    /** 登录且已连接时调用，开始“灌注 → 升温 → 调光”整套启动流程 */
+    void maybeStartStartupCalibration();
     void startStartupCalibration();
     void abortStartupCalibration(const QString &reason = QString(),
                                  bool userVisible = true);
     void handleStartupTick();
-    void beginStartupCleaning();
+    void beginStartupPerfusion();
+    void beginStartupHeating();
     void beginStartupDimming();
     void checkStartupDimming();
     /** 调光后等待各通道 AD 稳定（慢慢爬升过程中不判断 ±100） */
