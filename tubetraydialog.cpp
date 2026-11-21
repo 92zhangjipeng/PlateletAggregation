@@ -34,17 +34,6 @@
 
 namespace {
 
-QColor stateTextColor(SampleTrayModel::TubeState state)
-{
-    switch (state) {
-    case SampleTrayModel::TubeState::Free: return QColor("#6B8194");
-    case SampleTrayModel::TubeState::Allocated: return QColor("#966A16");
-    case SampleTrayModel::TubeState::Sampled: return QColor("#1F6FA5");
-    case SampleTrayModel::TubeState::Used: return QColor("#1E7B45");
-    }
-    return QColor("#6B8194");
-}
-
 bool stateHasCup(SampleTrayModel::TubeState state)
 {
     return state == SampleTrayModel::TubeState::Free
@@ -454,9 +443,6 @@ private:
                        QString::number(row + 1));
         }
 
-        QFont numberFont(QStringLiteral("Microsoft YaHei"));
-        numberFont.setPixelSize(7);
-
         for (int row = 0; row < rows; ++row) {
             for (int column = 0; column < columns; ++column) {
                 const int localIndex = row * columns + column;
@@ -480,12 +466,12 @@ private:
                     paintCup(p, center, rx, ry, info.state, hovered);
                 }
 
-                p.setFont(numberFont);
-                p.setPen(hasCup ? stateTextColor(info.state)
-                                : QColor("#E8F4FA"));
-                p.drawText(QRectF(center.x() - rx, center.y() - ry,
-                                  rx * 2.0, ry * 2.0),
-                           Qt::AlignCenter, QString::number(tubeIndex));
+                paintTubeNumber(
+                            p,
+                            QRectF(center.x() - rx, center.y() - ry,
+                                   rx * 2.0, ry * 2.0),
+                            QString::number(tubeIndex), hasCup,
+                            info.state);
             }
         }
     }
@@ -623,6 +609,40 @@ private:
             p.setBrush(Qt::NoBrush);
             p.drawEllipse(mouth.adjusted(-2.0, -1.5, 2.0, 1.5));
         }
+    }
+
+    void paintTubeNumber(QPainter &p, const QRectF &holeRect,
+                         const QString &text, bool hasCup,
+                         SampleTrayModel::TubeState state) const
+    {
+        QFont font(QStringLiteral("Microsoft YaHei"));
+        font.setPixelSize(8);
+        font.setBold(true);
+        p.setFont(font);
+
+        if (hasCup) {
+            const QFontMetricsF metrics(font);
+            const qreal pillWidth = qMin(holeRect.width() * 0.96,
+                                         metrics.width(text) + 7.0);
+            const qreal pillHeight = qMin(holeRect.height() * 1.15, 11.0);
+            const QRectF pill(holeRect.center().x() - pillWidth / 2.0,
+                              holeRect.center().y() - pillHeight / 2.0,
+                              pillWidth, pillHeight);
+            p.setPen(QPen(QColor(140, 180, 205, 170), 0.6));
+            p.setBrush(QColor(255, 255, 255, 220));
+            p.drawRoundedRect(pill, 3.0, 3.0);
+            p.setPen(QColor("#1F4E79"));
+            p.drawText(pill, Qt::AlignCenter, text);
+            return;
+        }
+
+        // 空孔内部偏深：浅色字 + 深色落影，保证编号可读
+        p.setPen(QColor(20, 45, 62, 170));
+        p.drawText(holeRect.translated(0.6, 0.6), Qt::AlignCenter, text);
+        QColor textColor = cupMouthColor(state).lighter(155);
+        textColor.setAlpha(245);
+        p.setPen(textColor);
+        p.drawText(holeRect, Qt::AlignCenter, text);
     }
 
     void paintStirBar(QPainter &p, const QPointF &center,
