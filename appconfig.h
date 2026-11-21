@@ -5,6 +5,7 @@
 
 #include <QSettings>
 #include <QString>
+#include <QtGlobal>
 
 /** 基础参数中“样本质量”的 QSettings key */
 inline const char *sampleQualitySettingsKey()
@@ -23,6 +24,32 @@ inline QString sampleQualityFromSettings()
 inline bool sampleQualityIsPlasma()
 {
     return sampleQualityFromSettings() == QLatin1String("plasma");
+}
+
+/**
+ * 血浆模式下样本针吸 PRP 的固定下降高度（mm）。
+ * 血浆模式不做测高，加样列表的「吸样高度」直接取这个值。
+ */
+inline const char *plasmaPrpAspirateHeightSettingsKey()
+{
+    return "basic/plasmaPrpAspirateHeight";
+}
+
+inline int plasmaPrpAspirateHeightFromSettings()
+{
+    QSettings settings;
+    const int value = settings.value(
+                QString::fromLatin1(plasmaPrpAspirateHeightSettingsKey()),
+                32).toInt();
+    return qBound(20, value, 99);
+}
+
+inline void setPlasmaPrpAspirateHeightInSettings(int heightMm)
+{
+    QSettings settings;
+    settings.setValue(
+                QString::fromLatin1(plasmaPrpAspirateHeightSettingsKey()),
+                qBound(20, heightMm, 99));
 }
 
 /** 基础参数中“加样扫码”的 QSettings key：开启后每添加一个样本必须扫码 */

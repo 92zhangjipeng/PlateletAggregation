@@ -26,14 +26,18 @@
 #include "testsession.h"
 #include "tubetraydialog.h"
 #include "appconfig.h"
+#include "applogger.h"
 
 #include <QAbstractButton>
 #include <QCloseEvent>
 #include <QDateTime>
 #include <QDebug>
+#include <QDesktopServices>
+#include <QDir>
 #include <QEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -44,6 +48,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
@@ -56,7 +61,9 @@
 #include <QTabWidget>
 #include <QThread>
 #include <QTimer>
+#include <QTextCursor>
 #include <QToolButton>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QVariant>
 #include <QWidget>
@@ -96,7 +103,8 @@ enum class ToolbarIconType {
     Clean,
     AddSample,
     Tray,
-    Settings
+    Settings,
+    Log
 };
 
 QPixmap renderToolbarIcon(ToolbarIconType type, const QColor &color)
@@ -221,6 +229,15 @@ QPixmap renderToolbarIcon(ToolbarIconType type, const QColor &color)
         }
         break;
     }
+    case ToolbarIconType::Log: {
+        // 时钟 + 日志横线：表示运行日志/历史记录
+        p.drawEllipse(QPointF(16.0, 16.0), 9.0, 9.0);
+        p.drawLine(QPointF(16.0, 16.0), QPointF(16.0, 10.0));
+        p.drawLine(QPointF(16.0, 16.0), QPointF(20.6, 18.2));
+        p.drawLine(QPointF(10.0, 5.5), QPointF(14.0, 5.5));
+        p.drawLine(QPointF(18.0, 5.5), QPointF(22.0, 5.5));
+        break;
+    }
     case ToolbarIconType::Settings: {
         const int toothCount = 8;
         QPainterPath gear;
@@ -266,10 +283,10 @@ QToolButton *createTopFunctionButton(const QString &text, const QIcon &icon,
     button->setCursor(Qt::PointingHandCursor);
     button->setFocusPolicy(Qt::NoFocus);
     button->setMinimumWidth(width);
-    button->setFixedHeight(64);
+    button->setFixedHeight(72);
     button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-    button->setIconSize(QSize(26, 26));
+    button->setIconSize(QSize(28, 28));
     button->setText(text);
     button->setIcon(icon);
     return button;
@@ -914,7 +931,7 @@ QWidget *MainWindow::createMainPage()
 
     // 左侧功能按钮：主页 / 结果信息 / 耗材管理 / 试管盘 / 查询 / 质控
     auto *leftGroup = new QWidget(topBar);
-    leftGroup->setFixedHeight(64);
+    leftGroup->setFixedHeight(72);
     leftGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *leftLayout = new QHBoxLayout(leftGroup);
     leftLayout->setContentsMargins(0, 0, 0, 0);
@@ -976,13 +993,21 @@ QWidget *MainWindow::createMainPage()
     connect(m_startButton, &QToolButton::clicked,
             this, &MainWindow::handleStartTest);
 
-    // 右侧操作按钮：暂停/继续 / 复位 / 清洗 / 加样 / 设置
+    // 右侧操作按钮：日志 / 暂停继续 / 复位 / 清洗 / 加样 / 设置
     auto *rightGroup = new QWidget(topBar);
-    rightGroup->setFixedHeight(64);
+    rightGroup->setFixedHeight(72);
     rightGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *rightLayout = new QHBoxLayout(rightGroup);
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(4);
+
+    auto *logButton = createTopFunctionButton(
+                tr("日志"), makeToolbarIcon(ToolbarIconType::Log,
+                                             topIconColor),
+                rightGroup, 64);
+    connect(logButton, &QToolButton::clicked,
+            this, &MainWindow::openLogs);
+    rightLayout->addWidget(logButton);
 
     m_pauseButton = createTopFunctionButton(
                 tr("暂停"), makeToolbarIcon(ToolbarIconType::Pause,
@@ -1024,11 +1049,11 @@ QWidget *MainWindow::createMainPage()
             this, &MainWindow::openSettings);
     rightLayout->addWidget(settingsButton);
 
-    // 左侧 6 个、右侧 5 个按钮按 6:5 分配横向空间，
-    // 再让每个按钮设为 Expanding，视觉上左右按钮宽度基本一致并铺满顶栏。
-    topLayout->addWidget(leftGroup, 6, Qt::AlignVCenter);
+    // 左右各 6 个按钮，按 1:1 分配横向空间；每个按钮 Expanding，
+    // 按钮宽度一致并铺满整条顶栏。
+    topLayout->addWidget(leftGroup, 1, Qt::AlignVCenter);
     topLayout->addWidget(m_startButton, 0, Qt::AlignCenter);
-    topLayout->addWidget(rightGroup, 5, Qt::AlignVCenter);
+    topLayout->addWidget(rightGroup, 1, Qt::AlignVCenter);
 
     rootLayout->addWidget(topBar);
 
@@ -1426,6 +1451,171 @@ void MainWindow::openAddSample()
     if (m_mainTabs && m_addSampleTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_addSampleTabIndex);
     }
+}
+
+void MainWindow::createLogTab()
+{
+    if (!m_mainTabs || m_logTabIndex >= 0) {
+        return;
+    }
+
+    auto *page = new QWidget;
+    page->setObjectName(QStringLiteral("placeholderPage"));
+    page->setStyleSheet(QStringLiteral(
+        "QWidget#placeholderPage { background: #F4F8FC; }"
+        "QLabel#pageTitle {"
+        "  color: #1F4E79;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 21px;"
+        "  font-weight: 700;"
+        "}"
+        "QLabel#pageSubtitle {"
+        "  color: #7A8FA3;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "}"
+        "QPushButton#logAction {"
+        "  min-width: 96px;"
+        "  min-height: 32px;"
+        "  background: #FFFFFF;"
+        "  color: #1F4E79;"
+        "  border: 1px solid #A9C8DF;"
+        "  border-radius: 6px;"
+        "  padding: 4px 14px;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "}"
+        "QPushButton#logAction:hover { background: #EAF4FC; }"
+        "QPushButton#logAction:pressed { background: #DCEBFA; }"));
+
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(24, 20, 24, 20);
+    layout->setSpacing(10);
+
+    auto *headerRow = new QHBoxLayout;
+    headerRow->setSpacing(8);
+    auto *title = new QLabel(tr("运行日志"), page);
+    title->setObjectName(QStringLiteral("pageTitle"));
+    auto *refreshButton = new QPushButton(tr("刷新"), page);
+    refreshButton->setObjectName(QStringLiteral("logAction"));
+    refreshButton->setCursor(Qt::PointingHandCursor);
+    auto *openDirButton = new QPushButton(tr("打开日志目录"), page);
+    openDirButton->setObjectName(QStringLiteral("logAction"));
+    openDirButton->setCursor(Qt::PointingHandCursor);
+    headerRow->addWidget(title);
+    headerRow->addStretch(1);
+    headerRow->addWidget(refreshButton);
+    headerRow->addWidget(openDirButton);
+    layout->addLayout(headerRow);
+
+    m_logPathLabel = new QLabel(page);
+    m_logPathLabel->setObjectName(QStringLiteral("pageSubtitle"));
+    m_logPathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_logPathLabel->setWordWrap(true);
+    layout->addWidget(m_logPathLabel);
+
+    m_logView = new QPlainTextEdit(page);
+    m_logView->setReadOnly(true);
+    m_logView->setLineWrapMode(QPlainTextEdit::NoWrap);
+    m_logView->setMaximumBlockCount(10000);
+    QFont logFont(QStringLiteral("Consolas"));
+    logFont.setStyleHint(QFont::Monospace);
+    logFont.setPixelSize(12);
+    m_logView->setFont(logFont);
+    m_logView->setStyleSheet(QStringLiteral(
+        "QPlainTextEdit {"
+        "  background: #FFFFFF;"
+        "  color: #1F2D3D;"
+        "  border: 1px solid #D8E5EF;"
+        "  border-radius: 8px;"
+        "  padding: 8px;"
+        "}"));
+    layout->addWidget(m_logView, 1);
+
+    connect(refreshButton, &QPushButton::clicked,
+            this, &MainWindow::refreshLogView);
+    connect(openDirButton, &QPushButton::clicked, this, [this]() {
+        const QString directory = AppLog::logDirectory();
+        if (directory.isEmpty() || !QDir(directory).exists()) {
+            QMessageBox::information(
+                        this, tr("运行日志"),
+                        tr("日志目录尚未创建，暂时没有可打开的目录。"));
+            return;
+        }
+        QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
+    });
+
+    m_logTabIndex = m_mainTabs->addTab(page, tr("日志"));
+}
+
+void MainWindow::openLogs()
+{
+    createLogTab();
+    refreshLogView();
+    if (m_mainTabs && m_logTabIndex >= 0) {
+        m_mainTabs->setCurrentIndex(m_logTabIndex);
+    }
+}
+
+void MainWindow::refreshLogView()
+{
+    if (!m_logView || !m_logPathLabel) {
+        return;
+    }
+
+    QString path = AppLog::currentLogFilePath();
+    if (path.isEmpty()) {
+        const QString directory = AppLog::logDirectory();
+        if (!directory.isEmpty()) {
+            QDir dir(directory);
+            const QStringList files = dir.entryList(
+                        QStringList() << QStringLiteral(
+                            "PlateletAggregation_*.log"),
+                        QDir::Files, QDir::Time);
+            if (!files.isEmpty()) {
+                path = dir.filePath(files.first());
+            }
+        }
+    }
+    if (path.isEmpty()) {
+        m_logPathLabel->setText(tr("日志文件尚未创建。"));
+        m_logPathLabel->setToolTip(QString());
+        m_logView->setPlainText(tr("暂无日志。"));
+        return;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        m_logPathLabel->setText(
+                    tr("无法读取日志文件：%1").arg(file.errorString()));
+        m_logPathLabel->setToolTip(path);
+        m_logView->setPlainText(
+                    tr("无法打开日志文件：\n%1\n\n%2")
+                    .arg(path, file.errorString()));
+        return;
+    }
+
+    const qint64 maxBytes = 512 * 1024;
+    const bool truncated = file.size() > maxBytes;
+    if (truncated) {
+        file.seek(file.size() - maxBytes);
+    }
+    QString text = QString::fromUtf8(file.readAll());
+    if (truncated) {
+        const int newline = text.indexOf(QLatin1Char('\n'));
+        if (newline >= 0) {
+            text = text.mid(newline + 1);
+        }
+    }
+    m_logView->setPlainText(text);
+    QTextCursor cursor = m_logView->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    m_logView->setTextCursor(cursor);
+    m_logPathLabel->setText(
+                truncated
+                ? tr("日志文件：%1（仅显示最近 512 KB）").arg(path)
+                : tr("日志文件：%1").arg(path));
+    m_logPathLabel->setToolTip(path);
 }
 
 void MainWindow::createSettingsTab()

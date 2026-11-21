@@ -840,6 +840,36 @@ QWidget *SettingsDialog::createBasicPage()
     qualityLockHint->setWordWrap(true);
     basicLayout->addWidget(qualityLockHint);
 
+    auto *plasmaHeightRow = new QHBoxLayout;
+    plasmaHeightRow->setSpacing(12);
+    auto *plasmaHeightCaption = new QLabel(
+                tr("血浆模式吸PRP高度"), basicGroup);
+    plasmaHeightCaption->setObjectName(QStringLiteral("paramCaption"));
+    auto *plasmaHeightSpin = new MedicalSpinBox(basicGroup);
+    plasmaHeightSpin->setRange(20, 99);
+    plasmaHeightSpin->setSuffix(tr(" mm"));
+    plasmaHeightSpin->setValue(plasmaPrpAspirateHeightFromSettings());
+    plasmaHeightSpin->setMinimumWidth(150);
+    plasmaHeightRow->addWidget(plasmaHeightCaption);
+    plasmaHeightRow->addWidget(plasmaHeightSpin);
+    plasmaHeightRow->addStretch(1);
+    basicLayout->addLayout(plasmaHeightRow);
+
+    auto *plasmaHeightHint = new QLabel(
+                tr("血浆模式不测高，添加样本时「吸样高度」直接使用该值；"
+                   "修改后对之后添加的待定样本生效，已确认样本保持确认时高度。"),
+                basicGroup);
+    plasmaHeightHint->setObjectName(QStringLiteral("paramHint"));
+    plasmaHeightHint->setWordWrap(true);
+    basicLayout->addWidget(plasmaHeightHint);
+
+    connect(plasmaHeightSpin,
+            static_cast<void (QSpinBox::*)(int)>(
+                &QSpinBox::valueChanged),
+            this, [](int value) {
+        setPlasmaPrpAspirateHeightInSettings(value);
+    });
+
     auto restoreQualitySelection = [wholeBlood, plasma]() {
         QSignalBlocker wholeBlocker(wholeBlood);
         QSignalBlocker plasmaBlocker(plasma);

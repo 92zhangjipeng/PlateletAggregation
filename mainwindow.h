@@ -25,6 +25,7 @@ class ModuleOverviewWidget;
 class QCloseEvent;
 class QEvent;
 class QLabel;
+class QPlainTextEdit;
 class QProgressBar;
 class QueryWidget;
 class ResultsInfoWidget;
@@ -172,6 +173,9 @@ private:
     void openQuery();
     void openQuality();
     void openAddSample();
+    void createLogTab();
+    void openLogs();
+    void refreshLogView();
     void showPendingFunction(const QString &name);
     void showActionHint(const QString &text);
     void applyChannelSettings();
@@ -198,6 +202,9 @@ private:
     int m_qualityTabIndex = -1;
     int m_addSampleTabIndex = -1;
     int m_settingsTabIndex = -1;
+    int m_logTabIndex = -1;
+    QPlainTextEdit *m_logView = nullptr;
+    QLabel *m_logPathLabel = nullptr;
     QLineEdit *m_usernameEdit = nullptr;
     QLineEdit *m_passwordEdit = nullptr;
     QLabel *m_connectionStatus = nullptr;

@@ -45,6 +45,7 @@
 #include <QSet>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QStyleOptionViewItem>
@@ -71,6 +72,8 @@ enum SampleColumn {
 };
 
 const int kSampleRowHeight = 28;
+const int kHeightSourceRole = Qt::UserRole + 1;
+const char kPlasmaAutoHeightSource[] = "plasmaAuto";
 
 QPointF lerpPoint(const QPointF &from, const QPointF &to, qreal t)
 {
@@ -2285,20 +2288,50 @@ AddSampleWidget::AddSampleWidget(MachineModel model,
         "  border-color: #DCE7F1;"
         "  background: #F7FAFC;"
         "}"
-        "QPushButton#sampleConfirm {"
-        "  background: #2C7BBF;"
-        "  color: #FFFFFF;"
-        "  border: 1px solid #2C7BBF;"
-        "  border-radius: 6px;"
-        "  padding: 5px 18px;"
+        "QPushButton#sampleAddPrimary {"
+        "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+        "      stop:0 #FFFFFF, stop:0.45 #F0F9FF, stop:1 #D9EDFB);"
+        "  color: #174A6D;"
+        "  border: 2px solid #7FB3D3;"
+        "  border-radius: 8px;"
+        "  padding: 9px 18px;"
         "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
-        "  font-weight: 600;"
+        "  font-size: 14px;"
+        "  font-weight: 700;"
         "}"
-        "QPushButton#sampleConfirm:hover { background: #3C8BCF; }"
-        "QPushButton#sampleConfirm:pressed { background: #2468A3; }"
+        "QPushButton#sampleAddPrimary:hover {"
+        "  background: #E8F6FF;"
+        "  border-color: #4E97C6;"
+        "}"
+        "QPushButton#sampleAddPrimary:pressed {"
+        "  background: #CFE8F8;"
+        "  border-color: #2C7BBF;"
+        "}"
+        "QPushButton#sampleAddPrimary:disabled {"
+        "  color: #AFC0CC;"
+        "  border-color: #DCE7F1;"
+        "  background: #F7FAFC;"
+        "}"
+        "QPushButton#sampleConfirm {"
+        "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+        "      stop:0 #4A9AD8, stop:0.5 #2C7BBF, stop:1 #23649B);"
+        "  color: #FFFFFF;"
+        "  border: 2px solid #2C7BBF;"
+        "  border-radius: 8px;"
+        "  padding: 9px 20px;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 14px;"
+        "  font-weight: 700;"
+        "}"
+        "QPushButton#sampleConfirm:hover {"
+        "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+        "      stop:0 #5AA9E2, stop:1 #2F78B5);"
+        "}"
+        "QPushButton#sampleConfirm:pressed {"
+        "  background: #2468A3;"
+        "}"
         "QPushButton#sampleConfirm:disabled {"
-        "  color: #DCE7F1;"
+        "  color: #EAF2F8;"
         "  border-color: #A9C8DF;"
         "  background: #A9C8DF;"
         "}"
@@ -2456,16 +2489,21 @@ void AddSampleWidget::buildUi()
     rightLayout->setSpacing(8);
 
     auto *rightButtons = new QHBoxLayout;
-    rightButtons->setSpacing(8);
+    rightButtons->setSpacing(10);
     m_addSampleButton = new QPushButton(tr("＋ 添加"), rightColumn);
-    m_addSampleButton->setObjectName(QStringLiteral("sampleAction"));
+    m_addSampleButton->setObjectName(QStringLiteral("sampleAddPrimary"));
     m_addSampleButton->setCursor(Qt::PointingHandCursor);
+    m_addSampleButton->setMinimumHeight(44);
+    m_addSampleButton->setSizePolicy(
+                QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_confirmButton = new QPushButton(tr("确认"), rightColumn);
     m_confirmButton->setObjectName(QStringLiteral("sampleConfirm"));
     m_confirmButton->setCursor(Qt::PointingHandCursor);
-    rightButtons->addWidget(m_addSampleButton);
-    rightButtons->addWidget(m_confirmButton);
-    rightButtons->addStretch(1);
+    m_confirmButton->setMinimumHeight(44);
+    m_confirmButton->setSizePolicy(
+                QSizePolicy::Expanding, QSizePolicy::Fixed);
+    rightButtons->addWidget(m_addSampleButton, 1);
+    rightButtons->addWidget(m_confirmButton, 1);
     rightLayout->addLayout(rightButtons);
     rightLayout->addWidget(createSampleTableCard(), 1);
     content->addWidget(rightColumn, 0);
@@ -2769,6 +2807,7 @@ void AddSampleWidget::updateSampleQuality()
     m_bloodArea->setPlasma(plasma);
     m_bloodArea->update();
     updateHeightHeader();
+    updateSampleHeightValues();
     updateSampleCount();
     updateScanHint();
     updateQuickSampleNumber();
@@ -2799,8 +2838,53 @@ void AddSampleWidget::updateHeightHeader()
     }
     const bool plasma = sampleQualityIsPlasma();
     item->setText(plasma ? tr("吸样高度") : tr("识别高度"));
-    item->setToolTip(plasma ? tr("血浆模式：吸样高度")
-                            : tr("全血模式：识别高度"));
+    item->setToolTip(
+                plasma
+                ? tr("血浆模式：吸样高度取基础设置中的固定吸PRP高度")
+                : tr("全血模式：识别高度由测高结果填入"));
+}
+
+void AddSampleWidget::updateSampleHeightValues()
+{
+    if (!m_sampleTable) {
+        return;
+    }
+    const bool plasma = sampleQualityIsPlasma();
+    const QString height = plasma
+            ? QString::number(plasmaPrpAspirateHeightFromSettings())
+            : QString();
+    m_updatingTable = true;
+    for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
+        QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+        // 已确认/测试中的样本保留确认时的高度，避免队列与实际不一致。
+        if (!status || status->text() != tr("待定")) {
+            continue;
+        }
+        QTableWidgetItem *item = m_sampleTable->item(row, HeightColumn);
+        if (!item) {
+            continue;
+        }
+        if (plasma) {
+            if (item->text() != height
+                    || item->data(kHeightSourceRole).toString()
+                       != QLatin1String(kPlasmaAutoHeightSource)) {
+                item->setText(height);
+                item->setData(Qt::UserRole, height);
+                item->setData(kHeightSourceRole,
+                              QString::fromLatin1(kPlasmaAutoHeightSource));
+            }
+            item->setToolTip(
+                        tr("血浆模式：吸样高度取基础设置中的固定值，不可编辑"));
+        } else if (item->data(kHeightSourceRole).toString()
+                   == QLatin1String(kPlasmaAutoHeightSource)) {
+            // 切回全血时只清掉血浆自动填的值，保留后续测高结果。
+            item->setText(QString());
+            item->setData(Qt::UserRole, QString());
+            item->setData(kHeightSourceRole, QVariant());
+            item->setToolTip(tr("由识别/测高结果自动填入，不可编辑"));
+        }
+    }
+    m_updatingTable = false;
 }
 
 void AddSampleWidget::updateSampleCount()
@@ -3823,8 +3907,21 @@ void AddSampleWidget::appendSampleRow(const QString &sampleNumber,
     m_sampleTable->setItem(row, BarcodeColumn, makeItem(barcode, true));
     m_sampleTable->setItem(row, TestItemColumn,
                            makeItem(testItem, false));
+    QString rowHeight = height;
+    const bool plasmaAutoHeight = rowHeight.isEmpty()
+            && sampleQualityIsPlasma();
+    if (plasmaAutoHeight) {
+        rowHeight = QString::number(plasmaPrpAspirateHeightFromSettings());
+    }
     m_sampleTable->setItem(row, HeightColumn,
-                           makeItem(height, false));
+                           makeItem(rowHeight, false));
+    if (plasmaAutoHeight) {
+        if (QTableWidgetItem *item =
+                m_sampleTable->item(row, HeightColumn)) {
+            item->setData(kHeightSourceRole,
+                          QString::fromLatin1(kPlasmaAutoHeightSource));
+        }
+    }
     m_sampleTable->setItem(row, PositionColumn,
                            makeItem(position, false));
 
@@ -3840,7 +3937,10 @@ void AddSampleWidget::appendSampleRow(const QString &sampleNumber,
         item->setToolTip(tr("双击选择测试项目，可多选自由组合"));
     }
     if (QTableWidgetItem *item = m_sampleTable->item(row, HeightColumn)) {
-        item->setToolTip(tr("由识别/测高结果自动填入，不可编辑"));
+        item->setToolTip(
+                    sampleQualityIsPlasma()
+                    ? tr("血浆模式：吸样高度取基础设置中的固定值，不可编辑")
+                    : tr("由识别/测高结果自动填入，不可编辑"));
     }
     if (QTableWidgetItem *item = m_sampleTable->item(row, PositionColumn)) {
         item->setToolTip(tr("血样孔号，例如 10；PPP+PRP 模式为 10+11"));

@@ -72,6 +72,7 @@ private:
     QFrame *createBloodAreaCard();
     void updateSampleQuality();
     void updateHeightHeader();
+    void updateSampleHeightValues();
     void updateSampleCount();
     void updateScanHint();
     void updateQuickSampleNumber();
