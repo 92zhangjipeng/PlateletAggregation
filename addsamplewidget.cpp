@@ -6,6 +6,8 @@
 
 #include "appconfig.h"
 
+#include <QEvent>
+#include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -15,10 +17,8 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
-#include <QPushButton>
 #include <QRadialGradient>
 #include <QShowEvent>
-#include <QStackedWidget>
 #include <QToolTip>
 #include <QVBoxLayout>
 #include <QVector>
@@ -31,11 +31,21 @@ QPointF lerpPoint(const QPointF &from, const QPointF &to, qreal t)
     return from + (to - from) * t;
 }
 
+QString groupLetter(int index)
+{
+    return QString(QChar('A' + index));
+}
+
 } // namespace
 
 /**
- * 血样区：按机型绘制 2 行 × (组数 × 5 列) 的 3D 玻璃血样孔。
- * 每组 5 列 × 2 行 = 10 孔；KS600=6 组、KS800=8 组、KS1200=12 组。
+ * 血样区：按机型绘制可插采血管的 3D 采血管架。
+ *
+ * 每组 5 行 × 2 列 = 10 孔，组数按机型：
+ * KS600=6 组（A~F）、KS800=8 组（A~H）、KS1200=12 组（A~L）。
+ * 每个孔内画一支已插入的采血管：
+ * - 全血模式：管底 60% 红色血液，上部 40% 淡黄色；
+ * - 血浆模式：整管淡黄色。
  */
 class BloodSampleAreaWidget : public QWidget
 {
@@ -45,7 +55,7 @@ public:
         , m_model(model)
     {
         setMouseTracking(true);
-        setMinimumSize(860, 250);
+        setMinimumSize(720, 360);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     }
 
@@ -56,6 +66,15 @@ public:
         }
         m_model = model;
         m_hoverWell = -1;
+        update();
+    }
+
+    void setPlasma(bool plasma)
+    {
+        if (m_plasma == plasma) {
+            return;
+        }
+        m_plasma = plasma;
         update();
     }
 
@@ -72,109 +91,20 @@ protected:
             return;
         }
 
-        // 桌面阴影
-        const qreal plateWidth = geometry.topFace.at(2).x()
-                - geometry.topFace.at(3).x();
-        const QRectF shadowRect(geometry.topFace.at(3).x() + 10.0,
-                                geometry.bottomY + geometry.thickness - 4.0,
-                                plateWidth - 20.0, 18.0);
-        QRadialGradient shadow(shadowRect.center(),
-                               qMax<qreal>(10.0, shadowRect.width() / 2.0));
-        shadow.setColorAt(0.0, QColor(31, 78, 121, 55));
-        shadow.setColorAt(1.0, QColor(31, 78, 121, 0));
-        p.setPen(Qt::NoPen);
-        p.setBrush(shadow);
-        p.drawEllipse(shadowRect);
+        paintRack(p, geometry);
+        paintHoles(p, geometry);
+        paintRowLabels(p, geometry);
 
-        // 玻璃板厚度
-        QLinearGradient sideGradient(0.0, geometry.bottomY,
-                                     0.0, geometry.bottomY
-                                     + geometry.thickness);
-        sideGradient.setColorAt(0.0, QColor(176, 213, 233, 230));
-        sideGradient.setColorAt(1.0, QColor(138, 184, 211, 245));
-        p.setPen(QPen(QColor(132, 178, 205, 225), 1.0));
-        p.setBrush(sideGradient);
-        p.drawPolygon(geometry.frontFace);
-
-        // 玻璃台面
-        QLinearGradient topGradient(0.0, geometry.topY,
-                                    0.0, geometry.bottomY);
-        topGradient.setColorAt(0.0, QColor(242, 252, 255, 205));
-        topGradient.setColorAt(0.5, QColor(220, 242, 252, 188));
-        topGradient.setColorAt(1.0, QColor(193, 226, 243, 205));
-        p.setPen(QPen(QColor(146, 190, 214, 240), 1.2));
-        p.setBrush(topGradient);
-        p.drawPolygon(geometry.topFace);
-
-        p.setPen(QPen(QColor(255, 255, 255, 235), 1.4));
-        p.drawLine(geometry.topFace.at(0), geometry.topFace.at(1));
-        p.setPen(QPen(QColor(255, 255, 255, 150), 1.0));
-        p.drawLine(geometry.topFace.at(0), geometry.topFace.at(3));
-        p.setPen(QPen(QColor(255, 255, 255, 80), 1.0));
-        p.drawLine(geometry.topFace.at(1), geometry.topFace.at(2));
-
-        p.save();
-        QPainterPath clip;
-        clip.addPolygon(geometry.topFace);
-        clip.closeSubpath();
-        p.setClipPath(clip);
-        p.setPen(QPen(QColor(255, 255, 255, 40), 9.0));
-        p.drawLine(QPointF(geometry.topFace.at(3).x() + plateWidth * 0.08,
-                           geometry.bottomY),
-                   QPointF(geometry.topFace.at(0).x() + plateWidth * 0.42,
-                           geometry.topY));
-        p.setPen(QPen(QColor(255, 255, 255, 25), 4.0));
-        p.drawLine(QPointF(geometry.topFace.at(3).x() + plateWidth * 0.55,
-                           geometry.bottomY),
-                   QPointF(geometry.topFace.at(0).x() + plateWidth * 0.82,
-                           geometry.topY));
-        p.restore();
-
-        // 组间玻璃隔断
-        p.setPen(QPen(QColor(120, 170, 200, 170), 1.2));
-        for (const QLineF &line : geometry.groupDividers) {
-            p.drawLine(line);
-            p.setPen(QPen(QColor(255, 255, 255, 90), 0.7));
-            p.drawLine(line.translated(1.0, 0.0));
-            p.setPen(QPen(QColor(120, 170, 200, 170), 1.2));
-        }
-
-        // 行号
-        QFont labelFont(QStringLiteral("Microsoft YaHei"));
-        labelFont.setPixelSize(8);
-        labelFont.setBold(true);
-        p.setFont(labelFont);
-        p.setPen(QColor("#5D7386"));
-        const qreal leftX = qMin(geometry.topFace.at(0).x(),
-                                 geometry.topFace.at(3).x()) - 12.0;
-        for (int row = 0; row < geometry.rows; ++row) {
-            const QPointF &point = geometry.centers.at(
-                        row * geometry.columns);
-            p.drawText(QRectF(leftX - 8.0, point.y() - 6.0, 14.0, 12.0),
-                       Qt::AlignCenter, QString::number(row + 1));
-        }
-
-        // 组号
-        for (int group = 0; group < geometry.groupLabelPoints.size();
-             ++group) {
-            const QPointF point = geometry.groupLabelPoints.at(group);
-            p.drawText(QRectF(point.x() - 28.0, point.y() - 6.0,
-                              56.0, 12.0),
-                       Qt::AlignCenter,
-                       tr("组 %1").arg(group + 1));
-        }
-
-        // 血样孔（后排先画）
+        // 后排先画，前排后画，形成遮挡关系。
         for (int row = 0; row < geometry.rows; ++row) {
             for (int column = 0; column < geometry.columns; ++column) {
                 const int index = row * geometry.columns + column;
-                paintWell(p,
-                          geometry.centers.at(index),
-                          geometry.radiusX.at(index),
-                          geometry.radiusY.at(index),
+                paintTube(p, geometry.wells.at(index),
                           index == m_hoverWell);
             }
         }
+
+        paintGroupLabels(p, geometry);
     }
 
     void mouseMoveEvent(QMouseEvent *event) override
@@ -184,18 +114,18 @@ protected:
             m_hoverWell = index;
             update();
             if (index >= 0) {
-                const int group = index / 10 + 1;
-                const int local = index % 10;
-                const int row = local / 5 + 1;
-                const int column = local % 5 + 1;
+                const Geometry geometry = rackGeometry();
+                const Well &well = geometry.wells.at(index);
+                const QString liquid = m_plasma
+                        ? tr("血浆：整管淡黄色")
+                        : tr("全血：下层红色 60% / 上层淡黄色 40%");
                 QToolTip::showText(
                             event->globalPos(),
-                            tr("血样孔 %1\n组 %2 · 第 %3 行第 %4 列\n"
-                               "等待插入血样管")
-                            .arg(index + 1)
-                            .arg(group)
-                            .arg(row)
-                            .arg(column),
+                            tr("采血管 %1 · 第 %2 行 · 第 %3 列\n%4")
+                            .arg(groupLetter(well.group))
+                            .arg(well.row + 1)
+                            .arg(well.column + 1)
+                            .arg(liquid),
                             this);
             } else {
                 QToolTip::hideText();
@@ -213,185 +143,517 @@ protected:
     }
 
 private:
+    struct Well {
+        QPointF center;      // 孔中心
+        qreal holeRx = 0.0;
+        qreal holeRy = 0.0;
+        qreal bodyRadius = 0.0; // 采血管半径
+        qreal tubeHeight = 0.0;
+        int group = 0;
+        int row = 0;
+        int column = 0;      // 组内列号 0/1
+    };
+
     struct Geometry {
         QPolygonF topFace;
         QPolygonF frontFace;
-        QVector<QPointF> centers;
-        QVector<qreal> radiusX;
-        QVector<qreal> radiusY;
+        QPolygonF leftSide;
+        QPolygonF rightSide;
+        QVector<Well> wells;
         QVector<QPointF> groupLabelPoints;
         QVector<QLineF> groupDividers;
-        int rows = 2;
+        int rows = 5;
         int columns = 0;
-        qreal topY = 0.0;
-        qreal bottomY = 0.0;
-        qreal thickness = 0.0;
+        int groups = 0;
+        qreal backY = 0.0;
+        qreal frontY = 0.0;
+        qreal wallHeight = 0.0;
+        qreal bottomWidth = 0.0;
+        qreal topWidth = 0.0;
+        qreal frontLeft = 0.0;
+        qreal pitch = 0.0;
 
         bool valid() const
         {
-            return columns > 0 && centers.size() == rows * columns;
+            return groups > 0 && columns == groups * 2
+                    && wells.size() == rows * columns;
         }
     };
 
     Geometry rackGeometry() const
     {
         Geometry geometry;
-        const QRectF area = QRectF(rect()).adjusted(8.0, 8.0, -8.0, -8.0);
-        const int groupCount = machineBloodSampleGroupCount(m_model);
-        const int columns = groupCount * 5;
-        const int rows = 2;
-        if (area.width() < 200.0 || area.height() < 120.0) {
+        const QRectF area = QRectF(rect()).adjusted(10.0, 8.0, -10.0, -8.0);
+        const int groups = machineBloodSampleGroupCount(m_model);
+        const int columns = groups * 2;
+        const int rows = 5;
+        if (area.width() < 240.0 || area.height() < 220.0) {
             return geometry;
         }
 
-        geometry.rows = rows;
+        geometry.groups = groups;
         geometry.columns = columns;
-        const qreal headerSpace = 24.0;
-        const qreal availableHeight = area.bottom() - area.top()
-                - headerSpace - 10.0;
-        const qreal plateHeight = qMin<qreal>(
-                    qMax<qreal>(100.0, availableHeight), 170.0);
-        geometry.topY = area.top() + headerSpace
-                + (availableHeight - plateHeight) / 2.0;
-        geometry.bottomY = geometry.topY + plateHeight;
-        const qreal height = plateHeight;
-        const qreal bottomWidth = qMax<qreal>(140.0, area.width() - 12.0);
-        const qreal topWidth = bottomWidth * 0.985;
+        geometry.rows = rows;
+
+        const qreal headerSpace = 36.0;  // 后排采血管顶部空间
+        const qreal shadowSpace = 16.0;
+        const qreal wallHeight = qBound<qreal>(30.0, area.height() * 0.08, 46.0);
+        const qreal availableFace = area.height() - headerSpace
+                - wallHeight - shadowSpace;
+        const qreal faceHeight = qBound<qreal>(200.0, availableFace, 420.0);
+
+        const qreal blockHeight = headerSpace + faceHeight
+                + wallHeight + shadowSpace;
+        const qreal blockTop = area.top()
+                + qMax<qreal>(0.0, (area.height() - blockHeight) / 2.0);
+        geometry.backY = blockTop + headerSpace;
+        geometry.frontY = geometry.backY + faceHeight;
+        geometry.wallHeight = wallHeight;
+
+        // 左右各留出 28px，左侧放行号，避免满宽时行号被裁掉。
+        const qreal maxWidth = area.width() - 56.0;
+        const qreal groupGapFactor = 0.48;
+        qreal pitch = maxWidth
+                / (columns + (groups - 1) * groupGapFactor + 1.25);
+        pitch = qBound<qreal>(26.0, pitch, 48.0);
+        const qreal groupGap = pitch * groupGapFactor;
+        const qreal sideMargin = pitch * 0.62;
+
+        geometry.pitch = pitch;
+        geometry.bottomWidth = columns * pitch
+                + (groups - 1) * groupGap + 2.0 * sideMargin;
+        geometry.topWidth = geometry.bottomWidth * 0.975;
         const qreal centerX = area.center().x();
+        geometry.frontLeft = centerX - geometry.bottomWidth / 2.0;
+        const qreal backLeft = centerX - geometry.topWidth / 2.0;
+        const qreal frontRight = geometry.frontLeft + geometry.bottomWidth;
+        const qreal backRight = backLeft + geometry.topWidth;
 
         geometry.topFace
-                << QPointF(centerX - topWidth / 2.0, geometry.topY)
-                << QPointF(centerX + topWidth / 2.0, geometry.topY)
-                << QPointF(centerX + bottomWidth / 2.0, geometry.bottomY)
-                << QPointF(centerX - bottomWidth / 2.0, geometry.bottomY);
-        geometry.thickness = qBound<qreal>(8.0, height * 0.06, 14.0);
-        const QPointF depth(0.0, geometry.thickness);
+                << QPointF(backLeft, geometry.backY)
+                << QPointF(backRight, geometry.backY)
+                << QPointF(frontRight, geometry.frontY)
+                << QPointF(geometry.frontLeft, geometry.frontY);
+
+        const QPointF wallDepth(0.0, geometry.wallHeight);
         geometry.frontFace
                 << geometry.topFace.at(3) << geometry.topFace.at(2)
-                << geometry.topFace.at(2) + depth
-                << geometry.topFace.at(3) + depth;
+                << geometry.topFace.at(2) + wallDepth
+                << geometry.topFace.at(3) + wallDepth;
 
-        const QPointF topLeft = geometry.topFace.at(0);
-        const QPointF topRight = geometry.topFace.at(1);
-        const QPointF bottomRight = geometry.topFace.at(2);
-        const QPointF bottomLeft = geometry.topFace.at(3);
-        const qreal marginU = 0.008;
-        const qreal rowFractions[2] = {0.30, 0.70};
+        const QPointF backWallDepth(0.0, geometry.wallHeight * 0.78);
+        geometry.leftSide
+                << geometry.topFace.at(0) << geometry.topFace.at(3)
+                << geometry.topFace.at(3) + wallDepth
+                << geometry.topFace.at(0) + backWallDepth;
+        geometry.rightSide
+                << geometry.topFace.at(1) << geometry.topFace.at(2)
+                << geometry.topFace.at(2) + wallDepth
+                << geometry.topFace.at(1) + backWallDepth;
 
+        const qreal rowFractions[5] = {0.10, 0.30, 0.50, 0.70, 0.90};
+        const qreal rowPitch = faceHeight / qreal(rows);
+
+        // 按“行 → 组 → 组内列”存放，保证 wells 是行优先：
+        // index = row * columns + column，绘制和行号都依赖这个顺序。
         for (int row = 0; row < rows; ++row) {
-            for (int column = 0; column < columns; ++column) {
-                const qreal u = marginU
-                        + (1.0 - 2.0 * marginU)
-                          * (columns > 1
-                             ? qreal(column) / (columns - 1) : 0.5);
-                const QPointF topPoint = lerpPoint(topLeft, topRight, u);
-                const QPointF bottomPoint = lerpPoint(bottomLeft,
-                                                      bottomRight, u);
-                geometry.centers.append(
-                            lerpPoint(topPoint, bottomPoint,
-                                      rowFractions[row]));
+            const qreal fraction = rowFractions[row];
+            const qreal scale = 0.84 + 0.04 * row;
+
+            for (int group = 0; group < groups; ++group) {
+                for (int localColumn = 0; localColumn < 2; ++localColumn) {
+                    const int column = group * 2 + localColumn;
+                    const qreal frontX = geometry.frontLeft + sideMargin
+                            + column * pitch + group * groupGap
+                            + pitch / 2.0;
+                    const qreal u = (frontX - geometry.frontLeft)
+                            / geometry.bottomWidth;
+                    const qreal xTop = backLeft + u * geometry.topWidth;
+                    const qreal xBottom = geometry.frontLeft
+                            + u * geometry.bottomWidth;
+
+                    Well well;
+                    well.center = QPointF(
+                                lerpPoint(QPointF(xTop, geometry.backY),
+                                          QPointF(xBottom, geometry.frontY),
+                                          fraction).x(),
+                                geometry.backY + fraction * faceHeight);
+                    well.holeRx = pitch * 0.36 * scale;
+                    well.holeRy = well.holeRx * 0.42;
+                    well.bodyRadius = well.holeRx * 0.72;
+                    // 控制管高小于行距，避免相邻两排采血管首尾重叠成一条。
+                    well.tubeHeight = qMin<qreal>(
+                                rowPitch * 0.94,
+                                well.bodyRadius * 2.0 * 4.6) * scale;
+                    well.group = group;
+                    well.row = row;
+                    well.column = localColumn;
+                    geometry.wells.append(well);
+                }
             }
         }
 
-        for (int row = 0; row < rows; ++row) {
-            for (int column = 0; column < columns; ++column) {
-                const int index = row * columns + column;
-                const QPointF &center = geometry.centers.at(index);
-                qreal horizontal = 1.0e9;
-                if (column > 0) {
-                    horizontal = qMin(
-                                horizontal,
-                                QLineF(center,
-                                       geometry.centers.at(index - 1))
-                                .length());
-                }
-                if (column < columns - 1) {
-                    horizontal = qMin(
-                                horizontal,
-                                QLineF(center,
-                                       geometry.centers.at(index + 1))
-                                .length());
-                }
-                const int otherRow = row == 0 ? 1 : 0;
-                const qreal vertical = QLineF(
-                            center,
-                            geometry.centers.at(
-                                otherRow * columns + column)).length();
-                const qreal radius = qMax<qreal>(
-                            4.0, qMin(horizontal * 0.40,
-                                      vertical * 0.48));
-                geometry.radiusX.append(radius);
-                geometry.radiusY.append(radius * 0.62);
-            }
-        }
-
-        for (int group = 0; group < groupCount; ++group) {
-            const int first = group * 5;
-            const int last = first + 4;
-            if (last >= columns) {
-                break;
-            }
-            const qreal x = (geometry.centers.at(first).x()
-                             + geometry.centers.at(last).x()) / 2.0;
+        // 组名标在前挡板的标签条上，位于该组两列的正中间。
+        const qreal labelY = geometry.frontY + wallHeight * 0.5;
+        for (int group = 0; group < groups; ++group) {
+            const qreal leftX = geometry.frontLeft + sideMargin
+                    + group * 2 * pitch + group * groupGap + pitch / 2.0;
             geometry.groupLabelPoints.append(
-                        QPointF(x, geometry.topY - 8.0));
+                        QPointF(leftX + pitch / 2.0, labelY));
         }
 
-        for (int group = 1; group < groupCount; ++group) {
-            const qreal boundary = group * 5 - 0.5;
-            const qreal u = marginU
-                    + (1.0 - 2.0 * marginU)
-                      * (boundary / (columns - 1));
-            if (u <= 0.0 || u >= 1.0) {
-                continue;
-            }
+        // 组与组之间在台面上画一条分隔槽。
+        for (int group = 1; group < groups; ++group) {
+            const qreal offset = sideMargin + group * 2 * pitch
+                    + (group - 1) * groupGap + groupGap / 2.0;
+            const qreal u = offset / geometry.bottomWidth;
             geometry.groupDividers.append(
-                        QLineF(lerpPoint(topLeft, topRight, u),
-                               lerpPoint(bottomLeft, bottomRight, u)));
+                        QLineF(QPointF(backLeft + u * geometry.topWidth,
+                                       geometry.backY + 2.0),
+                               QPointF(geometry.frontLeft
+                                       + u * geometry.bottomWidth,
+                                       geometry.frontY - 2.0)));
         }
 
         return geometry;
     }
 
-    void paintWell(QPainter &p, const QPointF &center,
-                   qreal rx, qreal ry, bool hovered) const
+    void paintRack(QPainter &p, const Geometry &geometry) const
     {
+        // 桌面阴影
+        const qreal bottomY = geometry.frontY + geometry.wallHeight;
+        const QRectF shadowRect(geometry.frontLeft + 12.0, bottomY + 1.0,
+                                geometry.bottomWidth - 24.0, 18.0);
+        QRadialGradient shadow(shadowRect.center(),
+                               qMax<qreal>(20.0, shadowRect.width() / 2.0));
+        shadow.setColorAt(0.0, QColor(31, 78, 121, 55));
+        shadow.setColorAt(1.0, QColor(31, 78, 121, 0));
+        p.setPen(Qt::NoPen);
+        p.setBrush(shadow);
+        p.drawEllipse(shadowRect);
+
+        // 左右侧壁
+        QLinearGradient sideGradient(0.0, geometry.backY,
+                                     0.0, bottomY);
+        sideGradient.setColorAt(0.0, QColor(151, 174, 193));
+        sideGradient.setColorAt(1.0, QColor(116, 142, 163));
+        p.setPen(QPen(QColor(104, 130, 151), 1.0));
+        p.setBrush(sideGradient);
+        p.drawPolygon(geometry.leftSide);
+        p.drawPolygon(geometry.rightSide);
+
+        // 前挡板
+        QLinearGradient frontGradient(0.0, geometry.frontY,
+                                      0.0, bottomY);
+        frontGradient.setColorAt(0.0, QColor(201, 217, 230));
+        frontGradient.setColorAt(1.0, QColor(158, 181, 200));
+        p.setPen(QPen(QColor(133, 158, 178), 1.0));
+        p.setBrush(frontGradient);
+        p.drawPolygon(geometry.frontFace);
+
+        // 前挡板上的组名标签条
+        const QRectF stripRect(geometry.frontLeft + 14.0,
+                               geometry.frontY + geometry.wallHeight * 0.22,
+                               geometry.bottomWidth - 28.0,
+                               geometry.wallHeight * 0.56);
+        QLinearGradient stripGradient(0.0, stripRect.top(),
+                                      0.0, stripRect.bottom());
+        stripGradient.setColorAt(0.0, QColor(231, 240, 247));
+        stripGradient.setColorAt(1.0, QColor(205, 221, 233));
+        p.setPen(QPen(QColor(174, 196, 212), 0.9));
+        p.setBrush(stripGradient);
+        p.drawRoundedRect(stripRect, 3.0, 3.0);
+
+        // 台面
+        QLinearGradient topGradient(0.0, geometry.backY,
+                                    0.0, geometry.frontY);
+        topGradient.setColorAt(0.0, QColor(245, 249, 252));
+        topGradient.setColorAt(0.45, QColor(226, 237, 244));
+        topGradient.setColorAt(1.0, QColor(205, 220, 231));
+        p.setPen(QPen(QColor(158, 182, 199), 1.1));
+        p.setBrush(topGradient);
+        p.drawPolygon(geometry.topFace);
+
+        p.setPen(QPen(QColor(255, 255, 255, 235), 1.2));
+        p.drawLine(geometry.topFace.at(0), geometry.topFace.at(1));
+        p.setPen(QPen(QColor(255, 255, 255, 130), 0.9));
+        p.drawLine(geometry.topFace.at(0), geometry.topFace.at(3));
+        p.drawLine(geometry.topFace.at(1), geometry.topFace.at(2));
+        p.setPen(QPen(QColor(112, 140, 162, 120), 0.8));
+        p.drawLine(geometry.topFace.at(3), geometry.topFace.at(2));
+
+        // 台面高光
+        p.save();
+        QPainterPath clip;
+        clip.addPolygon(geometry.topFace);
+        clip.closeSubpath();
+        p.setClipPath(clip);
+        p.setPen(QPen(QColor(255, 255, 255, 45), 12.0));
+        p.drawLine(QPointF(geometry.frontLeft + 30.0,
+                           geometry.frontY - 6.0),
+                   QPointF(geometry.frontLeft + geometry.topWidth * 0.38,
+                           geometry.backY + 6.0));
+        p.restore();
+
+        // 组间分隔槽
+        for (const QLineF &line : geometry.groupDividers) {
+            p.setPen(QPen(QColor(86, 113, 134, 45), 1.6));
+            p.drawLine(line);
+            p.setPen(QPen(QColor(255, 255, 255, 120), 0.7));
+            p.drawLine(line.translated(1.0, 0.0));
+        }
+
+        // 前挡板四角螺钉
+        const qreal screwY = geometry.frontY + geometry.wallHeight * 0.5;
+        const qreal screwXs[2] = {geometry.frontLeft + 7.0,
+                                  geometry.frontLeft
+                                  + geometry.bottomWidth - 7.0};
+        for (qreal x : screwXs) {
+            p.setPen(QPen(QColor(125, 149, 168), 0.8));
+            p.setBrush(QColor(190, 204, 216));
+            p.drawEllipse(QPointF(x, screwY), 2.2, 2.2);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(255, 255, 255, 170));
+            p.drawEllipse(QPointF(x - 0.6, screwY - 0.7), 0.8, 0.8);
+        }
+    }
+
+    void paintHoles(QPainter &p, const Geometry &geometry) const
+    {
+        for (int i = 0; i < geometry.wells.size(); ++i) {
+            const Well &well = geometry.wells.at(i);
+
+            // 孔外圈凸台
+            p.setPen(QPen(QColor(255, 255, 255, 160), 0.8));
+            p.setBrush(QColor(188, 207, 221, 95));
+            p.drawEllipse(well.center, well.holeRx * 1.12,
+                          well.holeRy * 1.12);
+
+            // 孔内深色
+            QRadialGradient hole(well.center
+                                 + QPointF(-well.holeRx * 0.16,
+                                           -well.holeRy * 0.18),
+                                 qMax<qreal>(5.0, well.holeRx * 1.35));
+            hole.setColorAt(0.0, QColor(39, 58, 72, 235));
+            hole.setColorAt(0.62, QColor(79, 103, 120, 210));
+            hole.setColorAt(1.0, QColor(151, 176, 194, 180));
+            p.setPen(QPen(QColor(115, 141, 160, 190), 0.9));
+            p.setBrush(hole);
+            p.drawEllipse(well.center, well.holeRx, well.holeRy);
+
+            // 孔口内沿阴影
+            p.setPen(QPen(QColor(24, 40, 52, 110), 1.2));
+            p.setBrush(Qt::NoBrush);
+            p.drawArc(QRectF(well.center.x() - well.holeRx * 0.92,
+                             well.center.y() - well.holeRy * 0.92,
+                             well.holeRx * 1.84, well.holeRy * 1.84),
+                      20 * 16, 140 * 16);
+
+            if (i == m_hoverWell) {
+                p.setPen(QPen(QColor(44, 123, 191, 210), 1.6));
+                p.setBrush(Qt::NoBrush);
+                p.drawEllipse(well.center, well.holeRx * 1.28,
+                              well.holeRy * 1.28);
+            }
+        }
+    }
+
+    void paintRowLabels(QPainter &p, const Geometry &geometry) const
+    {
+        QFont font(QStringLiteral("Microsoft YaHei"));
+        font.setPixelSize(9);
+        font.setBold(true);
+        p.setFont(font);
+
+        const qreal rackLeft = qMin(geometry.topFace.at(0).x(),
+                                    geometry.topFace.at(3).x());
+        for (int row = 0; row < geometry.rows; ++row) {
+            const Well &well = geometry.wells.at(row * geometry.columns);
+            const qreal y = well.center.y();
+            const QRectF pill(rackLeft - 26.0, y - 8.0, 17.0, 16.0);
+            p.setPen(QPen(QColor(174, 196, 212), 0.9));
+            p.setBrush(QColor(255, 255, 255, 225));
+            p.drawRoundedRect(pill, 3.0, 3.0);
+            p.setPen(QColor("#5D7386"));
+            p.drawText(pill, Qt::AlignCenter, QString::number(row + 1));
+
+            p.setPen(QPen(QColor(128, 154, 173, 120), 0.8));
+            p.drawLine(QPointF(pill.right() + 1.0, y),
+                       QPointF(rackLeft - 3.0, y));
+        }
+    }
+
+    void paintGroupLabels(QPainter &p, const Geometry &geometry) const
+    {
+        QFont font(QStringLiteral("Microsoft YaHei"));
+        font.setPixelSize(11);
+        font.setBold(true);
+        p.setFont(font);
+        p.setPen(QColor("#1F4E79"));
+
+        for (int group = 0; group < geometry.groupLabelPoints.size();
+             ++group) {
+            const QPointF point = geometry.groupLabelPoints.at(group);
+            p.drawText(QRectF(point.x() - 12.0, point.y() - 9.0,
+                              24.0, 18.0),
+                       Qt::AlignCenter, groupLetter(group));
+        }
+    }
+
+    void paintTube(QPainter &p, const Well &well, bool hovered) const
+    {
+        const qreal bodyRadius = well.bodyRadius;
+        const qreal capRadius = bodyRadius * 1.22;
+        const qreal capHeight = qMax<qreal>(5.0, well.tubeHeight * 0.095);
+        const qreal bodyTop = well.center.y() - well.tubeHeight
+                + capHeight * 0.45;
+        const qreal bodyBottom = well.center.y() + well.holeRy * 0.25;
+        const qreal bodyHeight = bodyBottom - bodyTop;
+        if (bodyHeight <= 2.0) {
+            return;
+        }
+
         if (hovered) {
-            QRadialGradient glow(center, qMax<qreal>(10.0, rx * 2.4));
-            glow.setColorAt(0.0, QColor(44, 123, 191, 100));
-            glow.setColorAt(0.65, QColor(44, 123, 191, 35));
+            QRadialGradient glow(well.center
+                                 + QPointF(0.0, -well.tubeHeight * 0.45),
+                                 qMax<qreal>(14.0,
+                                             well.tubeHeight * 0.62));
+            glow.setColorAt(0.0, QColor(44, 123, 191, 95));
+            glow.setColorAt(0.65, QColor(44, 123, 191, 30));
             glow.setColorAt(1.0, QColor(44, 123, 191, 0));
             p.setPen(Qt::NoPen);
             p.setBrush(glow);
-            p.drawEllipse(center, rx * 1.8, ry * 2.0);
+            p.drawEllipse(well.center + QPointF(0.0,
+                                                -well.tubeHeight * 0.45),
+                          bodyRadius * 1.9, well.tubeHeight * 0.72);
         }
 
-        p.setPen(QPen(hovered ? QColor("#2C7BBF")
-                              : QColor(150, 192, 216, 235),
-                      hovered ? 1.8 : 1.0));
-        p.setBrush(QColor(232, 246, 252, 165));
-        p.drawEllipse(center, rx, ry);
-
-        const QPointF inner = center + QPointF(0.0, ry * 0.14);
-        QRadialGradient depth(inner, qMax<qreal>(6.0, rx));
-        depth.setColorAt(0.0, QColor(42, 64, 78, 165));
-        depth.setColorAt(0.60, QColor(94, 126, 144, 110));
-        depth.setColorAt(1.0, QColor(203, 229, 243, 55));
+        // 采血管在台面上的投影
+        QRadialGradient tubeShadow(
+                    QPointF(well.center.x() + bodyRadius * 0.5,
+                            well.center.y() + well.holeRy * 0.25),
+                    bodyRadius * 1.7);
+        tubeShadow.setColorAt(0.0, QColor(31, 52, 68, 70));
+        tubeShadow.setColorAt(1.0, QColor(31, 52, 68, 0));
         p.setPen(Qt::NoPen);
-        p.setBrush(depth);
-        p.drawEllipse(inner, rx * 0.80, ry * 0.78);
+        p.setBrush(tubeShadow);
+        p.drawEllipse(QPointF(well.center.x() + bodyRadius * 0.5,
+                              well.center.y() + well.holeRy * 0.25),
+                      bodyRadius * 1.5, well.holeRy * 1.3);
 
-        // 孔内底部，提示等待插入血样管
-        p.setPen(QPen(QColor(255, 255, 255, 90), 0.7));
-        p.setBrush(Qt::NoBrush);
-        p.drawEllipse(inner + QPointF(0.0, ry * 0.10),
-                      rx * 0.50, ry * 0.42);
+        const QRectF bodyRect(well.center.x() - bodyRadius, bodyTop,
+                              bodyRadius * 2.0, bodyHeight);
+        QPainterPath bodyPath;
+        bodyPath.addRoundedRect(bodyRect, bodyRadius * 0.95,
+                                bodyRadius * 0.95);
 
-        p.setPen(QPen(QColor(255, 255, 255, 220), 0.9));
+        // 管内液体
+        p.save();
+        p.setClipPath(bodyPath);
+        const qreal liquidTop = bodyTop + bodyHeight * 0.10;
+        const qreal liquidBottom = bodyBottom - bodyHeight * 0.05;
+        const qreal liquidHeight = liquidBottom - liquidTop;
+        const qreal boundary = liquidBottom - liquidHeight * 0.60;
+
+        const QColor redTop(196, 58, 70);
+        const QColor redBottom(158, 31, 43);
+        const QColor yellowTop(247, 233, 181);
+        const QColor yellowBottom(233, 212, 140);
+
+        if (m_plasma) {
+            QLinearGradient yellow(0.0, liquidTop, 0.0, liquidBottom);
+            yellow.setColorAt(0.0, yellowTop);
+            yellow.setColorAt(1.0, yellowBottom);
+            p.fillRect(QRectF(well.center.x() - bodyRadius, liquidTop,
+                              bodyRadius * 2.0, liquidHeight),
+                       yellow);
+        } else {
+            QLinearGradient red(0.0, boundary, 0.0, liquidBottom);
+            red.setColorAt(0.0, redTop);
+            red.setColorAt(1.0, redBottom);
+            p.fillRect(QRectF(well.center.x() - bodyRadius, boundary,
+                              bodyRadius * 2.0, liquidBottom - boundary),
+                       red);
+
+            QLinearGradient yellow(0.0, liquidTop, 0.0, boundary);
+            yellow.setColorAt(0.0, yellowTop);
+            yellow.setColorAt(1.0, QColor(240, 218, 154));
+            p.fillRect(QRectF(well.center.x() - bodyRadius, liquidTop,
+                              bodyRadius * 2.0, boundary - liquidTop),
+                       yellow);
+
+            p.setPen(QPen(QColor(255, 238, 198, 150), 0.9));
+            p.drawLine(QPointF(well.center.x() - bodyRadius, boundary),
+                       QPointF(well.center.x() + bodyRadius, boundary));
+        }
+
+        // 液面
+        p.setPen(QPen(QColor(255, 255, 255, 150), 0.7));
+        p.setBrush(QColor(255, 255, 255, 38));
+        p.drawEllipse(QPointF(well.center.x(), liquidTop),
+                      bodyRadius * 0.90, bodyRadius * 0.20);
+        p.restore();
+
+        // 玻璃管高光/边缘
+        p.save();
+        p.setClipPath(bodyPath);
+        QLinearGradient glass(well.center.x() - bodyRadius, 0.0,
+                              well.center.x() + bodyRadius, 0.0);
+        glass.setColorAt(0.0, QColor(255, 255, 255, 165));
+        glass.setColorAt(0.20, QColor(255, 255, 255, 22));
+        glass.setColorAt(0.50, QColor(255, 255, 255, 6));
+        glass.setColorAt(0.78, QColor(255, 255, 255, 28));
+        glass.setColorAt(1.0, QColor(255, 255, 255, 175));
+        p.fillRect(bodyRect, glass);
+
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(255, 255, 255, 105));
+        p.drawRoundedRect(QRectF(well.center.x() - bodyRadius * 0.55,
+                                 bodyTop + bodyHeight * 0.05,
+                                 bodyRadius * 0.20,
+                                 bodyHeight * 0.88),
+                          bodyRadius * 0.10, bodyRadius * 0.10);
+        p.restore();
+
+        p.setPen(QPen(QColor(112, 144, 166, 180), 0.9));
         p.setBrush(Qt::NoBrush);
-        p.drawArc(QRectF(center.x() - rx, center.y() - ry,
-                         rx * 2.0, ry * 2.0),
-                  35 * 16, 110 * 16);
+        p.drawPath(bodyPath);
+        p.setPen(QPen(QColor(70, 100, 120, 80), 0.7));
+        p.drawLine(QPointF(well.center.x() + bodyRadius * 0.72, bodyTop + 3.0),
+                   QPointF(well.center.x() + bodyRadius * 0.72,
+                           bodyBottom - 3.0));
+
+        // 管帽
+        const QRectF capRect(well.center.x() - capRadius,
+                             bodyTop - capHeight * 0.85,
+                             capRadius * 2.0, capHeight);
+        QLinearGradient capGradient(0.0, capRect.top(),
+                                    0.0, capRect.bottom());
+        capGradient.setColorAt(0.0, QColor(246, 250, 252));
+        capGradient.setColorAt(0.55, QColor(219, 231, 239));
+        capGradient.setColorAt(1.0, QColor(190, 207, 220));
+        p.setPen(QPen(QColor(144, 168, 185), 0.9));
+        p.setBrush(capGradient);
+        p.drawRoundedRect(capRect, capHeight * 0.42, capHeight * 0.42);
+
+        p.setPen(QPen(QColor(127, 153, 172, 130), 0.7));
+        p.drawLine(QPointF(capRect.left() + 1.0,
+                           capRect.bottom() - capHeight * 0.26),
+                   QPointF(capRect.right() - 1.0,
+                           capRect.bottom() - capHeight * 0.26));
+        p.setPen(QPen(QColor(255, 255, 255, 190), 0.8));
+        p.drawLine(QPointF(capRect.left() + capHeight * 0.30,
+                           capRect.top() + 1.1),
+                   QPointF(capRect.right() - capHeight * 0.30,
+                           capRect.top() + 1.1));
+
+        // 孔口前沿压在管身上，形成“插入孔内”的遮挡
+        p.setPen(QPen(QColor(188, 211, 226, 210), 1.3));
+        p.setBrush(Qt::NoBrush);
+        p.drawArc(QRectF(well.center.x() - well.holeRx,
+                         well.center.y() - well.holeRy,
+                         well.holeRx * 2.0, well.holeRy * 2.0),
+                  200 * 16, 140 * 16);
     }
 
     int wellAt(const QPoint &position) const
@@ -401,25 +663,22 @@ private:
             return -1;
         }
 
-        int best = -1;
-        qreal bestScore = 1.0;
-        for (int i = 0; i < geometry.centers.size(); ++i) {
-            const qreal rx = geometry.radiusX.at(i);
-            const qreal ry = geometry.radiusY.at(i);
-            const qreal dx = (position.x() - geometry.centers.at(i).x())
-                    / (rx * 1.6);
-            const qreal dy = (position.y() - geometry.centers.at(i).y())
-                    / (ry * 1.9);
-            const qreal score = dx * dx + dy * dy;
-            if (score <= 1.0 && score < bestScore) {
-                bestScore = score;
-                best = i;
+        // 从前排往后排命中，重叠时优先选前排。
+        for (int i = geometry.wells.size() - 1; i >= 0; --i) {
+            const Well &well = geometry.wells.at(i);
+            const QRectF hitRect(well.center.x() - well.bodyRadius * 1.25,
+                                 well.center.y() - well.tubeHeight - 3.0,
+                                 well.bodyRadius * 2.5,
+                                 well.tubeHeight + well.holeRy * 2.0 + 3.0);
+            if (hitRect.contains(position)) {
+                return i;
             }
         }
-        return best;
+        return -1;
     }
 
     MachineModel m_model = defaultMachineModel();
+    bool m_plasma = false;
     int m_hoverWell = -1;
 };
 
@@ -441,14 +700,7 @@ AddSampleWidget::AddSampleWidget(MachineModel model, QWidget *parent)
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 12px;"
         "}"
-        "QLabel#modeBadge {"
-        "  border-radius: 11px;"
-        "  padding: 4px 12px;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
-        "  font-weight: 600;"
-        "}"
-        "QFrame#modeCard, QFrame#bloodCard {"
+        "QFrame#bloodCard {"
         "  background: #FFFFFF;"
         "  border: 1px solid #DCE7F1;"
         "  border-radius: 10px;"
@@ -463,46 +715,10 @@ AddSampleWidget::AddSampleWidget(MachineModel model, QWidget *parent)
         "  color: #7A8FA3;"
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 11px;"
-        "}"
-        "QLabel#readbackValue {"
-        "  color: #1F4E79;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
-        "  font-weight: 600;"
-        "}"
-        "QLabel#cameraPlaceholder {"
-        "  background: #1E2A35;"
-        "  color: #A9C4D6;"
-        "  border: 1px dashed #58788E;"
-        "  border-radius: 8px;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
-        "}"
-        "QLabel#plasmaPlaceholder {"
-        "  background: #F8FBFD;"
-        "  color: #7A8FA3;"
-        "  border: 1px dashed #C9DCEB;"
-        "  border-radius: 8px;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
-        "}"
-        "QPushButton#modeActionButton {"
-        "  background: #FFFFFF;"
-        "  color: #1F4E79;"
-        "  border: 1px solid #A9C8DF;"
-        "  border-radius: 6px;"
-        "  padding: 6px 12px;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
-        "}"
-        "QPushButton#modeActionButton:disabled {"
-        "  color: #AFC0CC;"
-        "  border-color: #DCE7F1;"
-        "  background: #F7FAFC;"
         "}"));
 
     buildUi();
-    refreshMode();
+    updateSampleQuality();
 }
 
 void AddSampleWidget::setMachineModel(MachineModel model)
@@ -511,18 +727,18 @@ void AddSampleWidget::setMachineModel(MachineModel model)
     if (m_bloodArea) {
         m_bloodArea->setMachineModel(model);
     }
-    updateModeLabels();
+    updateSampleQuality();
 }
 
 void AddSampleWidget::refreshMode()
 {
-    updateModeLabels();
+    updateSampleQuality();
 }
 
 void AddSampleWidget::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
-    updateModeLabels();
+    updateSampleQuality();
 }
 
 void AddSampleWidget::buildUi()
@@ -531,129 +747,17 @@ void AddSampleWidget::buildUi()
     root->setContentsMargins(20, 16, 20, 18);
     root->setSpacing(12);
 
-    auto *header = new QHBoxLayout;
-    auto *titleBox = new QVBoxLayout;
-    titleBox->setSpacing(2);
+    auto *header = new QVBoxLayout;
+    header->setSpacing(2);
     auto *title = new QLabel(tr("加样"), this);
     title->setObjectName(QStringLiteral("addSampleTitle"));
     m_subtitle = new QLabel(this);
     m_subtitle->setObjectName(QStringLiteral("addSampleSubtitle"));
-    titleBox->addWidget(title);
-    titleBox->addWidget(m_subtitle);
-    header->addLayout(titleBox);
-    header->addStretch(1);
-    m_modeBadge = new QLabel(this);
-    m_modeBadge->setObjectName(QStringLiteral("modeBadge"));
-    header->addWidget(m_modeBadge, 0, Qt::AlignVCenter);
+    header->addWidget(title);
+    header->addWidget(m_subtitle);
     root->addLayout(header);
 
-    m_modeStack = new QStackedWidget(this);
-    m_modeStack->addWidget(createWholeBloodCard());
-    m_modeStack->addWidget(createPlasmaCard());
-    m_modeStack->setMinimumHeight(225);
-    root->addWidget(m_modeStack);
-
     root->addWidget(createBloodAreaCard(), 1);
-}
-
-QFrame *AddSampleWidget::createWholeBloodCard()
-{
-    auto *card = new QFrame(this);
-    card->setObjectName(QStringLiteral("modeCard"));
-    auto *layout = new QVBoxLayout(card);
-    layout->setContentsMargins(16, 14, 16, 14);
-    layout->setSpacing(8);
-
-    auto *title = new QLabel(tr("全血模式"), card);
-    title->setObjectName(QStringLiteral("cardTitle"));
-    auto *note = new QLabel(
-                tr("全血加样需要测高，并用摄像头拍照识别血样高度；"
-                   "识别与测高流程后续设计。"), card);
-    note->setObjectName(QStringLiteral("cardNote"));
-    note->setWordWrap(true);
-    layout->addWidget(title);
-    layout->addWidget(note);
-
-    auto *body = new QHBoxLayout;
-    body->setSpacing(14);
-    auto *camera = new QLabel(tr("摄像头画面\n（后续接入）"), card);
-    camera->setObjectName(QStringLiteral("cameraPlaceholder"));
-    camera->setAlignment(Qt::AlignCenter);
-    camera->setMinimumHeight(120);
-    camera->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    body->addWidget(camera, 2);
-
-    auto *side = new QVBoxLayout;
-    side->setSpacing(8);
-    auto *result = new QLabel(tr("识别结果：--"), card);
-    result->setObjectName(QStringLiteral("readbackValue"));
-    auto *height = new QLabel(tr("血样高度：-- mm"), card);
-    height->setObjectName(QStringLiteral("readbackValue"));
-    auto *capture = new QPushButton(tr("拍照测高"), card);
-    capture->setObjectName(QStringLiteral("modeActionButton"));
-    capture->setEnabled(false);
-    auto *retry = new QPushButton(tr("重新识别"), card);
-    retry->setObjectName(QStringLiteral("modeActionButton"));
-    retry->setEnabled(false);
-    side->addWidget(result);
-    side->addWidget(height);
-    side->addWidget(capture);
-    side->addWidget(retry);
-    side->addStretch(1);
-    body->addLayout(side, 1);
-    layout->addLayout(body, 1);
-    return card;
-}
-
-QFrame *AddSampleWidget::createPlasmaCard()
-{
-    auto *card = new QFrame(this);
-    card->setObjectName(QStringLiteral("modeCard"));
-    auto *layout = new QVBoxLayout(card);
-    layout->setContentsMargins(16, 14, 16, 14);
-    layout->setSpacing(8);
-
-    auto *title = new QLabel(tr("血降模式"), card);
-    title->setObjectName(QStringLiteral("cardTitle"));
-    auto *note = new QLabel(
-                tr("血降（血浆）模式使用另一套加样界面；样本队列、"
-                   "加样操作与流程后续设计。"), card);
-    note->setObjectName(QStringLiteral("cardNote"));
-    note->setWordWrap(true);
-    layout->addWidget(title);
-    layout->addWidget(note);
-
-    auto *body = new QHBoxLayout;
-    body->setSpacing(14);
-    auto *placeholder = new QLabel(
-                tr("血降样本队列 / 加样操作\n（后续设计）"), card);
-    placeholder->setObjectName(QStringLiteral("plasmaPlaceholder"));
-    placeholder->setAlignment(Qt::AlignCenter);
-    placeholder->setMinimumHeight(120);
-    placeholder->setSizePolicy(QSizePolicy::Expanding,
-                               QSizePolicy::Expanding);
-    body->addWidget(placeholder, 2);
-
-    auto *side = new QVBoxLayout;
-    side->setSpacing(8);
-    auto *current = new QLabel(tr("当前样本：--"), card);
-    current->setObjectName(QStringLiteral("readbackValue"));
-    auto *pending = new QLabel(tr("待加样：--"), card);
-    pending->setObjectName(QStringLiteral("readbackValue"));
-    auto *start = new QPushButton(tr("开始加样"), card);
-    start->setObjectName(QStringLiteral("modeActionButton"));
-    start->setEnabled(false);
-    auto *refresh = new QPushButton(tr("刷新队列"), card);
-    refresh->setObjectName(QStringLiteral("modeActionButton"));
-    refresh->setEnabled(false);
-    side->addWidget(current);
-    side->addWidget(pending);
-    side->addWidget(start);
-    side->addWidget(refresh);
-    side->addStretch(1);
-    body->addLayout(side, 1);
-    layout->addLayout(body, 1);
-    return card;
 }
 
 QFrame *AddSampleWidget::createBloodAreaCard()
@@ -662,10 +766,10 @@ QFrame *AddSampleWidget::createBloodAreaCard()
     card->setObjectName(QStringLiteral("bloodCard"));
     auto *layout = new QVBoxLayout(card);
     layout->setContentsMargins(16, 12, 16, 14);
-    layout->setSpacing(8);
+    layout->setSpacing(6);
 
     auto *header = new QHBoxLayout;
-    auto *title = new QLabel(tr("血样区（全血 / 血降共用）"), card);
+    auto *title = new QLabel(tr("血样区"), card);
     title->setObjectName(QStringLiteral("cardTitle"));
     m_bloodCaption = new QLabel(card);
     m_bloodCaption->setObjectName(QStringLiteral("cardNote"));
@@ -680,46 +784,34 @@ QFrame *AddSampleWidget::createBloodAreaCard()
     return card;
 }
 
-void AddSampleWidget::updateModeLabels()
+void AddSampleWidget::updateSampleQuality()
 {
-    if (!m_modeStack || !m_modeBadge || !m_subtitle || !m_bloodCaption
-            || !m_bloodArea) {
+    if (!m_subtitle || !m_bloodCaption || !m_bloodArea) {
         return;
     }
 
     const bool plasma = sampleQualityIsPlasma();
-    m_modeStack->setCurrentIndex(plasma ? 1 : 0);
-
-    if (plasma) {
-        m_modeBadge->setText(tr("血降模式"));
-        m_modeBadge->setStyleSheet(QStringLiteral(
-            "QLabel#modeBadge {"
-            "  background: #EAF8F1;"
-            "  color: #1E7B45;"
-            "  border: 1px solid #A9D8BC;"
-            "}"));
-    } else {
-        m_modeBadge->setText(tr("全血模式"));
-        m_modeBadge->setStyleSheet(QStringLiteral(
-            "QLabel#modeBadge {"
-            "  background: #E8F1FA;"
-            "  color: #1F4E79;"
-            "  border: 1px solid #A9C8DF;"
-            "}"));
-    }
+    m_bloodArea->setMachineModel(m_model);
+    m_bloodArea->setPlasma(plasma);
+    m_bloodArea->update();
 
     const int groups = machineBloodSampleGroupCount(m_model);
-    const int wells = groups * 10;
+    const int wells = machineBloodSampleWellCount(m_model);
+    const QString groupRange = QStringLiteral("%1~%2")
+            .arg(groupLetter(0))
+            .arg(groupLetter(groups - 1));
+
     m_subtitle->setText(
-                tr("%1 · 当前样本质量：%2 · 血样区 %3 组 × 10 孔 = %4 孔")
+                tr("%1 · 样本质量：%2 · 血样区 %3 组（%4）× 10 孔 = %5 孔")
                 .arg(QString::fromLatin1(machineModelName(m_model)))
-                .arg(plasma ? tr("血浆（血降）") : tr("全血"))
+                .arg(plasma ? tr("血浆") : tr("全血"))
                 .arg(groups)
-                .arg(wells));
-    m_bloodCaption->setText(
-                tr("每组 5 列 × 2 行 = 10 孔，共 %1 孔 · 等待插入血样管")
+                .arg(groupRange)
                 .arg(wells));
 
-    m_bloodArea->setMachineModel(m_model);
-    m_bloodArea->update();
+    m_bloodCaption->setText(
+                plasma
+                ? tr("每组 5 行 × 2 列 = 10 孔 · 采血管内全部淡黄色血浆")
+                : tr("每组 5 行 × 2 列 = 10 孔 · 采血管下层红色 60% / "
+                     "上层淡黄色 40%"));
 }
