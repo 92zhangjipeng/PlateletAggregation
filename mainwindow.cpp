@@ -1319,7 +1319,8 @@ void MainWindow::createEmptyPlaceholderTabs()
                     tr("质控"));
     }
     if (m_addSampleTabIndex < 0) {
-        m_addSampleWidget = new AddSampleWidget(m_machineModel, m_mainTabs);
+        m_addSampleWidget = new AddSampleWidget(m_machineModel,
+                                                m_testDataStore, m_mainTabs);
         QScrollArea *scroll = makePageScroll(m_addSampleWidget, m_mainTabs);
         m_addSampleTabIndex = m_mainTabs->addTab(scroll, tr("加样"));
     }

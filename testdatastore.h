@@ -1,6 +1,7 @@
 ﻿#ifndef TESTDATASTORE_H
 #define TESTDATASTORE_H
 
+#include <QDate>
 #include <QDateTime>
 #include <QObject>
 #include <QSqlDatabase>
@@ -83,6 +84,16 @@ public:
                     QString *error = nullptr) const;
     QVector<SampleSummary> recentSamples(int limit = 200,
                                          QString *error = nullptr) const;
+
+    /**
+     * 当天（date）的下一个样本号：T + yyyyMMdd + 4 位序号。
+     * 取 samples 表中该日期前缀的最大序号 + 1；不写数据库。
+     * 数据库未打开、查询失败或当天序号已用完时返回空字符串。
+     */
+    QString nextSampleNumber(const QDate &date, QString *error = nullptr) const;
+
+    /** samples 表中是否已存在该样本号（用于新增/修改样本号查重） */
+    bool sampleNumberExists(const QString &sampleNumber) const;
 
     static QString defaultDatabasePath();
 

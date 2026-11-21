@@ -5,6 +5,7 @@
 #include "testdatastore.h"
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
 #include <QFileInfo>
 #include <QSqlError>
@@ -137,6 +138,80 @@ bool TestDataStore::isOpen() const
 QString TestDataStore::databasePath() const
 {
     return m_databasePath;
+}
+
+QString TestDataStore::nextSampleNumber(const QDate &date, QString *error) const
+{
+    if (error) {
+        error->clear();
+    }
+    if (!isOpen()) {
+        if (error) {
+            *error = tr("测试数据库未打开");
+        }
+        return QString();
+    }
+    if (!date.isValid()) {
+        if (error) {
+            *error = tr("日期无效");
+        }
+        return QString();
+    }
+
+    const QString prefix = QStringLiteral("T%1")
+            .arg(date.toString(QStringLiteral("yyyyMMdd")));
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "SELECT sample_no FROM samples WHERE sample_no LIKE :prefix"));
+    query.bindValue(QStringLiteral(":prefix"), prefix + QLatin1Char('%'));
+    if (!query.exec()) {
+        if (error) {
+            *error = tr("查询当天最大样本号失败：%1")
+                    .arg(query.lastError().text());
+        }
+        return QString();
+    }
+
+    int maxSequence = 0;
+    while (query.next()) {
+        const QString number = query.value(0).toString().trimmed();
+        if (number.size() != 13 || !number.startsWith(prefix)) {
+            continue;
+        }
+        bool ok = false;
+        const int sequence = number.mid(9).toInt(&ok);
+        if (ok && sequence > maxSequence) {
+            maxSequence = sequence;
+        }
+    }
+
+    if (maxSequence >= 9999) {
+        if (error) {
+            *error = tr("当天样本号已用完（最大 9999）。");
+        }
+        return QString();
+    }
+    return prefix + QStringLiteral("%1")
+            .arg(maxSequence + 1, 4, 10, QLatin1Char('0'));
+}
+
+bool TestDataStore::sampleNumberExists(const QString &sampleNumber) const
+{
+    const QString trimmed = sampleNumber.trimmed();
+    if (trimmed.isEmpty() || !isOpen()) {
+        return false;
+    }
+
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "SELECT 1 FROM samples WHERE sample_no = :no LIMIT 1"));
+    query.bindValue(QStringLiteral(":no"), trimmed);
+    if (!query.exec()) {
+        qWarning() << "sampleNumberExists query failed:"
+                   << query.lastError().text();
+        return false;
+    }
+    return query.next();
 }
 
 bool TestDataStore::ensureSchema(QString *error)
