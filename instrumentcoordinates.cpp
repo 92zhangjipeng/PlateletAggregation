@@ -177,6 +177,11 @@ InstrumentCoordinates::ToolPose InstrumentCoordinates::toolPose(
     return target->tools[static_cast<int>(axis)];
 }
 
+bool InstrumentCoordinates::indexValid(TargetKind kind, int index) const
+{
+    return validIndex(kind, index);
+}
+
 bool InstrumentCoordinates::setOriginXy(ZAxis axis, double x, double y)
 {
     return setXy(TargetKind::Origin, 0, axis, x, y);

@@ -40,6 +40,8 @@ private slots:
     void saveCurrent();
     void clearCurrent();
     void clearAll();
+    void importCoordinates();
+    void exportCoordinates();
 
 private:
     using TargetKind = InstrumentCoordinates::TargetKind;
@@ -90,6 +92,10 @@ private:
     QPushButton *m_reloadButton = nullptr;
     QPushButton *m_clearButton = nullptr;
     QPushButton *m_clearAllButton = nullptr;
+    QPushButton *m_importButton = nullptr;
+    QPushButton *m_exportButton = nullptr;
+
+    QString m_lastFileDir;   // 上次导入/导出的目录
 
     MachineModel m_lastModel = MachineModel::KS1200;
     int m_lastChannelCount = -1;

@@ -39,6 +39,7 @@ SOURCES += \
     resultsinfowidget.cpp \
     querywidget.cpp \
     instrumentcoordinates.cpp \
+    coordinatefileio.cpp \
     coordinatemaintenancewidget.cpp
 
 HEADERS += \
@@ -60,6 +61,7 @@ HEADERS += \
     resultsinfowidget.h \
     querywidget.h \
     instrumentcoordinates.h \
+    coordinatefileio.h \
     coordinatemaintenancewidget.h \
     SerialPortManager.h \
     ModuleAdPoller.h \

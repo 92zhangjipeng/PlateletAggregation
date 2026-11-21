@@ -4,11 +4,17 @@
 
 #include "coordinatemaintenancewidget.h"
 
+#include "coordinatefileio.h"
+
 #include <QAbstractButton>
 #include <QBrush>
 #include <QCheckBox>
 #include <QColor>
+#include <QDateTime>
+#include <QDir>
 #include <QDoubleSpinBox>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
@@ -18,6 +24,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QShowEvent>
+#include <QStandardPaths>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QTreeWidgetItemIterator>
@@ -64,6 +71,11 @@ CoordinateMaintenanceWidget::CoordinateMaintenanceWidget(
     , m_coordinates(coordinates ? coordinates : &m_ownCoordinates)
 {
     setObjectName(QStringLiteral("coordinateMaintenance"));
+    m_lastFileDir =
+            QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (m_lastFileDir.isEmpty()) {
+        m_lastFileDir = QDir::homePath();
+    }
     buildUi();
     rebuildTree();
 }
@@ -300,6 +312,16 @@ void CoordinateMaintenanceWidget::buildUi()
     m_clearButton->setObjectName(QStringLiteral("coordSecondary"));
     m_clearButton->setCursor(Qt::PointingHandCursor);
 
+    m_importButton = new QPushButton(tr("导入坐标..."), m_editorPanel);
+    m_importButton->setObjectName(QStringLiteral("coordSecondary"));
+    m_importButton->setCursor(Qt::PointingHandCursor);
+    m_importButton->setToolTip(tr("从 JSON 文件导入坐标并覆盖当前内存坐标"));
+
+    m_exportButton = new QPushButton(tr("导出坐标..."), m_editorPanel);
+    m_exportButton->setObjectName(QStringLiteral("coordSecondary"));
+    m_exportButton->setCursor(Qt::PointingHandCursor);
+    m_exportButton->setToolTip(tr("把当前机型的所有已设置坐标导出为 JSON 文件"));
+
     m_clearAllButton = new QPushButton(tr("清空全部"), m_editorPanel);
     m_clearAllButton->setObjectName(QStringLiteral("coordDanger"));
     m_clearAllButton->setCursor(Qt::PointingHandCursor);
@@ -307,7 +329,9 @@ void CoordinateMaintenanceWidget::buildUi()
     buttonGrid->addWidget(m_saveButton, 0, 0, 1, 2);
     buttonGrid->addWidget(m_reloadButton, 1, 0);
     buttonGrid->addWidget(m_clearButton, 1, 1);
-    buttonGrid->addWidget(m_clearAllButton, 2, 0, 1, 2);
+    buttonGrid->addWidget(m_importButton, 2, 0);
+    buttonGrid->addWidget(m_exportButton, 2, 1);
+    buttonGrid->addWidget(m_clearAllButton, 3, 0, 1, 2);
     editorLayout->addLayout(buttonGrid);
 
     m_feedbackLabel = new QLabel(m_editorPanel);
@@ -324,6 +348,10 @@ void CoordinateMaintenanceWidget::buildUi()
             this, &CoordinateMaintenanceWidget::clearCurrent);
     connect(m_clearAllButton, &QPushButton::clicked,
             this, &CoordinateMaintenanceWidget::clearAll);
+    connect(m_importButton, &QPushButton::clicked,
+            this, &CoordinateMaintenanceWidget::importCoordinates);
+    connect(m_exportButton, &QPushButton::clicked,
+            this, &CoordinateMaintenanceWidget::exportCoordinates);
 
     body->addWidget(m_editorPanel, 0);
     root->addLayout(body, 1);
@@ -692,6 +720,114 @@ void CoordinateMaintenanceWidget::clearAll()
     refreshStatuses();
     loadSelection();
     setFeedback(tr("已清空全部坐标"), false);
+}
+
+void CoordinateMaintenanceWidget::importCoordinates()
+{
+    if (!m_coordinates) {
+        return;
+    }
+
+    const QString path = QFileDialog::getOpenFileName(
+                this, tr("导入坐标文件"), m_lastFileDir,
+                tr("坐标文件 (*.json);;所有文件 (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    m_lastFileDir = QFileInfo(path).absolutePath();
+
+    CoordinateDocument document;
+    QString error;
+    if (!CoordinateFileIo::load(path, &document, &error)) {
+        setFeedback(tr("导入失败：%1").arg(error), true);
+        QMessageBox::warning(
+                    this, tr("导入坐标"),
+                    tr("无法读取坐标文件：\n%1").arg(error));
+        return;
+    }
+
+    const QString fileModel = document.machineModel.isEmpty()
+            ? tr("未标注") : document.machineModel;
+    const QString currentModel =
+            QString::fromLatin1(machineModelName(m_coordinates->machineModel()));
+
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(tr("导入坐标"));
+    box.setText(tr("确定用该文件覆盖当前机型的全部坐标吗？"));
+    box.setInformativeText(
+                tr("文件：%1\n文件机型：%2\n当前机型：%3\n坐标项：%4 个\n\n"
+                   "导入前会清空当前内存坐标；超出当前机型范围的位置将被跳过。")
+                .arg(QFileInfo(path).fileName())
+                .arg(fileModel)
+                .arg(currentModel)
+                .arg(document.entries.size()));
+    box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+    box.setDefaultButton(QMessageBox::No);
+    if (QAbstractButton *yesButton = box.button(QMessageBox::Yes)) {
+        yesButton->setText(tr("确定导入"));
+    }
+    if (QAbstractButton *noButton = box.button(QMessageBox::No)) {
+        noButton->setText(tr("取消"));
+    }
+    if (box.exec() != QMessageBox::Yes) {
+        return;
+    }
+
+    const CoordinateFileIo::ApplyResult result =
+            CoordinateFileIo::apply(document, m_coordinates);
+    refreshStatuses();
+    loadSelection();
+
+    QString message = tr("已导入 %1 个坐标项").arg(result.applied);
+    if (result.skipped > 0) {
+        message += tr("，跳过 %1 个超出当前机型范围的位置")
+                .arg(result.skipped);
+    }
+    if (result.ignoredTools > 0) {
+        message += tr("，忽略 %1 组越界数值").arg(result.ignoredTools);
+    }
+    setFeedback(message, result.skipped > 0 || result.ignoredTools > 0);
+}
+
+void CoordinateMaintenanceWidget::exportCoordinates()
+{
+    if (!m_coordinates) {
+        return;
+    }
+
+    const QString model =
+            QString::fromLatin1(machineModelName(m_coordinates->machineModel()));
+    const QString defaultName = QStringLiteral("coordinates_%1_%2.json")
+            .arg(model,
+                 QDateTime::currentDateTime().toString(
+                     QStringLiteral("yyyyMMdd_HHmmss")));
+    const QString initialPath = m_lastFileDir.isEmpty()
+            ? defaultName
+            : QDir(m_lastFileDir).filePath(defaultName);
+
+    QString path = QFileDialog::getSaveFileName(
+                this, tr("导出坐标文件"), initialPath,
+                tr("坐标文件 (*.json);;所有文件 (*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    if (QFileInfo(path).suffix().isEmpty()) {
+        path += QStringLiteral(".json");
+    }
+    m_lastFileDir = QFileInfo(path).absolutePath();
+
+    QString error;
+    if (!CoordinateFileIo::save(*m_coordinates, path, &error)) {
+        setFeedback(tr("导出失败：%1").arg(error), true);
+        QMessageBox::warning(
+                    this, tr("导出坐标"),
+                    tr("无法写入坐标文件：\n%1").arg(error));
+        return;
+    }
+
+    setFeedback(tr("已导出坐标：%1")
+                .arg(QDir::toNativeSeparators(path)), false);
 }
 
 QTreeWidgetItem *CoordinateMaintenanceWidget::findTargetItem(

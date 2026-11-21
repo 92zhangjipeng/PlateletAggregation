@@ -137,6 +137,8 @@ public:
     bool z(TargetKind kind, int index, ZAxis axis, double *z) const;
     /** 返回某个工具在目标位置的完整坐标（无效时 xyValid/zValid=false） */
     ToolPose toolPose(TargetKind kind, int index, ZAxis axis) const;
+    /** 当前机型下该目标位置的 index 是否有效（特殊位置的 index 忽略） */
+    bool indexValid(TargetKind kind, int index) const;
 
     // ---------------- 特殊位置快捷接口 ----------------
     bool setOriginXy(ZAxis axis, double x, double y);
