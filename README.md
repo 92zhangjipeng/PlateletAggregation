@@ -30,7 +30,7 @@
 | `consumablesdialog.h/.cpp` | 耗材管理对话框：集中显示主板上报的刷卡/耗材/有效期信息 |
 | `testdatastore.h/.cpp` | 测试数据 SQLite 存储：样本、PPP/试剂、PRP0、PRP1~300 |
 | `instrumentcoordinates.h/.cpp` | 仪器坐标表：原点/清洗孔/弃杯孔/通道/试管/试剂位/样本孔的 XY 与 3 个 Z 轴高度 |
-| `coordinatefileio.h/.cpp` | 坐标 JSON 文件读写：导出/导入当前机型的全部工位坐标 |
+| `coordinatefileio.h/.cpp` | 坐标 JSON 读写：导出/导入工位坐标，提供启动自动恢复的默认坐标文件 |
 | `resultstablewidget.h/.cpp` | 自绘测试结果表格：表头、斑马纹、网格线、行点击 |
 | `resultsinfowidget.h/.cpp` | 结果信息标签页：最近测试结果自绘表格 + 刷新 |
 | `querywidget.h/.cpp` | 查询标签页：按样本号/患者姓名过滤测试结果 |
@@ -409,16 +409,22 @@ Z 值为该工具在这个 XY 位置的下降高度；如果下位机使用相�
 - 右侧按工具分三行：**抓手、试剂针、样本针**，每行分别填写该工具自己的
   X、Y 和 Z 下降高度；勾选「启用」表示该工具参与该位置的定位；
 - 因为三根 Z 轴水平位置不同，同一个目标位置的三行 X/Y 通常不同；
-- 「保存到内存」写入 `InstrumentCoordinates`，「清空当前」清空选中位置，
-  「清空全部」清空当前机型所有坐标（带确认）；
+- 「保存坐标」写入 `InstrumentCoordinates` 并立即保存到默认坐标文件，
+  「清空当前」清空选中位置，「清空全部」清空当前机型所有坐标（带确认）；
 - 「导出坐标」把当前机型所有已设置的坐标保存为 JSON 文件，默认文件名
   `coordinates_<机型>_<时间>.json`；
 - 「导入坐标」读取 JSON 文件，确认后覆盖当前内存坐标；文件机型与当前机型
   不一致时按当前机型范围导入，超范围的位置跳过，越界数值忽略并在结果中提示；
+  导入结果同样立即写回默认坐标文件；
 - 坐标表与主窗口共享：`window.instrumentCoordinates()`，后续测试流程
   可直接用 `locate...()` 取 XY 和 Z 高度；
-- 坐标常驻内存，软件重启后恢复为未设置；可用「导出坐标」备份，
-  重启后通过「导入坐标」恢复。
+- 默认坐标文件为 `QStandardPaths::AppDataLocation/platelet_coordinates.json`
+  （Windows 通常为 `%APPDATA%/PlateletAggregation/PlateletAggregation/`），
+  软件启动时由 `MainWindow::loadInstrumentCoordinates()` 自动读取到内存；
+  文件不存在或损坏时只写日志，不阻塞启动；
+- 左侧树下方的「定位校验」区是运动协议接入前的 UI 骨架：选择工具后显示
+  当前目标的 X/Y/Z；点击「触发移动」只通过 `motionRequested(MoveTarget)`
+  信号把目标交给外部，当前不会向仪器下发运动命令。
 
 ### 坐标文件格式
 
@@ -456,6 +462,19 @@ Z 值为该工具在这个 XY 位置的下降高度；如果下位机使用相�
 - `tools`：`gripper` / `reagentNeedle` / `sampleNeedle`，可只出现其中一组；
 - `xyValid` / `zValid` 为 `false` 时对应坐标不生效；导入会先清空全部内存坐标；
 - 导出只写入当前机型下已设置过坐标的工位，文件可在同机型设备间复制使用。
+
+### 定位校验（UI 骨架）
+
+坐标维护页左侧树下方提供「定位校验」区：
+
+- 工具下拉框：抓手 / 试剂针 / 样本针；
+- 目标显示当前树选中位置，X/Y/Z 来自 `locate(kind, index, axis)`；
+- 「触发移动」要求 XY 和 Z 都已设置，点击后只生成
+  `InstrumentCoordinates::MoveTarget` 并发出 `motionRequested` 信号，
+  同时反馈“运动协议未接入，未下发”；
+- 运动控制协议接入后，把 `motionRequested` 连接到通讯层，按“先 XY 定位、
+  到位后 Z 下降”的顺序下发即可；协议需要定义命令帧、速度、到位/错误应答、
+  超时和急停。
 
 ## 结果信息与查询
 

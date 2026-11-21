@@ -4,14 +4,18 @@
 
 #include "coordinatefileio.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QJsonValue>
 #include <QSaveFile>
+#include <QStandardPaths>
 #include <QtGlobal>
 
 #include <cmath>
@@ -183,12 +187,30 @@ bool readTool(const QJsonValue &value, const QString &context,
 
 } // namespace
 
+QString CoordinateFileIo::defaultFilePath()
+{
+    QString directory = QStandardPaths::writableLocation(
+                QStandardPaths::AppDataLocation);
+    if (directory.isEmpty()) {
+        directory = QDir(QCoreApplication::applicationDirPath())
+                .filePath(QStringLiteral("data"));
+    }
+    return QDir(directory).filePath(
+                QStringLiteral("platelet_coordinates.json"));
+}
+
 bool CoordinateFileIo::save(const InstrumentCoordinates &coordinates,
                             const QString &filePath,
                             QString *error)
 {
     if (filePath.isEmpty()) {
         setError(error, QStringLiteral("未指定导出文件"));
+        return false;
+    }
+
+    const QString directory = QFileInfo(filePath).absolutePath();
+    if (!directory.isEmpty() && !QDir().mkpath(directory)) {
+        setError(error, QStringLiteral("无法创建目录 %1").arg(directory));
         return false;
     }
 

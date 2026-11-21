@@ -6,6 +6,7 @@
 #include <QWidget>
 
 class QCheckBox;
+class QComboBox;
 class QDoubleSpinBox;
 class QFrame;
 class QLabel;
@@ -32,6 +33,13 @@ public:
     /** 按当前机型重建树并刷新状态 */
     void refreshAll();
 
+signals:
+    /**
+     * 定位校验触发：当前选中目标 + 工具已生成完整 XY/Z。
+     * 运动控制协议接入后，由外部连接到通讯层下发命令；当前只发出信号。
+     */
+    void motionRequested(const InstrumentCoordinates::MoveTarget &target);
+
 protected:
     void showEvent(QShowEvent *event) override;
 
@@ -42,6 +50,7 @@ private slots:
     void clearAll();
     void importCoordinates();
     void exportCoordinates();
+    void triggerVerificationMove();
 
 private:
     using TargetKind = InstrumentCoordinates::TargetKind;
@@ -72,6 +81,8 @@ private:
     QString statusText(TargetKind kind, int index) const;
     void setStateLabel(TargetKind kind, int index);
     void setFeedback(const QString &text, bool error = false);
+    void updateVerificationPanel();
+    bool saveToDefaultFile(QString *error);
 
     InstrumentCoordinates m_ownCoordinates;
     InstrumentCoordinates *m_coordinates = nullptr;
@@ -94,6 +105,14 @@ private:
     QPushButton *m_clearAllButton = nullptr;
     QPushButton *m_importButton = nullptr;
     QPushButton *m_exportButton = nullptr;
+
+    // 定位校验（运动协议接入前的 UI 骨架）
+    QFrame *m_verifyPanel = nullptr;
+    QLabel *m_verifyTargetLabel = nullptr;
+    QLabel *m_verifyPoseLabel = nullptr;
+    QLabel *m_verifyHintLabel = nullptr;
+    QComboBox *m_verifyToolCombo = nullptr;
+    QPushButton *m_verifyButton = nullptr;
 
     QString m_lastFileDir;   // 上次导入/导出的目录
 

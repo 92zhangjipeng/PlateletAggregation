@@ -1378,14 +1378,15 @@ QWidget *SettingsDialog::createCoordinatePage()
     header->addWidget(title);
     header->addStretch();
 
-    auto *badge = new QLabel(tr("● 内存坐标"), page);
+    auto *badge = new QLabel(tr("● 本地坐标文件"), page);
     badge->setObjectName(QStringLiteral("maintenanceBadge"));
     header->addWidget(badge, 0, Qt::AlignVCenter);
     layout->addLayout(header);
 
     auto *subtitle = new QLabel(
                 tr("维护原点、清洗孔、弃杯孔、通道、试管、试剂位和样本孔的"
-                   "XY 与各 Z 轴高度；修改后保存在当前软件内存中。"), page);
+                   "XY 与各 Z 轴高度；修改后写入本地坐标文件，"
+                   "软件启动时自动恢复。"), page);
     subtitle->setObjectName(QStringLiteral("dialogSubtitle"));
     subtitle->setWordWrap(true);
     layout->addWidget(subtitle);

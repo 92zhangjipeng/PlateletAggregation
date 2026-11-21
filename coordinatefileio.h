@@ -78,6 +78,12 @@ public:
         int ignoredTools = 0;  // 数值越界而忽略的工具坐标组数
     };
 
+    /**
+     * 默认坐标文件：AppDataLocation/platelet_coordinates.json。
+     * AppDataLocation 为空时回退到程序目录下的 data/platelet_coordinates.json。
+     */
+    static QString defaultFilePath();
+
     /** 导出当前机型的所有已设置坐标；写入失败时通过 error 返回原因 */
     static bool save(const InstrumentCoordinates &coordinates,
                      const QString &filePath,

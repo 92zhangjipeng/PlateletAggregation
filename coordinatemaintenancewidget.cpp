@@ -10,6 +10,7 @@
 #include <QBrush>
 #include <QCheckBox>
 #include <QColor>
+#include <QComboBox>
 #include <QDateTime>
 #include <QDir>
 #include <QDoubleSpinBox>
@@ -194,7 +195,37 @@ void CoordinateMaintenanceWidget::buildUi()
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 12px;"
         "}"
-        "QPushButton#coordDanger:hover { background: #FCEDEA; }"));
+        "QPushButton#coordDanger:hover { background: #FCEDEA; }"
+        "QFrame#coordinateVerify {"
+        "  background: #FFFFFF;"
+        "  border: 1px solid #DCE7F1;"
+        "  border-radius: 10px;"
+        "}"
+        "QLabel#verifyTitle {"
+        "  color: #1F4E79;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 13px;"
+        "  font-weight: 600;"
+        "}"
+        "QLabel#verifyPose {"
+        "  color: #1F2D3D;"
+        "  font-family: 'Consolas', 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "}"
+        "QLabel#verifyHint {"
+        "  color: #8A9CAB;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 11px;"
+        "}"
+        "QComboBox#verifyTool {"
+        "  background: #FFFFFF;"
+        "  border: 1px solid #C9DCEB;"
+        "  border-radius: 5px;"
+        "  padding: 3px 8px;"
+        "  color: #30475C;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "}"));
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -203,7 +234,8 @@ void CoordinateMaintenanceWidget::buildUi()
     auto *hint = new QLabel(
                 tr("三根 Z 轴水平位置不同，每个工具需要各自的 X/Y："
                    "选择左侧位置后，分别填写抓手、试剂针、样本针的 X、Y "
-                   "和下降 Z。勾选“启用”表示该工具参与定位。坐标单位 mm。"),
+                   "和下降 Z。勾选“启用”表示该工具参与定位。坐标单位 mm。"
+                   "保存后自动写入本地坐标文件，软件启动时自动恢复。"),
                 this);
     hint->setObjectName(QStringLiteral("coordinateHint"));
     hint->setWordWrap(true);
@@ -227,7 +259,67 @@ void CoordinateMaintenanceWidget::buildUi()
             this, [this](QTreeWidgetItem *, QTreeWidgetItem *) {
         loadSelection();
     });
-    body->addWidget(m_tree, 1);
+
+    auto *leftColumn = new QVBoxLayout;
+    leftColumn->setSpacing(10);
+    leftColumn->addWidget(m_tree, 1);
+
+    // 定位校验：当前选中目标 + 工具 → 生成 XY/Z 运动目标。
+    // 运动控制协议尚未接入，按钮只发信号，不驱动仪器。
+    m_verifyPanel = new QFrame(this);
+    m_verifyPanel->setObjectName(QStringLiteral("coordinateVerify"));
+    auto *verifyLayout = new QVBoxLayout(m_verifyPanel);
+    verifyLayout->setContentsMargins(14, 10, 14, 10);
+    verifyLayout->setSpacing(6);
+
+    auto *verifyTitleRow = new QHBoxLayout;
+    verifyTitleRow->setSpacing(8);
+    auto *verifyTitle = new QLabel(tr("定位校验"), m_verifyPanel);
+    verifyTitle->setObjectName(QStringLiteral("verifyTitle"));
+    verifyTitleRow->addWidget(verifyTitle);
+    m_verifyTargetLabel = new QLabel(tr("未选择目标"), m_verifyPanel);
+    m_verifyTargetLabel->setObjectName(QStringLiteral("verifyHint"));
+    verifyTitleRow->addWidget(m_verifyTargetLabel);
+    verifyTitleRow->addStretch(1);
+    verifyLayout->addLayout(verifyTitleRow);
+
+    auto *verifyControlRow = new QHBoxLayout;
+    verifyControlRow->setSpacing(8);
+    auto *toolCaption = new QLabel(tr("工具"), m_verifyPanel);
+    toolCaption->setObjectName(QStringLiteral("verifyHint"));
+    verifyControlRow->addWidget(toolCaption);
+
+    m_verifyToolCombo = new QComboBox(m_verifyPanel);
+    m_verifyToolCombo->setObjectName(QStringLiteral("verifyTool"));
+    m_verifyToolCombo->addItem(tr("抓手"),
+                               static_cast<int>(ZAxis::Gripper));
+    m_verifyToolCombo->addItem(tr("试剂针"),
+                               static_cast<int>(ZAxis::ReagentNeedle));
+    m_verifyToolCombo->addItem(tr("样本针"),
+                               static_cast<int>(ZAxis::SampleNeedle));
+    verifyControlRow->addWidget(m_verifyToolCombo);
+
+    m_verifyPoseLabel = new QLabel(tr("X --   Y --   Z --"), m_verifyPanel);
+    m_verifyPoseLabel->setObjectName(QStringLiteral("verifyPose"));
+    verifyControlRow->addWidget(m_verifyPoseLabel, 1);
+
+    m_verifyButton = new QPushButton(tr("触发移动"), m_verifyPanel);
+    m_verifyButton->setObjectName(QStringLiteral("coordPrimary"));
+    m_verifyButton->setCursor(Qt::PointingHandCursor);
+    m_verifyButton->setToolTip(
+                tr("生成当前目标 + 工具的运动目标；运动协议未接入前不会下发"));
+    verifyControlRow->addWidget(m_verifyButton);
+    verifyLayout->addLayout(verifyControlRow);
+
+    m_verifyHintLabel = new QLabel(
+                tr("运动控制协议未接入：点击只计算目标位置，不会驱动仪器。"),
+                m_verifyPanel);
+    m_verifyHintLabel->setObjectName(QStringLiteral("verifyHint"));
+    m_verifyHintLabel->setWordWrap(true);
+    verifyLayout->addWidget(m_verifyHintLabel);
+
+    leftColumn->addWidget(m_verifyPanel, 0);
+    body->addLayout(leftColumn, 1);
 
     m_editorPanel = new QFrame(this);
     m_editorPanel->setObjectName(QStringLiteral("coordinateEditor"));
@@ -300,9 +392,13 @@ void CoordinateMaintenanceWidget::buildUi()
     buttonGrid->setHorizontalSpacing(8);
     buttonGrid->setVerticalSpacing(8);
 
-    m_saveButton = new QPushButton(tr("保存到内存"), m_editorPanel);
+    m_saveButton = new QPushButton(tr("保存坐标"), m_editorPanel);
     m_saveButton->setObjectName(QStringLiteral("coordPrimary"));
     m_saveButton->setCursor(Qt::PointingHandCursor);
+    m_saveButton->setToolTip(
+                tr("写入内存并保存到默认坐标文件：\n%1")
+                .arg(QDir::toNativeSeparators(
+                         CoordinateFileIo::defaultFilePath())));
 
     m_reloadButton = new QPushButton(tr("重新读取"), m_editorPanel);
     m_reloadButton->setObjectName(QStringLiteral("coordSecondary"));
@@ -352,6 +448,11 @@ void CoordinateMaintenanceWidget::buildUi()
             this, &CoordinateMaintenanceWidget::importCoordinates);
     connect(m_exportButton, &QPushButton::clicked,
             this, &CoordinateMaintenanceWidget::exportCoordinates);
+    connect(m_verifyToolCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateVerificationPanel(); });
+    connect(m_verifyButton, &QPushButton::clicked,
+            this, &CoordinateMaintenanceWidget::triggerVerificationMove);
 
     body->addWidget(m_editorPanel, 0);
     root->addLayout(body, 1);
@@ -623,6 +724,7 @@ void CoordinateMaintenanceWidget::loadSelection()
         m_selectedLabel->setText(tr("未选择位置"));
         m_stateLabel->clear();
         m_editorPanel->setEnabled(false);
+        updateVerificationPanel();
         return;
     }
 
@@ -640,6 +742,7 @@ void CoordinateMaintenanceWidget::loadSelection()
     m_selectedLabel->setText(name);
     setStateLabel(kind, index);
     m_editorPanel->setEnabled(true);
+    updateVerificationPanel();
 }
 
 void CoordinateMaintenanceWidget::saveCurrent()
@@ -668,13 +771,19 @@ void CoordinateMaintenanceWidget::saveCurrent()
         }
     }
 
+    QString persistError;
+    const bool persisted = ok && saveToDefaultFile(&persistError);
+
     refreshStatuses();
     loadSelection();
 
-    if (ok) {
-        setFeedback(tr("已保存到内存：%1").arg(name), false);
-    } else {
+    if (!ok) {
         setFeedback(tr("保存失败：位置索引超出当前机型范围"), true);
+    } else if (persisted) {
+        setFeedback(tr("已保存：%1（已写入坐标文件）").arg(name), false);
+    } else {
+        setFeedback(tr("已保存到内存，但写入坐标文件失败：%1")
+                    .arg(persistError), true);
     }
 }
 
@@ -688,9 +797,17 @@ void CoordinateMaintenanceWidget::clearCurrent()
     }
 
     m_coordinates->clear(kind, index);
+    QString persistError;
+    const bool persisted = saveToDefaultFile(&persistError);
     refreshStatuses();
     loadSelection();
-    setFeedback(tr("已清空当前坐标：%1").arg(name), false);
+    if (persisted) {
+        setFeedback(tr("已清空当前坐标：%1（已写入坐标文件）").arg(name),
+                    false);
+    } else {
+        setFeedback(tr("已清空当前坐标：%1，但写入坐标文件失败：%2")
+                    .arg(name, persistError), true);
+    }
 }
 
 void CoordinateMaintenanceWidget::clearAll()
@@ -703,7 +820,9 @@ void CoordinateMaintenanceWidget::clearAll()
     box.setIcon(QMessageBox::Question);
     box.setWindowTitle(tr("清空全部坐标"));
     box.setText(tr("确定清空当前机型下所有工位坐标吗？"));
-    box.setInformativeText(tr("该操作只清空内存坐标，不会影响模组参数。"));
+    box.setInformativeText(
+                tr("该操作会清空当前机型坐标并写入坐标文件，"
+                   "不会影响模组参数。"));
     box.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
     box.setDefaultButton(QMessageBox::No);
     if (QAbstractButton *yesButton = box.button(QMessageBox::Yes)) {
@@ -717,9 +836,16 @@ void CoordinateMaintenanceWidget::clearAll()
     }
 
     m_coordinates->clear();
+    QString persistError;
+    const bool persisted = saveToDefaultFile(&persistError);
     refreshStatuses();
     loadSelection();
-    setFeedback(tr("已清空全部坐标"), false);
+    if (persisted) {
+        setFeedback(tr("已清空全部坐标（已写入坐标文件）"), false);
+    } else {
+        setFeedback(tr("已清空全部坐标，但写入坐标文件失败：%1")
+                    .arg(persistError), true);
+    }
 }
 
 void CoordinateMaintenanceWidget::importCoordinates()
@@ -757,7 +883,8 @@ void CoordinateMaintenanceWidget::importCoordinates()
     box.setText(tr("确定用该文件覆盖当前机型的全部坐标吗？"));
     box.setInformativeText(
                 tr("文件：%1\n文件机型：%2\n当前机型：%3\n坐标项：%4 个\n\n"
-                   "导入前会清空当前内存坐标；超出当前机型范围的位置将被跳过。")
+                   "导入前会清空当前坐标并写回坐标文件；"
+                   "超出当前机型范围的位置将被跳过。")
                 .arg(QFileInfo(path).fileName())
                 .arg(fileModel)
                 .arg(currentModel)
@@ -776,6 +903,8 @@ void CoordinateMaintenanceWidget::importCoordinates()
 
     const CoordinateFileIo::ApplyResult result =
             CoordinateFileIo::apply(document, m_coordinates);
+    QString persistError;
+    const bool persisted = saveToDefaultFile(&persistError);
     refreshStatuses();
     loadSelection();
 
@@ -787,7 +916,15 @@ void CoordinateMaintenanceWidget::importCoordinates()
     if (result.ignoredTools > 0) {
         message += tr("，忽略 %1 组越界数值").arg(result.ignoredTools);
     }
-    setFeedback(message, result.skipped > 0 || result.ignoredTools > 0);
+
+    bool hasError = result.skipped > 0 || result.ignoredTools > 0;
+    if (persisted) {
+        message += tr("，已写入坐标文件");
+    } else {
+        message += tr("，但写入坐标文件失败：%1").arg(persistError);
+        hasError = true;
+    }
+    setFeedback(message, hasError);
 }
 
 void CoordinateMaintenanceWidget::exportCoordinates()
@@ -828,6 +965,91 @@ void CoordinateMaintenanceWidget::exportCoordinates()
 
     setFeedback(tr("已导出坐标：%1")
                 .arg(QDir::toNativeSeparators(path)), false);
+}
+
+void CoordinateMaintenanceWidget::updateVerificationPanel()
+{
+    if (!m_verifyPanel || !m_verifyTargetLabel || !m_verifyPoseLabel
+            || !m_verifyToolCombo || !m_verifyButton) {
+        return;
+    }
+
+    TargetKind kind;
+    int index = -1;
+    QString name;
+    const bool hasTarget =
+            m_coordinates && currentTarget(&kind, &index, &name);
+
+    m_verifyToolCombo->setEnabled(hasTarget);
+    if (!hasTarget) {
+        m_verifyTargetLabel->setText(tr("未选择目标"));
+        m_verifyPoseLabel->setText(tr("X --   Y --   Z --"));
+        m_verifyButton->setEnabled(false);
+        return;
+    }
+
+    const ZAxis axis = static_cast<ZAxis>(
+                m_verifyToolCombo->currentData().toInt());
+    const auto target = m_coordinates->locate(kind, index, axis);
+    m_verifyTargetLabel->setText(tr("目标：%1").arg(name));
+
+    const QString x = target.xyValid
+            ? QString::number(target.x, 'f', 3) : QStringLiteral("--");
+    const QString y = target.xyValid
+            ? QString::number(target.y, 'f', 3) : QStringLiteral("--");
+    const QString z = target.zValid
+            ? QString::number(target.z, 'f', 3) : QStringLiteral("--");
+    m_verifyPoseLabel->setText(tr("X %1   Y %2   Z %3").arg(x, y, z));
+
+    m_verifyButton->setEnabled(target.valid());
+    m_verifyButton->setToolTip(
+                target.valid()
+                ? tr("生成当前目标 + 工具的运动目标；运动协议未接入前不会下发")
+                : tr("该工具的 XY 或 Z 尚未设置完整"));
+}
+
+void CoordinateMaintenanceWidget::triggerVerificationMove()
+{
+    TargetKind kind;
+    int index = -1;
+    QString name;
+    if (!m_coordinates || !currentTarget(&kind, &index, &name)) {
+        return;
+    }
+
+    const ZAxis axis = static_cast<ZAxis>(
+                m_verifyToolCombo->currentData().toInt());
+    const auto target = m_coordinates->locate(kind, index, axis);
+    if (!target.valid()) {
+        setFeedback(tr("定位校验：%1 的%2坐标未设置完整")
+                    .arg(name,
+                         InstrumentCoordinates::zAxisName(axis)), true);
+        return;
+    }
+
+    setFeedback(
+                tr("已生成运动目标：%1 · %2 → X %3, Y %4, Z %5；"
+                   "运动协议未接入，未下发")
+                .arg(name, InstrumentCoordinates::zAxisName(axis))
+                .arg(target.x, 0, 'f', 3)
+                .arg(target.y, 0, 'f', 3)
+                .arg(target.z, 0, 'f', 3),
+                false);
+    emit motionRequested(target);
+}
+
+bool CoordinateMaintenanceWidget::saveToDefaultFile(QString *error)
+{
+    if (!m_coordinates) {
+        if (error) {
+            *error = tr("坐标表不可用");
+        }
+        return false;
+    }
+    return CoordinateFileIo::save(
+                *m_coordinates,
+                CoordinateFileIo::defaultFilePath(),
+                error);
 }
 
 QTreeWidgetItem *CoordinateMaintenanceWidget::findTargetItem(

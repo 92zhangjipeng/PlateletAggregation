@@ -6,6 +6,7 @@
 #include "consumablesdialog.h"
 #include "settingsdialog.h"
 #include "CommunicationWorker.h"
+#include "coordinatefileio.h"
 #include "AppIcon.h"
 #include "CustomTitleBar.h"
 #include "FramelessWindowSupport.h"
@@ -26,6 +27,7 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QEvent>
+#include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -678,6 +680,9 @@ MainWindow::MainWindow(QWidget *parent)
         qWarning() << "Sample tray state load failed:" << trayError;
     }
     createTubeTrayTab();
+
+    // 坐标：启动时从默认坐标文件恢复到内存，坐标维护页与测试流程共用。
+    loadInstrumentCoordinates();
 
     m_usernameEdit->setFocus();
 
@@ -2817,6 +2822,38 @@ SampleTrayModel *MainWindow::trayModel() const
 InstrumentCoordinates *MainWindow::instrumentCoordinates()
 {
     return &m_instrumentCoordinates;
+}
+
+void MainWindow::loadInstrumentCoordinates()
+{
+    const QString path = CoordinateFileIo::defaultFilePath();
+    if (!QFileInfo::exists(path)) {
+        qInfo() << "Instrument coordinates file not found:" << path;
+        return;
+    }
+
+    CoordinateDocument document;
+    QString error;
+    if (!CoordinateFileIo::load(path, &document, &error)) {
+        qWarning() << "Instrument coordinates load failed:"
+                   << path << error;
+        return;
+    }
+
+    if (!document.machineModel.isEmpty()
+            && document.machineModel
+               != QLatin1String(machineModelName(m_machineModel))) {
+        qWarning() << "Coordinate file model" << document.machineModel
+                   << "differs from current model"
+                   << machineModelName(m_machineModel);
+    }
+
+    const CoordinateFileIo::ApplyResult result =
+            CoordinateFileIo::apply(document, &m_instrumentCoordinates);
+    qInfo() << "Instrument coordinates loaded from" << path
+            << "applied" << result.applied
+            << "skipped" << result.skipped
+            << "ignoredTools" << result.ignoredTools;
 }
 
 void MainWindow::openSettings()

@@ -166,6 +166,8 @@ private:
     void applyMainboardStatus(const MainBoardStatus &status);
     void setMainboardStatusText(const QString &summary, const char *state,
                                 const QString &toolTip = QString());
+    /** 启动时从默认坐标文件恢复仪器坐标 */
+    void loadInstrumentCoordinates();
 
     CommunicationWorker *m_commWorker = nullptr;
     QThread *m_commThread = nullptr;

@@ -7,7 +7,7 @@
 #include <QVector>
 
 /**
- * 仪器坐标表（仅保存在内存中）。
+ * 仪器坐标表（内存数据；持久化由 CoordinateFileIo 负责）。
  *
  * 三根 Z 轴（抓手、试剂针、样本针）在水平方向上是错位安装的：
  * 同一个目标位置，要让不同的工具垂直对准它，XY 坐标是不一样的。
@@ -214,5 +214,7 @@ private:
     QVector<TargetPosition> m_reagents;
     QVector<TargetPosition> m_sampleWells;
 };
+
+Q_DECLARE_METATYPE(InstrumentCoordinates::MoveTarget)
 
 #endif // INSTRUMENTCOORDINATES_H
