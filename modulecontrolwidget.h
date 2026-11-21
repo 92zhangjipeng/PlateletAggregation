@@ -3,15 +3,14 @@
 
 #include "DetectionModule.h"
 #include "ModuleAdPoller.h"
+#include "medicalwidgets.h"
 
 #include <QWidget>
 
 class CommunicationWorker;
-class QDoubleSpinBox;
 class QGroupBox;
 class QLabel;
 class QPlainTextEdit;
-class QSpinBox;
 class QTabWidget;
 
 /** 单个模组的控制页：温度、调光、LED 电流、4 路转速、读回 */
@@ -54,11 +53,11 @@ private:
     platelet::DetectionModule m_module;
     int m_moduleNumber = 1;
 
-    QDoubleSpinBox *m_targetTempSpin = nullptr;
+    MedicalDoubleSpinBox *m_targetTempSpin = nullptr;
     QLabel *m_currentTempLabel = nullptr;
-    QSpinBox *m_dimmingSpin = nullptr;
-    QSpinBox *m_currentSpins[4] = {};
-    QSpinBox *m_speedSpins[4] = {};
+    MedicalSpinBox *m_dimmingSpin = nullptr;
+    MedicalSpinBox *m_currentSpins[4] = {};
+    MedicalSpinBox *m_speedSpins[4] = {};
     QLabel *m_channelValueLabels[4] = {};
     QLabel *m_speedReadLabels[4] = {};
     QLabel *m_currentReadLabels[4] = {};

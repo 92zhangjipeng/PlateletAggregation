@@ -11,7 +11,6 @@
 #include <QAbstractItemView>
 #include <QButtonGroup>
 #include <QCheckBox>
-#include <QComboBox>
 #include <QCryptographicHash>
 #include <QDebug>
 #include <QDialog>
@@ -531,18 +530,6 @@ SettingsDialog::SettingsDialog(CommunicationWorker *commWorker,
         "  border: 1px solid #2C7BBF;"
         "  background: #F7FBFF;"
         "}"
-        "QComboBox#userRoleCombo {"
-        "  background: #FFFFFF;"
-        "  color: #1F2D3D;"
-        "  border: 1px solid #C5D4E4;"
-        "  border-radius: 5px;"
-        "  padding: 4px 8px;"
-        "  min-height: 24px;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
-        "}"
-        "QComboBox#userRoleCombo:focus { border: 1px solid #2C7BBF; }"
-        "QComboBox#userRoleCombo::drop-down { border: none; width: 18px; }"
         "QPushButton#userPrimaryButton {"
         "  background: #1F4E79;"
         "  color: #FFFFFF;"
@@ -924,7 +911,7 @@ QWidget *SettingsDialog::createBasicPage()
     m_userPasswordEdit->setObjectName(QStringLiteral("userInput"));
     m_userPasswordEdit->setEchoMode(QLineEdit::Password);
     m_userPasswordEdit->setPlaceholderText(tr("修改时留空表示不改密码"));
-    m_userRoleCombo = new QComboBox(userGroup);
+    m_userRoleCombo = new MedicalComboBox(userGroup);
     m_userRoleCombo->setObjectName(QStringLiteral("userRoleCombo"));
     m_userRoleCombo->addItem(tr("管理员"), QStringLiteral("admin"));
     m_userRoleCombo->addItem(tr("操作员"), QStringLiteral("operator"));

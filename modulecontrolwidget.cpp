@@ -5,7 +5,6 @@
 #include "modulecontrolwidget.h"
 #include "CommunicationWorker.h"
 
-#include <QDoubleSpinBox>
 #include <QMetaObject>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -13,7 +12,6 @@
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QPushButton>
-#include <QSpinBox>
 #include <QStyle>
 #include <QTabWidget>
 #include <QTime>
@@ -91,7 +89,7 @@ QGroupBox *ModulePanel::createTemperatureGroup()
 
     auto *caption = new QLabel(tr("目标温度"), group);
 
-    m_targetTempSpin = new QDoubleSpinBox(group);
+    m_targetTempSpin = new MedicalDoubleSpinBox(group);
     m_targetTempSpin->setRange(0.0, 100.0);
     m_targetTempSpin->setDecimals(2);
     m_targetTempSpin->setSingleStep(0.5);
@@ -132,7 +130,7 @@ QGroupBox *ModulePanel::createDimmingGroup()
 
     auto *caption = new QLabel(tr("4 路统一调光 (2000~3300)"), group);
 
-    m_dimmingSpin = new QSpinBox(group);
+    m_dimmingSpin = new MedicalSpinBox(group);
     m_dimmingSpin->setRange(DetectionModule::DimmingMin, DetectionModule::DimmingMax);
     m_dimmingSpin->setValue(2400);
 
@@ -163,7 +161,7 @@ QGroupBox *ModulePanel::createCurrentGroup()
         const int globalChannel = globalChannelNumber(i + 1);
         auto *caption = new QLabel(tr("CH%1").arg(globalChannel), group);
 
-        m_currentSpins[i] = new QSpinBox(group);
+        m_currentSpins[i] = new MedicalSpinBox(group);
         m_currentSpins[i]->setRange(DetectionModule::LedCurrentMin,
                                     DetectionModule::LedCurrentMax);
         m_currentSpins[i]->setValue(300);
@@ -196,7 +194,7 @@ QGroupBox *ModulePanel::createSpeedGroup()
         const int globalChannel = globalChannelNumber(i + 1);
         auto *caption = new QLabel(tr("CH%1").arg(globalChannel), group);
 
-        m_speedSpins[i] = new QSpinBox(group);
+        m_speedSpins[i] = new MedicalSpinBox(group);
         m_speedSpins[i]->setRange(DetectionModule::SpeedMin, DetectionModule::SpeedMax);
         m_speedSpins[i]->setValue(DetectionModule::SpeedNormal);
         m_speedSpins[i]->setToolTip(tr("700~1028，数值越大越慢；936 正常，1028 停止"));
@@ -518,22 +516,6 @@ ModuleControlWidget::ModuleControlWidget(QWidget *parent)
         "QLabel#readbackValue {"
         "  color: #1F4E79;"
         "  font-weight: 600;"
-        "}"
-        "QSpinBox, QDoubleSpinBox {"
-        "  border: 1px solid #C5D4E4;"
-        "  border-radius: 4px;"
-        "  padding: 2px 6px;"
-        "  background: #FFFFFF;"
-        "  color: #1F2D3D;"
-        "  min-height: 24px;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
-        "  selection-background-color: #2C7BBF;"
-        "  selection-color: #FFFFFF;"
-        "}"
-        "QSpinBox:focus, QDoubleSpinBox:focus {"
-        "  border: 1px solid #2C7BBF;"
-        "  background: #F7FBFF;"
         "}"
         "QPushButton#primaryButton {"
         "  background: #1F4E79;"

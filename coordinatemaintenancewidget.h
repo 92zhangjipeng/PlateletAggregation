@@ -2,12 +2,11 @@
 #define COORDINATEMAINTENANCEWIDGET_H
 
 #include "instrumentcoordinates.h"
+#include "medicalwidgets.h"
 
 #include <QWidget>
 
 class QCheckBox;
-class QComboBox;
-class QDoubleSpinBox;
 class QFrame;
 class QLabel;
 class QPushButton;
@@ -93,9 +92,9 @@ private:
     QLabel *m_feedbackLabel = nullptr;
 
     // 下标对应 ZAxis：0=抓手，1=试剂针，2=样本针
-    QDoubleSpinBox *m_xSpins[3] = {};
-    QDoubleSpinBox *m_ySpins[3] = {};
-    QDoubleSpinBox *m_zSpins[3] = {};
+    MedicalDoubleSpinBox *m_xSpins[3] = {};
+    MedicalDoubleSpinBox *m_ySpins[3] = {};
+    MedicalDoubleSpinBox *m_zSpins[3] = {};
     QCheckBox *m_toolChecks[3] = {};
 
     QPushButton *m_saveButton = nullptr;
@@ -108,7 +107,7 @@ private:
     QLabel *m_verifyTargetLabel = nullptr;
     QLabel *m_verifyPoseLabel = nullptr;
     QLabel *m_verifyHintLabel = nullptr;
-    QComboBox *m_verifyToolCombo = nullptr;
+    MedicalComboBox *m_verifyToolCombo = nullptr;
     QPushButton *m_verifyButton = nullptr;
 
     QString m_lastFileDir;   // 上次导入/导出的目录

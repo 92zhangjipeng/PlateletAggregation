@@ -35,6 +35,7 @@
 | `motionprotocol.h/.cpp` | 运动协议 0x17：15 字节帧构帧/解帧（单动作） |
 | `motioncontroller.h/.cpp` | 单动作运动发送接口：XY/抓手/试剂针/样本针/血样泵/试剂泵/复位 |
 | `coordinateverificationcontroller.h/.cpp` | 定位校验流程：三个 Z 复位完成门禁 → XY 移动 → 目标 Z 下降 |
+| `medicalwidgets.h/.cpp` | 全局医疗风格控件：MedicalComboBox / MedicalSpinBox / MedicalDoubleSpinBox |
 | `resultstablewidget.h/.cpp` | 自绘测试结果表格：表头、斑马纹、网格线、行点击 |
 | `resultsinfowidget.h/.cpp` | 结果信息标签页：最近测试结果自绘表格 + 刷新 |
 | `querywidget.h/.cpp` | 查询标签页：按样本号/患者姓名过滤测试结果 |
@@ -549,6 +550,23 @@ motion->resetBloodPump();               // 默认速度 2160
 - 两个页面进入时自动从 `TestDataStore::recentSamples(500)` 刷新，
   结果信息页和查询页也都有刷新按钮；
 - **质控**、**加样** 目前为空白占位页，等待后续接入功能。
+
+## 全局医疗风格控件
+
+`medicalwidgets.h/.cpp` 提供三个自绘子类，全软件的下拉框和数字输入框统一使用：
+
+- `MedicalComboBox`：`QComboBox` 子类；
+- `MedicalSpinBox`：`QSpinBox` 子类；
+- `MedicalDoubleSpinBox`：`QDoubleSpinBox` 子类。
+
+样式与交互：
+
+- 白底、浅灰蓝描边、6px 圆角；焦点用 `#2C7BBF` 2px 描边；
+- 最小高度 32px，适合触屏/戴手套操作；
+- 禁用态灰底灰字；下拉弹窗白底、浅蓝选中行；
+- 自绘下拉箭头和上下按钮，不随 Windows 主题变化；
+- 滚轮不改变数值或下拉选项，滚轮事件交给外层页面滚动，避免误操作；
+- 数字框内部仍使用 QLineEdit，保留输入校验、全选、键盘上下键等原生能力。
 
 ## 关闭确认
 

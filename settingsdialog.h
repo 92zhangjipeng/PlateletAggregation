@@ -4,13 +4,13 @@
 #include "FramelessDialog.h"
 #include "MachineModel.h"
 #include "instrumentcoordinates.h"
+#include "medicalwidgets.h"
 
 #include <QByteArray>
 #include <QString>
 
 class CommunicationWorker;
 class CoordinateMaintenanceWidget;
-class QComboBox;
 class QLineEdit;
 class QStackedWidget;
 class QLabel;
@@ -85,7 +85,7 @@ private:
     QTableWidget *m_userTable = nullptr;
     QLineEdit *m_userNameEdit = nullptr;
     QLineEdit *m_userPasswordEdit = nullptr;
-    QComboBox *m_userRoleCombo = nullptr;
+    MedicalComboBox *m_userRoleCombo = nullptr;
 };
 
 #endif // SETTINGSDIALOG_H

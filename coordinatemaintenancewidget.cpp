@@ -10,11 +10,9 @@
 #include <QBrush>
 #include <QCheckBox>
 #include <QColor>
-#include <QComboBox>
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
-#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -31,7 +29,6 @@
 #include <QTreeWidgetItem>
 #include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
-#include <QWheelEvent>
 
 namespace {
 
@@ -46,31 +43,15 @@ const InstrumentCoordinates::ZAxis kZAxes[] = {
     InstrumentCoordinates::ZAxis::SampleNeedle
 };
 
-/** 坐标输入框：忽略滚轮，避免滚动页面时误改数值 */
-class WheelSafeDoubleSpinBox : public QDoubleSpinBox
+MedicalDoubleSpinBox *makeCoordinateSpin(QWidget *parent,
+                                          double minimum, double maximum)
 {
-public:
-    explicit WheelSafeDoubleSpinBox(QWidget *parent = nullptr)
-        : QDoubleSpinBox(parent)
-    {
-    }
-
-protected:
-    void wheelEvent(QWheelEvent *event) override
-    {
-        event->ignore();   // 不修改数值，交给父级滚动区域
-    }
-};
-
-QDoubleSpinBox *makeCoordinateSpin(QWidget *parent,
-                                   double minimum, double maximum)
-{
-    auto *spin = new WheelSafeDoubleSpinBox(parent);
+    auto *spin = new MedicalDoubleSpinBox(parent);
     spin->setRange(minimum, maximum);
     spin->setDecimals(3);
     spin->setSingleStep(0.1);
     spin->setKeyboardTracking(false);
-    spin->setMinimumWidth(74);
+    spin->setMinimumWidth(92);
     return spin;
 }
 
@@ -166,16 +147,6 @@ void CoordinateMaintenanceWidget::buildUi()
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 11px;"
         "}"
-        "QDoubleSpinBox {"
-        "  background: #FFFFFF;"
-        "  border: 1px solid #C9DCEB;"
-        "  border-radius: 5px;"
-        "  padding: 4px 6px;"
-        "  color: #1F2D3D;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
-        "}"
-        "QDoubleSpinBox:focus { border: 1px solid #5FA8D8; }"
         "QCheckBox {"
         "  color: #5D7386;"
         "  font-family: 'Microsoft YaHei';"
@@ -224,15 +195,6 @@ void CoordinateMaintenanceWidget::buildUi()
         "  color: #8A9CAB;"
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 11px;"
-        "}"
-        "QComboBox#verifyTool {"
-        "  background: #FFFFFF;"
-        "  border: 1px solid #C9DCEB;"
-        "  border-radius: 5px;"
-        "  padding: 3px 8px;"
-        "  color: #30475C;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
         "}"));
 
     auto *root = new QVBoxLayout(this);
@@ -297,7 +259,7 @@ void CoordinateMaintenanceWidget::buildUi()
     toolCaption->setObjectName(QStringLiteral("verifyHint"));
     verifyControlRow->addWidget(toolCaption);
 
-    m_verifyToolCombo = new QComboBox(m_verifyPanel);
+    m_verifyToolCombo = new MedicalComboBox(m_verifyPanel);
     m_verifyToolCombo->setObjectName(QStringLiteral("verifyTool"));
     m_verifyToolCombo->addItem(tr("抓手"),
                                static_cast<int>(ZAxis::Gripper));
