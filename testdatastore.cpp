@@ -960,7 +960,7 @@ QVector<SampleSummary> TestDataStore::recentSamples(int limit,
     const int boundedLimit = qBound(1, limit, 5000);
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
-        "SELECT s.id, s.sample_no, s.patient_name, s.sample_type,"
+        "SELECT s.id, s.sample_no, s.patient_name, s.age, s.sample_type,"
         "       s.machine_model, s.test_time, s.ppp_value, s.category,"
         "       s.gender_entry, s.ward, s.bed, s.sending_doctor,"
         "       s.testing_doctor, s.reviewing_doctor, s.diagnosis,"
@@ -984,23 +984,25 @@ QVector<SampleSummary> TestDataStore::recentSamples(int limit,
         summary.id = query.value(0).toLongLong();
         summary.sampleNumber = query.value(1).toString();
         summary.patientName = query.value(2).toString();
-        summary.sampleType = query.value(3).toString();
-        summary.machineModel = query.value(4).toString();
-        summary.testTime = QDateTime::fromString(query.value(5).toString(),
+        summary.age = query.value(3).isNull()
+                ? -1 : query.value(3).toInt();
+        summary.sampleType = query.value(4).toString();
+        summary.machineModel = query.value(5).toString();
+        summary.testTime = QDateTime::fromString(query.value(6).toString(),
                                                  Qt::ISODate);
-        summary.pppValue = query.value(6).isNull()
-                ? -1 : query.value(6).toInt();
-        summary.department = query.value(7).toString();
-        summary.gender = query.value(8).toString();
-        summary.ward = query.value(9).toString();
-        summary.bed = query.value(10).toString();
-        summary.sendingDoctor = query.value(11).toString();
-        summary.testingDoctor = query.value(12).toString();
-        summary.reviewingDoctor = query.value(13).toString();
-        summary.diagnosis = query.value(14).toString();
-        summary.testStatus = query.value(15).toString();
-        summary.remark = query.value(16).toString();
-        summary.testCount = query.value(17).toInt();
+        summary.pppValue = query.value(7).isNull()
+                ? -1 : query.value(7).toInt();
+        summary.department = query.value(8).toString();
+        summary.gender = query.value(9).toString();
+        summary.ward = query.value(10).toString();
+        summary.bed = query.value(11).toString();
+        summary.sendingDoctor = query.value(12).toString();
+        summary.testingDoctor = query.value(13).toString();
+        summary.reviewingDoctor = query.value(14).toString();
+        summary.diagnosis = query.value(15).toString();
+        summary.testStatus = query.value(16).toString();
+        summary.remark = query.value(17).toString();
+        summary.testCount = query.value(18).toInt();
         result.append(summary);
     }
     return result;
@@ -1012,9 +1014,10 @@ bool TestDataStore::updateSampleEntryValue(qint64 sampleId,
                                            QString *error)
 {
     // entryKey 只允许来自信息录入类别的已知键，防注入列名；
-    // patient_name 为结果信息表直接编辑的姓名列。
+    // patient_name / age 为结果信息表直接编辑的姓名、年龄列。
     static const QSet<QString> allowed = {
         QStringLiteral("patient_name"),
+        QStringLiteral("age"),
         QStringLiteral("category"), QStringLiteral("gender_entry"),
         QStringLiteral("ward"), QStringLiteral("bed"),
         QStringLiteral("sending_doctor"), QStringLiteral("testing_doctor"),
@@ -1037,7 +1040,17 @@ bool TestDataStore::updateSampleEntryValue(qint64 sampleId,
     query.prepare(QStringLiteral(
         "UPDATE samples SET %1 = :value WHERE id = :id")
             .arg(entryKey));
-    query.bindValue(QStringLiteral(":value"), value.trimmed());
+    if (entryKey == QLatin1String("age")) {
+        // 年龄是 INTEGER：空值写 NULL，合法数字按整数写入。
+        const QString trimmed = value.trimmed();
+        bool ok = false;
+        const int age = trimmed.toInt(&ok);
+        query.bindValue(QStringLiteral(":value"),
+                        ok && !trimmed.isEmpty()
+                        ? QVariant(age) : QVariant());
+    } else {
+        query.bindValue(QStringLiteral(":value"), value.trimmed());
+    }
     query.bindValue(QStringLiteral(":id"), sampleId);
     if (!query.exec()) {
         if (error) {

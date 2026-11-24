@@ -1614,7 +1614,7 @@ void MainWindow::handleStartTest()
                 this, [this](const QString &message) {
             qWarning() << "测试错误:" << message;
             showActionHint(message);
-            MedicalMessageBox::warning(this, tr("无法开始测试"), message);
+            MedicalMessageBox::warning(this, tr("测试中止"), message);
         });
         connect(m_testScheduler, &TestScheduler::pppBaselineFinished,
                 this, [this](const QString &sampleNumber, int pppValue) {
@@ -1694,6 +1694,37 @@ void MainWindow::handleStartTest()
                 &TestActionController::actionFinished,
                 m_testScheduler,
                 &TestScheduler::handleActionFinished);
+        connect(m_testActionController,
+                &TestActionController::actionAbandoned,
+                m_testScheduler,
+                &TestScheduler::handleActionAbandoned);
+        // 抓杯失败：抓手已复位后弹出，提供“重试 / 放弃”两种补救措施。
+        connect(m_testActionController,
+                &TestActionController::grabFailurePaused,
+                this, [this](const QString &message) {
+            MedicalMessageBox box(this);
+            box.setIcon(MedicalMessageBox::Warning);
+            box.setWindowTitle(tr("抓杯失败"));
+            box.setText(message);
+            box.setInformativeText(
+                        tr("重试：抓手已复位，重新抓取当前杯。\n"
+                           "放弃：PPP 杯抓取失败则放弃本样本；PRP 杯抓取失败"
+                           "则跳过当前试剂，继续下一个试剂；没有后续试剂时"
+                           "进入下一个样本。"));
+            box.setStandardButtons(MedicalMessageBox::Retry
+                                   | MedicalMessageBox::Discard);
+            if (QPushButton *discard =
+                    box.button(MedicalMessageBox::Discard)) {
+                discard->setText(tr("放弃"));
+            }
+            box.setDefaultButton(MedicalMessageBox::Retry);
+            const int result = box.exec();
+            if (result == MedicalMessageBox::Discard) {
+                m_testActionController->abandonPausedGrab();
+            } else {
+                m_testActionController->retryPausedGrab();
+            }
+        });
         connect(m_testActionController,
                 &TestActionController::pppValueRead,
                 m_testScheduler, &TestScheduler::setPppValue);

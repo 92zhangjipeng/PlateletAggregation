@@ -209,6 +209,123 @@ void TestScheduler::handleActionFinished(bool ok, const QString &message)
     pump();
 }
 
+void TestScheduler::handleActionAbandoned(const QString &message)
+{
+    if (!m_actionInProgress) {
+        return;
+    }
+    qWarning() << "操作员放弃当前动作:" << message;
+
+    // 保持 m_actionInProgress=true 完成清理，防止托盘 modelChanged
+    // 在清理过程中重入 pump()。
+    switch (m_action) {
+    case ActionType::MovePppCup:
+        abandonPppSample(message);
+        break;
+    case ActionType::SetupReagent:
+        abandonCurrentReagent(message);
+        break;
+    default:
+        // 其它动作不支持放弃，按普通失败中止测试。
+        cancelCurrentAction(message);
+        return;
+    }
+
+    clearAction();
+    pump();
+}
+
+void TestScheduler::discardTrayTube(int tube)
+{
+    if (!m_trayModel || tube < 0) {
+        return;
+    }
+    const SampleTrayModel::TubeState state = m_trayModel->tubeState(tube);
+    if (state == SampleTrayModel::TubeState::Sampled) {
+        m_trayModel->markUsed(tube);
+    } else if (state == SampleTrayModel::TubeState::Allocated) {
+        m_trayModel->clearTube(tube);
+    }
+}
+
+void TestScheduler::abandonPppSample(const QString &reason)
+{
+    SampleRun *run = findRunByChannel(m_actionChannel);
+    if (!run) {
+        return;
+    }
+    const QString sampleNumber = run->sample.sampleNumber;
+    const int channel = run->globalChannel;
+    qWarning() << "放弃样本:" << sampleNumber << reason;
+
+    // 本次样本已加样的 PPP/PRP 杯全部作废，释放未加样的杯。
+    discardTrayTube(run->pppTube);
+    for (int tube : qAsConst(run->prpTubes)) {
+        discardTrayTube(tube);
+    }
+
+    // 结果信息表标记异常；加样页状态继续保持“加样完成”。
+    m_addSampleWidget->setSampleAbnormal(sampleNumber);
+
+    for (int i = 0; i < m_active.size(); ++i) {
+        if (m_active.at(i).sample.sampleNumber == sampleNumber) {
+            m_active.removeAt(i);
+            break;
+        }
+    }
+    releaseChannel(channel);
+    emit statusChanged(tr("样本 %1 PPP 杯抓取失败，已放弃该样本")
+                       .arg(sampleNumber));
+}
+
+void TestScheduler::abandonCurrentReagent(const QString &reason)
+{
+    SampleRun *run = findRunByChannel(m_actionChannel);
+    if (!run) {
+        return;
+    }
+    const int index = m_actionReagentIndex >= 0
+            ? m_actionReagentIndex : run->nextReagentIndex;
+    if (index < 0 || index >= run->sample.testItems.size()) {
+        return;
+    }
+    const QString sampleNumber = run->sample.sampleNumber;
+    const QString reagent = run->sample.testItems.at(index);
+    qWarning() << "放弃试剂:" << sampleNumber << reagent << reason;
+    run->abandoned = true;
+
+    // 当前 PRP 杯作废；试剂针里已经吸的试剂标记为需要清洗。
+    if (index < run->prpTubes.size()) {
+        discardTrayTube(run->prpTubes.at(index));
+    }
+    m_reagentNeedleDirty = true;
+    run->reactionActive = false;
+    run->discardPending = false;
+    run->currentTest = TestCurveData();
+
+    const int module = globalToModule(run->globalChannel);
+    const int local = globalToLocal(run->globalChannel);
+    if (index + 1 < run->sample.testItems.size()) {
+        run->nextReagentIndex = index + 1;
+        run->reagentPending = true;
+        m_overview->setChannelStatus(
+                    module, local,
+                    tr("样本:%1 放弃%2，等待下一个试剂")
+                    .arg(sampleNumber, reagent));
+        emit statusChanged(tr("样本 %1 放弃试剂 %2，继续下一个试剂")
+                           .arg(sampleNumber, reagent));
+        return;
+    }
+
+    m_overview->setChannelStatus(
+                module, local,
+                tr("样本:%1 放弃%2，测试结束")
+                .arg(sampleNumber, reagent));
+    emit statusChanged(tr("样本 %1 放弃试剂 %2，没有后续试剂，测试结束")
+                       .arg(sampleNumber, reagent));
+    completeSample(run);
+}
+
 void TestScheduler::handleChannelAd(int moduleNumber, int localChannel,
                                     int adValue)
 {
@@ -374,7 +491,8 @@ bool TestScheduler::pump()
             m_actionChannel = -1;
             m_actionReagentIndex = -1;
             m_actionInProgress = true;
-            emit statusChanged(tr("机械臂收尾：移动到清洗原点"));
+            emit statusChanged(
+                        tr("机械臂收尾：XY 负速度复位后移动到清洗原点"));
             emit parkAtOriginRequested();
             return true;
         }
@@ -691,9 +809,9 @@ void TestScheduler::completeSample(SampleRun *run)
     const QString sampleNumber = run->sample.sampleNumber;
     const int channel = run->globalChannel;
     m_addSampleWidget->setSampleCompleted(sampleNumber);
-    // PPP 值过低已标记异常：completeSample 发出的“测试结束”会被
-    // setSampleCompleted 覆盖回异常，这里保持数据库里异常结果不变。
-    if (run->pppValue >= 0 && run->pppValue < 1000
+    // 有试剂/杯子被操作员放弃，或 PPP 值过低：最终结果保持“异常结果”。
+    if ((run->abandoned
+         || (run->pppValue >= 0 && run->pppValue < 1000))
             && m_addSampleWidget) {
         m_addSampleWidget->setSampleAbnormal(sampleNumber);
     }

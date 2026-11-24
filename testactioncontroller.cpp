@@ -78,6 +78,9 @@ bool TestActionController::beginAction(const QString &name)
     m_globalChannel = -1;
     m_gripperRetried = false;
     m_idleGripperVacuum = 0;
+    m_grabFailurePaused = false;
+    m_grabFailureMessage.clear();
+    m_grabRetryAppend = nullptr;
     emit statusChanged(name);
     return true;
 }
@@ -189,7 +192,8 @@ void TestActionController::runNextStep()
         if (step.custom) {
             step.custom();
         }
-        if (m_busy && m_actionId == actionId
+        // 抓杯失败暂停时停在当前步骤，等操作员选择重试/放弃。
+        if (!m_grabFailurePaused && m_busy && m_actionId == actionId
                 && m_currentStep == stepIndex) {
             runNextStep();
         }
@@ -276,7 +280,7 @@ void TestActionController::cancel()
 
 void TestActionController::parkAtOrigin()
 {
-    if (!beginAction(tr("收尾：移动到清洗原点并复位"))) {
+    if (!beginAction(tr("收尾：XY 复位后移动到清洗原点"))) {
         return;
     }
     const auto origin = m_coordinates->locateOrigin(
@@ -285,15 +289,17 @@ void TestActionController::parkAtOrigin()
         finishAction(false, tr("原点 XY 坐标未设置，无法执行收尾动作"));
         return;
     }
+    // 测试结束收尾顺序：三根 Z 复位 → XY 负速度复位 → 移动到清洗原点。
+    appendResetAllZ(tr("收尾："));
+    appendMotion(m_protocol->resetXy(),
+                 tr("收尾：XY 负速度复位"),
+                 kMainBoard, platelet::MotionProtocol::Axis::Xy,
+                 kXyTimeout);
     appendMotion(m_protocol->moveXy(
                      qRound(origin.x), qRound(origin.y),
                      platelet::MotionProtocol::XyReference::BloodNeedle,
                      platelet::MotionProtocol::Area::Test),
                  tr("收尾：XY 移动到清洗原点"),
-                 kMainBoard, platelet::MotionProtocol::Axis::Xy,
-                 kXyTimeout);
-    appendMotion(m_protocol->resetXy(),
-                 tr("收尾：XY 负速度复位"),
                  kMainBoard, platelet::MotionProtocol::Axis::Xy,
                  kXyTimeout);
     runNextStep();
@@ -379,7 +385,9 @@ void TestActionController::appendResetAllZ(const QString &prefix)
                  kZResetTimeout);
 }
 
-void TestActionController::appendGripperLiftHoldingCup(const QString &prefix)
+void TestActionController::appendGripperLiftHoldingCup(
+        const QString &prefix,
+        const std::function<void()> &retryBuilder)
 {
     appendMotion(m_protocol->resetGripper(
                      platelet::MotionProtocol::DefaultZResetSpeed,
@@ -390,12 +398,18 @@ void TestActionController::appendGripperLiftHoldingCup(const QString &prefix)
                  [this](const platelet::MotionProtocol::Frame &frame) {
         m_lastGripperVacuum = frame.gripperVacuum();
     });
-    appendCustom([this, prefix]() {
-        if (m_busy && !gripperStillHolding(m_lastGripperVacuum)) {
-            finishAction(false,
-                         prefix + tr("抬Z后未吸牢：负压 %1，抓杯阈值 ≤ %2")
-                         .arg(m_lastGripperVacuum)
-                         .arg(gripperGrabVacuumMax()));
+    appendCustom([this, prefix, retryBuilder]() {
+        if (!m_busy || gripperStillHolding(m_lastGripperVacuum)) {
+            return;
+        }
+        const QString message =
+                prefix + tr("抬Z后未吸牢：负压 %1，抓杯阈值 ≤ %2")
+                .arg(m_lastGripperVacuum)
+                .arg(gripperGrabVacuumMax());
+        if (retryBuilder) {
+            pauseForGrabFailure(message, retryBuilder);
+        } else {
+            finishAction(false, message);
         }
     }, prefix + tr("抬Z确认仍吸牢"));
 }
@@ -432,20 +446,27 @@ void TestActionController::appendReadChannelAd(int globalChannel, bool ppp,
     }, prefix + tr("读取AD"));
 }
 
-void TestActionController::appendGripperVacuumCheck(bool grab,
-                                                     const QString &description)
+void TestActionController::appendGripperVacuumCheck(
+        bool grab, const QString &description,
+        const std::function<void()> &retryBuilder)
 {
-    appendCustom([this, grab, description]() {
+    appendCustom([this, grab, description, retryBuilder]() {
         if (!m_busy) {
             return;
         }
         if (grab) {
-            if (!gripperStillHolding(m_lastGripperVacuum)) {
-                finishAction(false,
-                             tr("%1失败：负压 %2，抓杯阈值 ≤ %3")
-                             .arg(description)
-                             .arg(m_lastGripperVacuum)
-                             .arg(gripperGrabVacuumMax()));
+            if (gripperStillHolding(m_lastGripperVacuum)) {
+                return;
+            }
+            const QString message =
+                    tr("%1失败：负压 %2，抓杯阈值 ≤ %3")
+                    .arg(description)
+                    .arg(m_lastGripperVacuum)
+                    .arg(gripperGrabVacuumMax());
+            if (retryBuilder) {
+                pauseForGrabFailure(message, retryBuilder);
+            } else {
+                finishAction(false, message);
             }
         } else if (!gripperReleaseSucceeded(m_lastGripperVacuum)) {
             finishAction(false,
@@ -455,6 +476,127 @@ void TestActionController::appendGripperVacuumCheck(bool grab,
                          .arg(gripperReleaseVacuumMin()));
         }
     }, description);
+}
+
+std::function<void()> TestActionController::grabRetryBuilder(
+        int z, const QString &prefix, bool includeLift)
+{
+    return [this, z, prefix, includeLift]() {
+        appendGrabRetrySequence(z, prefix, includeLift);
+    };
+}
+
+void TestActionController::appendGrabRetrySequence(
+        int z, const QString &prefix, bool includeLift)
+{
+    const QString retryPrefix = prefix + tr("重试：");
+    appendMotion(m_protocol->moveGripperTo(
+                     z, platelet::MotionProtocol::Area::Test, true, false),
+                 retryPrefix + tr("原位开阀读空载负压"),
+                 kZAxis, platelet::MotionProtocol::Axis::Gripper,
+                 kZMoveTimeout, PumpUpdate::None, -1,
+                 [this](const platelet::MotionProtocol::Frame &frame) {
+        m_idleGripperVacuum = frame.gripperVacuum();
+        qInfo() << "抓手重试空载负压:" << m_idleGripperVacuum;
+    });
+    appendGripperSpeedGrab(z, retryPrefix);
+    appendDelay(gripperSuctionDelayMs(),
+                retryPrefix + tr("等待抓杯负压建立"));
+    appendGripperVacuumCheck(true, retryPrefix + tr("抓杯"),
+                             grabRetryBuilder(z, prefix, false));
+    if (includeLift) {
+        appendGripperLiftHoldingCup(
+                    retryPrefix, grabRetryBuilder(z, prefix, true));
+    }
+}
+
+void TestActionController::pauseForGrabFailure(
+        const QString &message,
+        const std::function<void()> &retryBuilder)
+{
+    if (!m_busy) {
+        return;
+    }
+    m_grabFailureMessage = message;
+    m_grabRetryAppend = retryBuilder;
+
+    Step pause;
+    pause.kind = StepKind::Custom;
+    pause.description = tr("抓杯失败：等待重试或放弃");
+    pause.custom = [this]() {
+        m_grabFailurePaused = true;
+        emit statusChanged(tr("抓杯失败：等待操作员处理"));
+        emit grabFailurePaused(m_grabFailureMessage);
+    };
+
+    Step reset;
+    reset.kind = StepKind::Motion;
+    reset.frame = m_protocol->resetGripper();
+    if (reset.frame.isEmpty()) {
+        finishAction(false,
+                     tr("抓杯失败后抓手复位构帧失败：%1")
+                     .arg(m_protocol->lastError().isEmpty()
+                          ? tr("未知错误") : m_protocol->lastError()));
+        return;
+    }
+    reset.description = tr("抓杯失败：抓手复位");
+    reset.slaveAddress = kZAxis;
+    reset.axis = platelet::MotionProtocol::Axis::Gripper;
+    reset.timeoutMs = kZResetTimeout;
+
+    // insertNextStep 插在当前步之后：先插暂停再插复位，
+    // 实际执行顺序为 抓手复位 → 暂停等待操作员。
+    insertNextStep(pause);
+    insertNextStep(reset);
+}
+
+void TestActionController::retryPausedGrab()
+{
+    if (!m_busy || !m_grabFailurePaused) {
+        return;
+    }
+    const quint64 actionId = m_actionId;
+    // 暂停点之后的原步骤先取出来，重试抓杯成功后再接回去。
+    QVector<Step> remaining = m_steps.mid(m_currentStep + 1);
+    m_steps.resize(m_currentStep + 1);
+    m_grabFailurePaused = false;
+    m_gripperRetried = false;
+    const std::function<void()> builder = m_grabRetryAppend;
+    m_grabRetryAppend = nullptr;
+    m_grabFailureMessage.clear();
+
+    qInfo() << "抓杯失败：操作员选择重试";
+    emit statusChanged(tr("抓杯失败：重试抓杯"));
+    if (builder) {
+        builder();
+    }
+    m_steps.append(remaining);
+    if (m_busy && m_actionId == actionId) {
+        runNextStep();
+    }
+}
+
+void TestActionController::abandonPausedGrab()
+{
+    if (!m_busy || !m_grabFailurePaused) {
+        return;
+    }
+    finishAbandoned(m_grabFailureMessage);
+}
+
+void TestActionController::finishAbandoned(const QString &message)
+{
+    if (!m_busy) {
+        return;
+    }
+    setMotionExchangeActive(false);
+    m_timeoutTimer->stop();
+    m_busy = false;
+    m_currentStep = -1;
+    m_grabFailurePaused = false;
+    m_grabRetryAppend = nullptr;
+    qWarning() << m_actionName << "放弃:" << message;
+    emit actionAbandoned(message);
 }
 
 void TestActionController::appendGrabFromTube(int tubeIndex,
@@ -487,10 +629,14 @@ void TestActionController::appendGrabFromTube(int tubeIndex,
         qInfo() << "抓手空载负压:" << m_idleGripperVacuum;
     });
     // 2. 速度模式开阀下压吸杯（阀保持开启）：行程上限=试管位 z，
-    //    完成报告里读负压，未达抓杯阈值时重试一次
-    appendGripperSpeedGrab(qRound(loc.z), prefix);
-    appendGripperVacuumCheck(true, prefix + tr("抓杯"));
-    appendGripperLiftHoldingCup(prefix);
+    //    完成报告里读负压，未达抓杯阈值时重试一次。
+    //    抓杯失败可恢复：重试从当前 XY 重新抓，放弃由调度器跳过样本/试剂。
+    const int z = qRound(loc.z);
+    appendGripperSpeedGrab(z, prefix);
+    appendGripperVacuumCheck(true, prefix + tr("抓杯"),
+                             grabRetryBuilder(z, prefix, false));
+    appendGripperLiftHoldingCup(prefix,
+                                grabRetryBuilder(z, prefix, true));
 }
 
 void TestActionController::appendGripperSpeedGrab(int limitHeight,

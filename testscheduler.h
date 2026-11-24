@@ -70,6 +70,12 @@ public slots:
 
     /** 动作层完成一个机械动作后调用 */
     void handleActionFinished(bool ok, const QString &message);
+    /**
+     * 操作员在“抓杯失败”提示框里选择放弃：
+     * - PPP 杯抓取失败：放弃整个样本；
+     * - PRP 杯抓取失败：跳过当前试剂，继续下一个试剂/下一个样本。
+     */
+    void handleActionAbandoned(const QString &message);
 
     /** 主窗口每秒 AD 更新时转发；反应中的通道会记录 PRP1~PRP300 */
     void handleChannelAd(int moduleNumber, int localChannel, int adValue);
@@ -130,6 +136,7 @@ private:
         bool reagentPending = false;
         bool reactionActive = false;
         bool discardPending = false;
+        bool abandoned = false;      // 有杯/试剂被操作员放弃，最终结果记异常
         qint64 lastAdSampleMs = 0;
         TestCurveData currentTest;
     };
@@ -146,6 +153,12 @@ private:
     void finishMovePppCup();
     void finishDiscardCup();
     void beginReagentReaction(SampleRun *run);
+    /** PPP 杯抓取失败放弃：作废样本、释放通道、结果记异常 */
+    void abandonPppSample(const QString &reason);
+    /** PRP 杯抓取失败放弃：跳过当前试剂；没有后续试剂则完成样本 */
+    void abandonCurrentReagent(const QString &reason);
+    /** 放弃样本时处理已分配/已加样的托盘杯 */
+    void discardTrayTube(int tube);
 
     void assignChannel(SampleRun *run, int globalChannel);
     void releaseChannel(int globalChannel);

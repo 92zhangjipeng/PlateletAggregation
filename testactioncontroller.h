@@ -49,9 +49,18 @@ public slots:
     void handleReport(const platelet::MotionProtocol::Frame &frame);
     void cancel();
 
+    /** 抓杯失败后操作员选择“重试”：从当前 XY 重新抓取 */
+    void retryPausedGrab();
+    /** 抓杯失败后操作员选择“放弃”：结束当前动作并通知调度器跳过 */
+    void abandonPausedGrab();
+
 signals:
     void sendRequested(const QByteArray &frame, const QString &description);
     void actionFinished(bool ok, const QString &message);
+    /** 抓杯失败、抓手已复位，等待操作员选择重试/放弃 */
+    void grabFailurePaused(const QString &message);
+    /** 操作员选择放弃：调度器据此跳过当前样本/当前试剂 */
+    void actionAbandoned(const QString &message);
     void pppValueRead(int globalChannel, int value);
     void prp0ValueRead(int globalChannel, int value);
     /** 试剂已吐入反应杯：调度器从此刻开始 300s 计时 */
@@ -115,7 +124,9 @@ private:
 
     void appendResetSampleReagentZ(const QString &prefix);
     void appendResetAllZ(const QString &prefix);
-    void appendGripperLiftHoldingCup(const QString &prefix);
+    void appendGripperLiftHoldingCup(
+            const QString &prefix,
+            const std::function<void()> &retryBuilder = {});
     void appendXyHome(const QString &prefix);
 
     bool buildAddSample(const QueuedSample &sample, int pppTube,
@@ -140,7 +151,22 @@ private:
     void appendDiscardHeldCup(const QString &prefix);
     /** 速度模式下压吸杯（行程上限=试管/通道位 z），失败自动重试一次 */
     void appendGripperSpeedGrab(int limitHeight, const QString &prefix);
-    void appendGripperVacuumCheck(bool grab, const QString &description);
+    void appendGripperVacuumCheck(
+            bool grab, const QString &description,
+            const std::function<void()> &retryBuilder = {});
+    /**
+     * 可恢复抓杯：保存重试序列构建器，插入“抓手复位 → 暂停”两步，
+     * 等操作员在提示框里选择重试或放弃。
+     */
+    void pauseForGrabFailure(const QString &message,
+                             const std::function<void()> &retryBuilder);
+    /** 结束动作并通知调度器“放弃”，不按普通失败中止整个测试 */
+    void finishAbandoned(const QString &message);
+    /** 生成“从当前 XY 再次开阀下压抓杯”的重试构建器 */
+    std::function<void()> grabRetryBuilder(int z, const QString &prefix,
+                                           bool includeLift);
+    void appendGrabRetrySequence(int z, const QString &prefix,
+                                 bool includeLift);
     void appendReadChannelAd(int globalChannel, bool ppp,
                              const QString &prefix);
 
@@ -164,6 +190,9 @@ private:
     quint32 m_lastGripperVacuum = 0;
     quint32 m_idleGripperVacuum = 0;   // 抓杯前原位读的空载负压
     bool m_motionExchangeActive = false;
+    bool m_grabFailurePaused = false;
+    QString m_grabFailureMessage;
+    std::function<void()> m_grabRetryAppend;
 };
 
 #endif // TESTACTIONCONTROLLER_H

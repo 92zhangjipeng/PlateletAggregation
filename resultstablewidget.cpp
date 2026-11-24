@@ -7,20 +7,17 @@
 #include "informationentry.h"
 
 #include <QAbstractItemView>
-#include <QApplication>
 #include <QComboBox>
-#include <QFontMetrics>
 #include <QHeaderView>
 #include <QIcon>
+#include <QIntValidator>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPainter>
-#include <QPen>
-#include <QPolygonF>
 #include <QResizeEvent>
-#include <QStyle>
 #include <QStyledItemDelegate>
-#include <QTimer>
+
+#include <memory>
 
 namespace {
 
@@ -29,6 +26,7 @@ enum Column {
     StatusColumn = 0,      // 测试状态
     SampleNoColumn,        // 样本号
     NameColumn,            // 姓名（可编辑）
+    AgeColumn,             // 年龄（可编辑）
     TypeColumn,            // 样本类型
     ReagentCountColumn,    // 试剂数
     TimeColumn,            // 检测时间
@@ -47,18 +45,19 @@ enum Column {
 constexpr double kColumnRatios[ColumnCount] = {
     0.07,  // 状态
     0.11,  // 样本号
-    0.07,  // 姓名
+    0.065, // 姓名
+    0.04,  // 年龄
     0.05,  // 类型
     0.045, // 试剂数
-    0.075, // 时间
-    0.07,  // 科别
-    0.045, // 性别
-    0.07,  // 病区
-    0.075, // 送检医生
-    0.075, // 检验医生
-    0.075, // 审核医生
-    0.085, // 临床诊断
-    0.075, // 备注
+    0.07,  // 时间
+    0.065, // 科别
+    0.04,  // 性别
+    0.065, // 病区
+    0.07,  // 送检医生
+    0.07,  // 检验医生
+    0.07,  // 审核医生
+    0.08,  // 临床诊断
+    0.07,  // 备注
 };
 
 // 信息录入列 → (列号, 数据库列名, 信息录入类别键)
@@ -96,7 +95,8 @@ const EntryColumnInfo *entryColumnAt(int column)
 
 bool isEditableColumn(int column)
 {
-    return column == NameColumn || entryColumnAt(column) != nullptr;
+    return column == NameColumn || column == AgeColumn
+            || entryColumnAt(column) != nullptr;
 }
 
 QString entryValue(const SampleSummary &row, int column)
@@ -159,8 +159,10 @@ QString columnText(const SampleSummary &row, int column)
                 ? QStringLiteral("待测") : row.testStatus;
     case SampleNoColumn: return row.sampleNumber.isEmpty()
                 ? QStringLiteral("--") : row.sampleNumber;
-    // 姓名可编辑：空值显示为空，双击后可直接输入，不用先删掉“--”。
+    // 姓名/年龄可编辑：空值显示为空，双击后可直接输入。
     case NameColumn: return row.patientName;
+    case AgeColumn: return row.age >= 0
+                ? QString::number(row.age) : QString();
     case TypeColumn: return row.sampleType.isEmpty()
                 ? QStringLiteral("--") : row.sampleType;
     case ReagentCountColumn: return QString::number(row.testCount);
@@ -173,8 +175,65 @@ QString columnText(const SampleSummary &row, int column)
 }
 
 /**
- * 信息录入列代理：只有进入编辑（双击/按键）时才弹出下拉，
- * 单击仅选中整行；显示样式与下拉编辑器统一为医疗蓝白配色。
+ * 下拉编辑器样式：浅蓝边框 + 深蓝下拉按钮 + 白色箭头，
+ * 直接设置在编辑器上，避免继承表格样式导致箭头/边框对比度不足。
+ */
+QString entryComboStyleSheet()
+{
+    return QStringLiteral(
+        "QComboBox {"
+        "  background: #FFFFFF;"
+        "  border: 1px solid #5FA8D8;"
+        "  border-radius: 4px;"
+        "  padding: 2px 6px;"
+        "  color: #1F2D3D;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "}"
+        "QComboBox::drop-down {"
+        "  subcontrol-origin: padding;"
+        "  subcontrol-position: center right;"
+        "  width: 20px;"
+        "  border: none;"
+        "  border-left: 1px solid #A9C8DF;"
+        "  background: #2C7BBF;"
+        "  border-top-right-radius: 4px;"
+        "  border-bottom-right-radius: 4px;"
+        "}"
+        "QComboBox::down-arrow {"
+        "  image: url(:/img/arrow_down_light.png);"
+        "  width: 14px;"
+        "  height: 14px;"
+        "}"
+        "QComboBox::drop-down:hover {"
+        "  background: #3A8DCE;"
+        "}"
+        "QComboBox QLineEdit {"
+        "  background: transparent;"
+        "  border: none;"
+        "  padding: 0px;"
+        "  margin: 0px;"
+        "  color: #1F2D3D;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "  selection-background-color: #B9DDF3;"
+        "}"
+        "QComboBox QAbstractItemView {"
+        "  background: #FFFFFF;"
+        "  border: 1px solid #A9C8DF;"
+        "  selection-background-color: #E8F1FA;"
+        "  selection-color: #1F4E79;"
+        "  outline: 0;"
+        "  padding: 2px;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "}");
+}
+
+/**
+ * 信息录入列代理：单元格默认按普通文本绘制（空值就是空白），
+ * 只有双击/按键进入编辑时才创建 QComboBox 编辑器。
+ * 编辑器可下拉选择信息录入子项，也可直接输入自定义内容。
  */
 class EntryComboDelegate : public QStyledItemDelegate
 {
@@ -192,52 +251,57 @@ public:
     {
         const QStringList options = informationEntryValues(m_categoryKey);
         if (options.isEmpty()) {
-            // 信息录入里还没配置子项时退回文本编辑，避免完全无法输入。
+            // 信息录入里还没配置子项时退回文本编辑，仍可输入内容。
             return QStyledItemDelegate::createEditor(parent, option, index);
         }
 
         auto *combo = new QComboBox(parent);
         combo->setObjectName(QStringLiteral("resultEntryCombo"));
-        combo->setEditable(false);
+        combo->setStyleSheet(entryComboStyleSheet());
+        combo->setEditable(true);   // 可下拉选择，也可直接输入
+        combo->setInsertPolicy(QComboBox::NoInsert);
         combo->setMaxVisibleItems(12);
         combo->addItems(options);
         const QString current =
                 index.data(Qt::EditRole).toString().trimmed();
-        if (!current.isEmpty() && combo->findText(current) < 0) {
-            combo->addItem(current);
-        }
         combo->setCurrentText(current);
-        // 选中下拉项后立即提交并关闭编辑器，和普通表格代理行为一致。
-        QObject::connect(
-                    combo,
-                    static_cast<void (QComboBox::*)(int)>(&QComboBox::activated),
-                    combo, [this, combo](int) {
+        if (combo->lineEdit()) {
+            combo->lineEdit()->setPlaceholderText(tr("可选择或输入"));
+            // 进入编辑后直接输入即可替换原内容。
+            combo->lineEdit()->selectAll();
+        }
+
+        auto committed = std::make_shared<bool>(false);
+        auto commitAndClose = [this, combo, committed]() {
+            if (*committed) {
+                return;
+            }
+            *committed = true;
             EntryComboDelegate *self =
                     const_cast<EntryComboDelegate *>(this);
             emit self->commitData(combo);
             emit self->closeEditor(combo, QAbstractItemDelegate::NoHint);
-        });
-        // 进入编辑状态后才弹出下拉，单击单元格不会触发。
-        QTimer::singleShot(0, combo, [combo]() {
-            if (combo->isVisible()) {
-                combo->setFocus(Qt::PopupFocusReason);
-                combo->showPopup();
-            }
-        });
+        };
+        // 下拉选择或输入回车后立即提交并关闭编辑器。
+        QObject::connect(
+                    combo,
+                    static_cast<void (QComboBox::*)(int)>(&QComboBox::activated),
+                    combo, [commitAndClose](int) { commitAndClose(); });
+        if (combo->lineEdit()) {
+            QObject::connect(combo->lineEdit(), &QLineEdit::returnPressed,
+                             combo, commitAndClose);
+        }
         return combo;
     }
 
     void setEditorData(QWidget *editor, const QModelIndex &index) const override
     {
         if (auto *combo = qobject_cast<QComboBox *>(editor)) {
-            const QString current =
-                    index.data(Qt::EditRole).toString().trimmed();
-            int idx = combo->findText(current);
-            if (idx < 0 && !current.isEmpty()) {
-                combo->addItem(current);
-                idx = combo->count() - 1;
+            combo->setCurrentText(
+                        index.data(Qt::EditRole).toString().trimmed());
+            if (combo->lineEdit()) {
+                combo->lineEdit()->selectAll();
             }
-            combo->setCurrentIndex(idx);
             return;
         }
         QStyledItemDelegate::setEditorData(editor, index);
@@ -247,7 +311,8 @@ public:
                       const QModelIndex &index) const override
     {
         if (auto *combo = qobject_cast<QComboBox *>(editor)) {
-            model->setData(index, combo->currentText(), Qt::EditRole);
+            model->setData(index, combo->currentText().trimmed(),
+                           Qt::EditRole);
             return;
         }
         QStyledItemDelegate::setModelData(editor, model, index);
@@ -261,52 +326,38 @@ public:
         editor->setGeometry(option.rect.adjusted(1, 1, -1, -1));
     }
 
-    void paint(QPainter *painter, const QStyleOptionViewItem &option,
-               const QModelIndex &index) const override
-    {
-        QStyleOptionViewItem opt(option);
-        initStyleOption(&opt, index);
-        opt.text.clear();
-        QStyle *style = opt.widget ? opt.widget->style()
-                                   : QApplication::style();
-        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, opt.widget);
-
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing, true);
-        const bool selected = option.state & QStyle::State_Selected;
-        const QRectF box = QRectF(option.rect).adjusted(2.0, 3.0, -6.0, -3.0);
-        painter->setPen(QPen(selected ? QColor("#5FA8D8")
-                                      : QColor("#A9C8DF"), 1.0));
-        painter->setBrush(selected ? QColor("#E8F1FA") : QColor("#FFFFFF"));
-        painter->drawRoundedRect(box, 4.0, 4.0);
-
-        QFont font(QStringLiteral("Microsoft YaHei"));
-        font.setPixelSize(12);
-        painter->setFont(font);
-        painter->setPen(QColor("#30475C"));
-        const QFontMetrics metrics(font);
-        const QString text = index.data(Qt::DisplayRole).toString();
-        const QString elided = metrics.elidedText(
-                    text, Qt::ElideRight,
-                    qMax(10, qRound(box.width()) - 20));
-        painter->drawText(box.adjusted(5.0, 0.0, -16.0, 0.0),
-                          Qt::AlignLeft | Qt::AlignVCenter, elided);
-
-        // 下拉箭头
-        const qreal cx = box.right() - 9.0;
-        const qreal cy = box.center().y();
-        QPolygonF arrow;
-        arrow << QPointF(cx - 3.5, cy - 1.8)
-              << QPointF(cx + 3.5, cy - 1.8)
-              << QPointF(cx, cy + 2.2);
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor("#5D7386"));
-        painter->drawPolygon(arrow);
-        painter->restore();
-    }
-
 private:
     QString m_categoryKey;
+};
+
+/** 年龄列代理：只允许 0~150 的整数，清空表示未录入。 */
+class AgeDelegate : public QStyledItemDelegate
+{
+public:
+    explicit AgeDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    QWidget *createEditor(QWidget *parent,
+                          const QStyleOptionViewItem &option,
+                          const QModelIndex &index) const override
+    {
+        Q_UNUSED(option);
+        Q_UNUSED(index);
+        auto *edit = new QLineEdit(parent);
+        edit->setValidator(new QIntValidator(0, 150, edit));
+        edit->setPlaceholderText(tr("年龄"));
+        return edit;
+    }
+
+    void setEditorData(QWidget *editor, const QModelIndex &index) const override
+    {
+        QStyledItemDelegate::setEditorData(editor, index);
+        if (auto *edit = qobject_cast<QLineEdit *>(editor)) {
+            edit->selectAll();
+        }
+    }
 };
 
 } // namespace
@@ -317,9 +368,9 @@ ResultsTableWidget::ResultsTableWidget(QWidget *parent)
     setObjectName(QStringLiteral("resultsTableWidget"));
     setColumnCount(ColumnCount);
     setHorizontalHeaderLabels(QStringList()
-        << tr("状态") << tr("样本号") << tr("姓名") << tr("类型")
-        << tr("试剂数") << tr("检测时间") << tr("科别") << tr("性别")
-        << tr("病区") << tr("送检医生") << tr("检验医生")
+        << tr("状态") << tr("样本号") << tr("姓名") << tr("年龄")
+        << tr("类型") << tr("试剂数") << tr("检测时间") << tr("科别")
+        << tr("性别") << tr("病区") << tr("送检医生") << tr("检验医生")
         << tr("审核医生") << tr("临床诊断") << tr("备注"));
 
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -359,6 +410,7 @@ ResultsTableWidget::ResultsTableWidget(QWidget *parent)
                     new EntryComboDelegate(
                         QString::fromLatin1(info.categoryKey), this));
     }
+    setItemDelegateForColumn(AgeColumn, new AgeDelegate(this));
 
     m_emptyLabel = new QLabel(tr("暂无测试结果"), viewport());
     m_emptyLabel->setObjectName(QStringLiteral("resultsEmptyLabel"));
@@ -399,29 +451,6 @@ ResultsTableWidget::ResultsTableWidget(QWidget *parent)
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 12px;"
         "  selection-background-color: #B9DDF3;"
-        "}"
-        "QComboBox#resultEntryCombo {"
-        "  background: #FFFFFF;"
-        "  border: 1px solid #5FA8D8;"
-        "  border-radius: 4px;"
-        "  padding: 2px 6px;"
-        "  color: #1F2D3D;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
-        "}"
-        "QComboBox#resultEntryCombo::drop-down {"
-        "  border: none;"
-        "  width: 18px;"
-        "}"
-        "QComboBox#resultEntryCombo QAbstractItemView {"
-        "  background: #FFFFFF;"
-        "  border: 1px solid #A9C8DF;"
-        "  selection-background-color: #E8F1FA;"
-        "  selection-color: #1F4E79;"
-        "  outline: 0;"
-        "  padding: 2px;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 12px;"
         "}"
         "QHeaderView::section {"
         "  background: #EAF3FA;"
@@ -518,6 +547,30 @@ void ResultsTableWidget::handleItemChanged(QTableWidgetItem *item)
         }
         m_rows[row].patientName = text;
         emit entryValueChanged(sampleId, QStringLiteral("patient_name"), text);
+        return;
+    }
+
+    if (column == AgeColumn) {
+        int age = -1;
+        if (!text.isEmpty()) {
+            bool ok = false;
+            age = text.toInt(&ok);
+            if (!ok || age < 0 || age > 150) {
+                // 非法年龄还原原值，等待重新输入。
+                m_populating = true;
+                item->setText(m_rows.at(row).age >= 0
+                              ? QString::number(m_rows.at(row).age)
+                              : QString());
+                m_populating = false;
+                return;
+            }
+        }
+        if (m_rows.at(row).age == age) {
+            return;
+        }
+        m_rows[row].age = age;
+        emit entryValueChanged(sampleId, QStringLiteral("age"),
+                               age >= 0 ? QString::number(age) : QString());
         return;
     }
 

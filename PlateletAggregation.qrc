@@ -2,5 +2,6 @@
     <qresource prefix="/">
         <file>img/appicon.png</file>
         <file>img/arrow_down.png</file>
+        <file>img/arrow_down_light.png</file>
     </qresource>
 </RCC>

@@ -53,6 +53,7 @@ struct SampleSummary
     qint64 id = 0;
     QString sampleNumber;
     QString patientName;
+    int age = -1;                     // 年龄，-1 表示未录入
     QString sampleType;
     QString machineModel;
     QDateTime testTime;
