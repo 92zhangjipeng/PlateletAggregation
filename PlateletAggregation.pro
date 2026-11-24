@@ -25,6 +25,7 @@ SOURCES += \
     CommunicationWorker.cpp \
     CustomTitleBar.cpp \
     FramelessDialog.cpp \
+    MedicalMessageBox.cpp \
     FramelessWindowSupport.cpp \
     DetectionModule.cpp \
     modulerackwidget.cpp \
@@ -48,7 +49,12 @@ SOURCES += \
     motioncontroller.cpp \
     coordinateverificationcontroller.cpp \
     perfusioncontroller.cpp \
+    cleaningcontroller.cpp \
+    resetcontroller.cpp \
+    pumppositiontracker.cpp \
     medicalwidgets.cpp \
+    testscheduler.cpp \
+    testactioncontroller.cpp \
     addsamplewidget.cpp
 
 HEADERS += \
@@ -64,6 +70,11 @@ HEADERS += \
     tubetraydialog.h \
     testdatastore.h \
     testsamplequeue.h \
+    testscheduler.h \
+    testactioncontroller.h \
+    instrumentparameters.h \
+    referenceinterval.h \
+    informationentry.h \
     testcurvewidget.h \
     testcurvedialog.h \
     testsession.h \
@@ -78,6 +89,9 @@ HEADERS += \
     motioncontroller.h \
     coordinateverificationcontroller.h \
     perfusioncontroller.h \
+    cleaningcontroller.h \
+    resetcontroller.h \
+    pumppositiontracker.h \
     medicalwidgets.h \
     addsamplewidget.h \
     SerialPortManager.h \
@@ -92,5 +106,6 @@ HEADERS += \
     AppIcon.h \
     CustomTitleBar.h \
     FramelessDialog.h \
+    MedicalMessageBox.h \
     FramelessWindowSupport.h \
     DetectionModule.h

@@ -6,6 +6,7 @@
 #include "SerialPortManager.h"
 #include "mainboardpoller.h"
 
+#include <QDebug>
 #include <QTimer>
 
 CommunicationWorker::CommunicationWorker(QObject *parent)
@@ -25,6 +26,12 @@ void CommunicationWorker::startCommunication()
     m_serial = new SerialPortManager(this);
     m_adPoller = new ModuleAdPoller(m_serial, this);
     m_boardPoller = new MainBoardPoller(m_serial, this);
+
+    // 与老软件一致：开机灌注完成前不读 100~112 耗材。老软件灌注期间
+    // 总线上只有 0x17 动作帧；首轮灌注结束后 resumePeriodicPolling()
+    // 再打开耗材读取。状态帧 0xFE 仍可提前读取，用于确认主板在线。
+    m_boardPoller->setConsumablePollingEnabled(false);
+    m_boardPoller->setPollingDeferred(true);
 
     connect(m_serial, &SerialPortManager::connectedChanged,
             this, [this](bool connected) {
@@ -47,6 +54,14 @@ void CommunicationWorker::startCommunication()
         if (m_boardPoller && m_boardPoller->isConsumableReply(frame)) {
             return;
         }
+        // 诊断：主板非 0x17 帧（例如 0x16 的非常规回执）也记一条，
+        // 正常周期状态/耗材应答已在上面过滤，不会刷屏。
+        if (frame.size() >= 2
+                && static_cast<quint8>(frame.at(0)) == 0x05
+                && static_cast<quint8>(frame.at(1)) != 0x17) {
+            qInfo() << "主板非运动帧:"
+                    << QString::fromLatin1(frame.toHex(' ').toUpper());
+        }
         emit frameReceived(frame);
     });
 
@@ -58,9 +73,12 @@ void CommunicationWorker::startCommunication()
             this, &CommunicationWorker::mainBoardStatusUpdated);
     connect(m_boardPoller, &MainBoardPoller::consumableUpdated,
             this, &CommunicationWorker::mainBoardConsumableUpdated);
+    connect(m_boardPoller, &MainBoardPoller::cardRechargeResult,
+            this, &CommunicationWorker::cardRechargeResult);
 
     m_adPoller->setMachineModel(defaultMachineModel());
-    m_adPoller->start();
+    // 模组 AD 采集与老软件一样，等开机灌注完成后再由
+    // resumePeriodicPolling() 启动；灌注期间总线上只走 0x17 动作帧。
 
     m_reconnectTimer = new QTimer(this);
     m_reconnectTimer->setInterval(2000);
@@ -106,6 +124,73 @@ void CommunicationWorker::sendFrameRequested(const QByteArray &frame,
     QString error;
     const bool ok = m_serial->sendFrame(frame, &error);
     emit sendResult(description, ok, error);
+}
+
+void CommunicationWorker::sendCardRechargeConfirm(
+        const QByteArray &frame, int cardType, const QString &description)
+{
+    if (!m_serial) {
+        emit cardRechargeCommandSent(false, tr("通讯线程未启动"));
+        return;
+    }
+    if (m_boardPoller) {
+        m_boardPoller->pausePolling();
+        m_boardPoller->expectCardRechargeResult(cardType);
+    }
+
+    QString error;
+    const bool ok = m_serial->sendFrame(frame, &error);
+    emit cardRechargeCommandSent(ok, error);
+    if (!ok) {
+        // 发送失败立即恢复轮询，让界面继续刷新耗材。
+        if (m_boardPoller) {
+            m_boardPoller->resumePolling();
+        }
+        emit sendResult(description, false, error);
+    }
+}
+
+void CommunicationWorker::resumeMainboardPolling()
+{
+    if (m_boardPoller) {
+        m_boardPoller->resumePolling();
+    }
+}
+
+void CommunicationWorker::pausePeriodicPolling()
+{
+    // 老软件在开机灌注完成前不启动主板/模组采集，灌注期间总线上只有
+    // 0x17 运动命令和应答；这里保持同样的行为。
+    if (m_boardPoller) {
+        m_boardPoller->pausePolling();
+    }
+    if (m_adPoller) {
+        m_adPoller->stop();
+    }
+    qInfo() << "已暂停主板/模组周期轮询";
+}
+
+void CommunicationWorker::resumePeriodicPolling()
+{
+    if (m_boardPoller) {
+        m_boardPoller->setConsumablePollingEnabled(true);
+        m_boardPoller->setPollingDeferred(false);
+        m_boardPoller->resumePolling();
+    }
+    if (m_adPoller) {
+        m_adPoller->start();
+    }
+    qInfo() << "已恢复主板/模组周期轮询";
+}
+
+void CommunicationWorker::setMotionExchangeActive(bool active)
+{
+    if (m_boardPoller) {
+        m_boardPoller->setBusQuiet(active);
+    }
+    if (m_adPoller) {
+        m_adPoller->setBusQuiet(active);
+    }
 }
 
 void CommunicationWorker::setMachineModel(MachineModel model)

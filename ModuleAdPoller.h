@@ -47,6 +47,12 @@ public:
     void stop();
     bool isRunning() const;
 
+    /**
+     * 动作交换期间静默：定时器和滤波状态保持不变，只是不再发送 0x16
+     * 读命令，避免与 0x17 动作应答抢总线导致动作完成应答丢失。
+     */
+    void setBusQuiet(bool quiet);
+
     /** 是否为每秒轮询请求对应的应答帧（用于过滤界面日志） */
     bool isPeriodicReply(const QByteArray &frame) const;
 
@@ -97,6 +103,7 @@ private:
     ModuleAdData m_latest[3];
     int m_tickCounter = 0;
     bool m_running = false;
+    bool m_busQuiet = false;
 };
 
 Q_DECLARE_METATYPE(ModuleAdPoller::ModuleAdData)

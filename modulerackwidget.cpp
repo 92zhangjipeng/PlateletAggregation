@@ -216,36 +216,11 @@ void ModuleRackWidget::setChannelAdValue(int localChannel, int adValue)
     }
     state.info.adValue = adValue;
 
-    bool curveChanged = false;
-    const bool testing = state.runState == ChannelRunState::Testing
-            || TestSession::instance().isTestingActive();
-    const bool collectCurve = adValue >= 0
-            && state.enabled
-            && state.tubeInserted
-            && testing;
-    if (collectCurve) {
-        // 试剂测试期间，曲线头部的 PRP 值跟随每秒 AD 实时刷新；
-        // 第一个有效值作为 PRP0 保留，供测试结束保存。
-        if (state.info.prp0Value < 0) {
-            state.info.prp0Value = adValue;
-        }
-        state.info.prpValue = adValue;
-        ++state.info.elapsedSeconds;
-        const QPointF point(static_cast<double>(state.info.elapsedSeconds),
-                            static_cast<double>(adValue));
-        state.testCurve.append(point);
-        constexpr int kMaxCurvePoints = 7200;
-        if (state.testCurve.size() > kMaxCurvePoints) {
-            state.testCurve.remove(0, state.testCurve.size() - kMaxCurvePoints);
-        }
-        curveChanged = true;
-    }
-
+    // 这里只更新玻璃管底部的实时 AD 显示。测试曲线/集聚曲线以及
+    // 顶部“反应秒数”由 TestScheduler 在试剂吐入反应杯后统一驱动，
+    // 两条曲线共用同一个秒数基准，避免出现两条曲线秒数不同步。
     update();
     emit channelTestInfoChanged(m_moduleNumber, localChannel);
-    if (curveChanged) {
-        emit curveDataChanged(m_moduleNumber, localChannel);
-    }
 }
 
 void ModuleRackWidget::appendChannelTestPoint(int localChannel, double seconds,
@@ -396,6 +371,11 @@ void ModuleRackWidget::setChannelProgress(int localChannel, int percent)
         return;
     }
     state.progress = value;
+    if (value == 0) {
+        // 读取 PPP / 通道释放时直接归零，不播放上一轮 100% 回退动画，
+        // 看起来像进度条“重新开始”。
+        state.progressDisplay = 0.0;
+    }
     ensureAnimationTimer();
     update();
 }
@@ -610,18 +590,22 @@ ModuleRackWidget::LayoutMetrics ModuleRackWidget::metrics() const
 
     const qreal motorBand = qBound<qreal>(28.0, m.rack.height() * 0.16, 68.0);
     const qreal platformHeight = qBound<qreal>(5.0, m.rack.height() * 0.035, 12.0);
-    qreal cylinderHeight = m.rack.height() - motorBand - platformHeight - 18.0;
-    cylinderHeight = qBound<qreal>(70.0, cylinderHeight, 330.0);
+    const qreal availableHeight = m.rack.height() - motorBand - platformHeight - 18.0;
+    // 玻璃管适当降低高度：上限从 330 收窄，且不超过可用高度的 72%
+    qreal cylinderHeight = qBound<qreal>(70.0, availableHeight, 260.0);
+    cylinderHeight = qMin<qreal>(cylinderHeight, availableHeight * 0.72);
 
     m.cylinderHeight = cylinderHeight;
-    m.cylinderTop = m.rack.top() + 8.0;
+    // 底部锚定在平台上，高度缩短后顶部随之下移，避免玻璃管悬空
+    m.cylinderTop = m.rack.top() + 8.0
+            + qMax<qreal>(0.0, availableHeight - cylinderHeight);
     m.cylinderBottom = m.cylinderTop + cylinderHeight;
     m.platformTop = m.cylinderBottom;
     m.platformHeight = platformHeight;
     m.motorTop = m.platformTop + platformHeight + 6.0;
     m.motorHeight = qMax<qreal>(20.0, m.rack.bottom() - m.motorTop);
 
-    m.cylinderWidth = qMin(qMin(m.slotWidth * 0.54, m.cylinderHeight * 0.36), 64.0);
+    m.cylinderWidth = qMin(qMin(m.slotWidth * 0.54, m.cylinderHeight * 0.42), 64.0);
     m.tubeWidth = m.cylinderWidth * 0.62;
     m.tubeHeight = m.cylinderHeight * 0.78;
     m.motorWidth = qMin(m.slotWidth * 0.62, m.cylinderWidth * 1.32);
@@ -907,9 +891,11 @@ void ModuleRackWidget::paintRackBack(QPainter &p, const LayoutMetrics &m)
 {
     p.save();
 
-    const QRectF panel(m.rack.left() + 5.0, m.rack.top() + 1.0,
+    // 玻璃管高度已缩短，架子（背板 + 立柱 + 横梁）随之缩短到管顶上方
+    const qreal rackTop = m.cylinderTop - 14.0;
+    const QRectF panel(m.rack.left() + 5.0, rackTop,
                        m.rack.width() - 10.0,
-                       m.platformTop - m.rack.top() + m.platformHeight);
+                       m.platformTop - rackTop + m.platformHeight);
     QLinearGradient panelGradient(panel.topLeft(), panel.bottomLeft());
     panelGradient.setColorAt(0.0, QColor(248, 252, 255, 135));
     panelGradient.setColorAt(1.0, QColor(224, 240, 250, 165));

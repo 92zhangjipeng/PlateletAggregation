@@ -6,7 +6,6 @@
 #include "modulerackwidget.h"
 #include "testcurvedialog.h"
 #include "testsession.h"
-#include "appconfig.h"
 
 #include <QHBoxLayout>
 #include <QLabel>
@@ -14,10 +13,7 @@
 #include <QShowEvent>
 #include <QSizePolicy>
 #include <QStyle>
-#include <QTimer>
 #include <QVBoxLayout>
-
-#include <cmath>
 
 namespace {
 constexpr int kMaxModules = 3;
@@ -213,6 +209,13 @@ ChannelRunState ModuleOverviewWidget::channelRunState(int moduleNumber,
                 : ChannelRunState::Disabled;
 }
 
+int ModuleOverviewWidget::channelAdValue(int moduleNumber,
+                                        int localChannel) const
+{
+    ModuleRackWidget *rack = moduleRack(moduleNumber);
+    return rack ? rack->channelAdValue(localChannel) : -1;
+}
+
 void ModuleOverviewWidget::setTestingActive(bool active)
 {
     TestSession::instance().setTestingActive(active);
@@ -356,124 +359,6 @@ void ModuleOverviewWidget::resetAll()
         }
     }
     updateGlobalTestState(TestSession::instance().isTestingActive());
-}
-
-void ModuleOverviewWidget::startChannelOneSimulation()
-{
-    if (!m_modules[0] || !m_modules[0]->isChannelEnabled(1)) {
-        return;
-    }
-
-    if (!m_channelOneDemoTimer) {
-        m_channelOneDemoTimer = new QTimer(this);
-        m_channelOneDemoTimer->setInterval(1000);
-        connect(m_channelOneDemoTimer, &QTimer::timeout,
-                this, &ModuleOverviewWidget::advanceChannelOneSimulation);
-    }
-
-    m_channelOneDemoSecond = 0;
-    m_channelOneDemoPaused = false;
-    m_modules[0]->resetChannels();
-
-    setTestingActive(true);
-    setTubeInserted(1, 1, true, false);
-    // 全血模式显示 PRP，血浆模式显示更浅的 PPP 血清
-    m_modules[0]->setTubeContent(
-                1, sampleQualityIsPlasma()
-                   ? ModuleRackWidget::TubeContent::Ppp
-                   : ModuleRackWidget::TubeContent::Prp);
-    // PRP 值先留空，测试开始后由每秒 AD 实时刷新，不再写死。
-    setChannelTestInfo(1, 1, QStringLiteral("0001"),
-                       QStringLiteral("AA"), 0, -1);
-    setChannelStatus(1, 1, tr("样本:0001[AA]"));
-    setChannelRunState(1, 1, ChannelRunState::Testing);
-    setChannelProgress(1, 1, 8);
-    startMotor(1, 1);
-
-    m_channelOneDemoRunning = true;
-    m_channelOneDemoTimer->start();
-    // 不立即产生采样点：1 秒后产生第 1 个 PRP 点，300 秒后正好 300 个点。
-}
-
-void ModuleOverviewWidget::stopChannelOneSimulation()
-{
-    if (m_channelOneDemoTimer) {
-        m_channelOneDemoTimer->stop();
-    }
-    if (!m_channelOneDemoRunning) {
-        return;
-    }
-    m_channelOneDemoRunning = false;
-    m_channelOneDemoPaused = false;
-    stopMotor(1, 1);
-    setTestingActive(false);
-    emit channelOneSimulationFinished();
-}
-
-void ModuleOverviewWidget::setChannelOneSimulationPaused(bool paused)
-{
-    if (!m_channelOneDemoRunning || m_channelOneDemoPaused == paused
-            || !m_channelOneDemoTimer) {
-        return;
-    }
-
-    m_channelOneDemoPaused = paused;
-    if (paused) {
-        m_channelOneDemoTimer->stop();
-        stopMotor(1, 1);
-    } else {
-        m_channelOneDemoTimer->start();
-        startMotor(1, 1);
-    }
-}
-
-bool ModuleOverviewWidget::isChannelOneSimulationRunning() const
-{
-    return m_channelOneDemoRunning;
-}
-
-bool ModuleOverviewWidget::isChannelOneSimulationPaused() const
-{
-    return m_channelOneDemoPaused;
-}
-
-void ModuleOverviewWidget::advanceChannelOneSimulation()
-{
-    if (!m_channelOneDemoRunning) {
-        return;
-    }
-
-    ++m_channelOneDemoSecond;
-    const int seconds = m_channelOneDemoSecond;
-
-    // 模拟每秒 AD：围绕 2320 缓慢起伏
-    const int ad = qRound(2320.0
-                          + 70.0 * std::sin(seconds / 18.0)
-                          + 10.0 * std::sin(seconds / 4.0));
-    setChannelAdValue(1, 1, ad);
-
-    // 模拟集聚百分比：先快速上升，随后趋于平台
-    const double aggregation = qBound(
-                0.0,
-                4.0 + 58.0 * (1.0 - std::exp(-seconds / 45.0))
-                + 2.2 * std::sin(seconds / 11.0),
-                100.0);
-    appendChannelAggregationPoint(1, 1, seconds, aggregation);
-
-    // 单个试剂反应 5 分钟：300 秒 / 300 个 PRP（AD）点
-    setChannelProgress(1, 1, qMin(100, 8 + seconds * 92 / 300));
-
-    if (seconds >= 300) {
-        stopMotor(1, 1);
-        setChannelProgress(1, 1, 100);
-        setChannelStatus(1, 1, tr("完成"));
-        setChannelRunState(1, 1, ChannelRunState::Idle);
-        setTestingActive(false);
-        m_channelOneDemoRunning = false;
-        m_channelOneDemoPaused = false;
-        m_channelOneDemoTimer->stop();
-        emit channelOneSimulationFinished();
-    }
 }
 
 void ModuleOverviewWidget::updateHeaderText()

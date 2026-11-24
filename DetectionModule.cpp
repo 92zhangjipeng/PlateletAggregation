@@ -55,7 +55,8 @@ double DetectionModule::temperatureResolution()
 
 double DetectionModule::defaultTargetTemperature()
 {
-    return 37.0;
+    // 现场默认 35℃，可在维护设置 → 模组控制页按模组调整
+    return 35.0;
 }
 
 DetectionModule::DetectionModule(quint8 slaveAddress)
@@ -247,21 +248,26 @@ QByteArray DetectionModule::readTemperatureAndChannels()
 {
     m_lastError.clear();
     const std::array<quint16, ChannelCount> channels{{0, 0, 0, 0}};
-    return build(Func::ReadTempAndChannels, FrameType::Report, channels, 0);
+    // 协议规定上位机发送的温度字段是温控目标；读命令也要带上当前
+    // 目标温度，否则模组会把目标改成 0。
+    return build(Func::ReadTempAndChannels, FrameType::Report,
+                 channels, m_targetTempRaw);
 }
 
 QByteArray DetectionModule::readLedCurrent()
 {
     m_lastError.clear();
     const std::array<quint16, ChannelCount> channels{{0, 0, 0, 0}};
-    return build(Func::LedLight, FrameType::Report, channels, 0);
+    return build(Func::LedLight, FrameType::Report,
+                 channels, m_targetTempRaw);
 }
 
 QByteArray DetectionModule::readSpeed()
 {
     m_lastError.clear();
     const std::array<quint16, ChannelCount> channels{{0, 0, 0, 0}};
-    return build(Func::MotorSpeed, FrameType::Report, channels, 0);
+    return build(Func::MotorSpeed, FrameType::Report,
+                 channels, m_targetTempRaw);
 }
 
 quint16 DetectionModule::configuredSpeed(int channel) const

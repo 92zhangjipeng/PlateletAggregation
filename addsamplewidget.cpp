@@ -33,6 +33,7 @@
 #include <QLinearGradient>
 #include <QMenu>
 #include <QMessageBox>
+#include "MedicalMessageBox.h"
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -571,7 +572,7 @@ private:
             return;
         }
         if (m_combinations.contains(combination)) {
-            QMessageBox::information(
+            MedicalMessageBox::information(
                         this, tr("添加组合"),
                         tr("组合 %1 已存在，已直接选中。")
                         .arg(combination));
@@ -588,7 +589,7 @@ private:
     {
         const int combo = selectedComboIndex();
         if (combo < 0) {
-            QMessageBox::information(this, tr("修改组合"),
+            MedicalMessageBox::information(this, tr("修改组合"),
                                      tr("请先勾选要修改的已有组合。"));
             return;
         }
@@ -605,7 +606,7 @@ private:
         }
         const int duplicate = m_combinations.indexOf(combination);
         if (duplicate >= 0 && duplicate != combo) {
-            QMessageBox::warning(
+            MedicalMessageBox::warning(
                         this, tr("修改组合"),
                         tr("组合 %1 已存在，请换一个组合。")
                         .arg(combination));
@@ -622,12 +623,12 @@ private:
     {
         const int combo = selectedComboIndex();
         if (combo < 0) {
-            QMessageBox::information(this, tr("删除组合"),
+            MedicalMessageBox::information(this, tr("删除组合"),
                                      tr("请先勾选要删除的已有组合。"));
             return;
         }
         const QString combination = m_combinations.at(combo);
-        if (QMessageBox::question(
+        if (MedicalMessageBox::question(
                     this, tr("删除组合"),
                     tr("确定删除组合「%1」吗？").arg(combination),
                     QMessageBox::Yes | QMessageBox::No,
@@ -706,7 +707,7 @@ private:
     PositionsProvider m_provider;
 };
 
-/** 加样状态列：彩色圆点 + 待测/测试中。 */
+/** 加样状态列：彩色圆点 + 待定/待测/加样完成（测试状态看结果信息表）。 */
 class SampleStatusDelegate : public QStyledItemDelegate
 {
 public:
@@ -733,8 +734,13 @@ public:
         QColor dot(QStringLiteral("#8A9CAB"));   // 待定
         if (text == QStringLiteral("待测")) {
             dot = QColor(QStringLiteral("#E6A23C"));
+        } else if (text == QStringLiteral("加样完成")
+                   || text == QStringLiteral("已加样")) {
+            dot = QColor(QStringLiteral("#22A877"));
         } else if (text == QStringLiteral("测试中")) {
             dot = QColor(QStringLiteral("#2C7BBF"));
+        } else if (text == QStringLiteral("完成")) {
+            dot = QColor(QStringLiteral("#6C8A5A"));
         }
 
         const QRect rect = option.rect;
@@ -2479,7 +2485,11 @@ int AddSampleWidget::activeSampleCount() const
         QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
         if (status
                 && (status->text() == tr("待测")
-                    || status->text() == tr("测试中"))) {
+                    || status->text() == tr("加样完成")
+                    || status->text() == tr("已加样")
+                    || status->text() == tr("测试中")
+                    || status->text() == tr("完成")
+                    || status->text() == tr("异常结果"))) {
             ++count;
         }
     }
@@ -2499,16 +2509,13 @@ void AddSampleWidget::setSampleTesting(const QString &sampleNumber,
         if (!sampleNo || sampleNo->text().trimmed() != trimmed) {
             continue;
         }
-        if (QTableWidgetItem *status =
-                m_sampleTable->item(row, StatusColumn)) {
-            m_updatingTable = true;
-            status->setText(testing ? tr("测试中") : tr("待测"));
-            m_updatingTable = false;
-        }
-        // 测试开始时样本已离开待测队列；测试结束回到待测时重新排队。
+        // 加样页表格状态固定在“加样完成”，测试状态只在结果信息表变化；
+        // 这里只维护内部“测试中”标记（用于禁止删除正在测试的样本）。
         if (testing) {
+            m_testingSamples.insert(trimmed);
             m_testQueue.removeBySampleNumber(trimmed);
         } else {
+            m_testingSamples.remove(trimmed);
             QueuedSample sample;
             if (queuedSampleFromRow(row, &sample)
                     && !m_testQueue.contains(sample.sampleNumber)) {
@@ -2522,8 +2529,79 @@ void AddSampleWidget::setSampleTesting(const QString &sampleNumber,
         if (testing) {
             m_sampleTable->selectRow(row);
         }
+        emit sampleStatusChanged(trimmed, testing ? tr("测试中")
+                                                  : tr("待测"));
         return;
     }
+}
+
+bool AddSampleWidget::setSampleStatus(const QString &sampleNumber,
+                                      const QString &status)
+{
+    if (!m_sampleTable) {
+        return false;
+    }
+    const QString trimmed = sampleNumber.trimmed();
+    for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
+        QTableWidgetItem *sampleNo = m_sampleTable->item(row,
+                                                         SampleNoColumn);
+        if (!sampleNo || sampleNo->text().trimmed() != trimmed) {
+            continue;
+        }
+        if (QTableWidgetItem *item =
+                m_sampleTable->item(row, StatusColumn)) {
+            m_updatingTable = true;
+            item->setText(status);
+            m_updatingTable = false;
+        }
+        updateRowEditability(row);
+        updateSampleCount();
+        syncBloodAreaSamples();
+        return true;
+    }
+    return false;
+}
+
+void AddSampleWidget::setSampleAdded(const QString &sampleNumber)
+{
+    // 加样页状态到此为止：之后测试中/测试结束/异常都只在结果信息表显示。
+    setSampleStatus(sampleNumber, tr("加样完成"));
+    emit sampleStatusChanged(sampleNumber, tr("测试中"));
+}
+
+void AddSampleWidget::setSampleCompleted(const QString &sampleNumber)
+{
+    m_testingSamples.remove(sampleNumber.trimmed());
+    emit sampleStatusChanged(sampleNumber, tr("测试结束"));
+}
+
+void AddSampleWidget::setSampleAbnormal(const QString &sampleNumber)
+{
+    m_testingSamples.remove(sampleNumber.trimmed());
+    emit sampleStatusChanged(sampleNumber, tr("异常结果"));
+}
+
+void AddSampleWidget::clearTestingSamples()
+{
+    m_testingSamples.clear();
+}
+
+bool AddSampleWidget::isRowPositionReleased(int row) const
+{
+    if (!m_sampleTable || row < 0
+            || row >= m_sampleTable->rowCount()) {
+        return false;
+    }
+    QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+    if (!status) {
+        return false;
+    }
+    const QString text = status->text();
+    return text == tr("加样完成")
+            || text == tr("已加样")
+            || text == tr("测试中")
+            || text == tr("完成")
+            || text == tr("异常结果");
 }
 
 void AddSampleWidget::showEvent(QShowEvent *event)
@@ -2784,7 +2862,7 @@ QFrame *AddSampleWidget::createSampleTableCard()
                 m_movingRow = -1;
                 m_bloodArea->cancelMoving();
             }
-            QMessageBox::information(
+            MedicalMessageBox::information(
                         this, tr("移动样本位置"),
                         tr("只有待定样本可以移动孔位；"
                            "已确认或测试中的样本不能移动。"));
@@ -3226,7 +3304,7 @@ void AddSampleWidget::reallocatePositionsForMode()
     syncBloodAreaSamples();
 
     if (pppPrp && m_sampleTable->rowCount() > holes / 2) {
-        QMessageBox::warning(
+        MedicalMessageBox::warning(
                     this, tr("测试模式已切换"),
                     tr("当前加样列表有 %1 个样本，PPP+PRP 模式最多 %2 个；"
                        "超出部分没有分配孔位。")
@@ -3256,7 +3334,7 @@ void AddSampleWidget::modifyTestItems(int row)
     }
     QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
     if (!status || status->text() != tr("待定")) {
-        QMessageBox::information(
+        MedicalMessageBox::information(
                     this, tr("测试项目"),
                     tr("只有待定样本可以修改测试项目；"
                        "已确认或测试中的样本不能修改。"));
@@ -3292,6 +3370,9 @@ void AddSampleWidget::syncBloodAreaSamples()
     QStringList pppPositions;
     const bool pppMode = testModeIsPppPrp();
     for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
+        if (isRowPositionReleased(row)) {
+            continue;
+        }
         if (QTableWidgetItem *item =
                 m_sampleTable->item(row, PositionColumn)) {
             const QStringList parts = positionParts(item->text());
@@ -3316,9 +3397,11 @@ void AddSampleWidget::syncBloodAreaSamples()
                 break;
             }
         }
-        if (QTableWidgetItem *item =
-                m_sampleTable->item(row, PositionColumn)) {
-            selectedPositions = positionParts(item->text());
+        if (!isRowPositionReleased(row)) {
+            if (QTableWidgetItem *item =
+                    m_sampleTable->item(row, PositionColumn)) {
+                selectedPositions = positionParts(item->text());
+            }
         }
     }
     m_bloodArea->setSelectedPositions(selectedPositions);
@@ -3343,7 +3426,7 @@ void AddSampleWidget::handleBloodAreaMoveCommitted(
 
     const QString position = positions.join(QLatin1Char('+'));
     if (!positionStringValid(position, row)) {
-        QMessageBox::warning(
+        MedicalMessageBox::warning(
                     this, tr("移动样本位置"),
                     tr("目标孔位无效或已被其他样本占用。"));
         syncBloodAreaSamples();
@@ -3408,7 +3491,7 @@ void AddSampleWidget::addSampleInternal(bool fromHeightTrigger)
                     m_sampleTable->item(row, SampleNoColumn)) {
                 number = sampleNo->text();
             }
-            QMessageBox::information(
+            MedicalMessageBox::information(
                         this, tr("请先扫描条码"),
                         tr("加样扫码已开启。\n请先为样本 %1 扫描或输入"
                            "条码，再添加下一个样本。").arg(number));
@@ -3418,7 +3501,7 @@ void AddSampleWidget::addSampleInternal(bool fromHeightTrigger)
 
         if (!m_quickBarcodeEdit
                 || m_quickBarcodeEdit->text().trimmed().isEmpty()) {
-            QMessageBox::information(
+            MedicalMessageBox::information(
                         this, tr("请扫描条码"),
                         tr("加样扫码已开启，请先在条码栏扫描或输入条码，"
                            "再点「添加」。"));
@@ -3432,7 +3515,7 @@ void AddSampleWidget::addSampleInternal(bool fromHeightTrigger)
 
     const QString position = nextFreePosition();
     if (position.isEmpty()) {
-        QMessageBox::information(
+        MedicalMessageBox::information(
                     this, tr("无法添加样本"),
                     testModeIsPppPrp()
                     ? tr("没有连续的两个空闲血样孔；PPP+PRP 模式最多 %1 "
@@ -3450,7 +3533,7 @@ void AddSampleWidget::addSampleInternal(bool fromHeightTrigger)
         QString error;
         sampleNumber = generateNextSampleNumber(&error);
         if (sampleNumber.isEmpty()) {
-            QMessageBox::warning(
+            MedicalMessageBox::warning(
                         this, tr("无法添加样本"),
                         error.isEmpty()
                         ? tr("无法生成当天样本号，请检查测试数据库。")
@@ -3464,7 +3547,7 @@ void AddSampleWidget::addSampleInternal(bool fromHeightTrigger)
 
     QString reason;
     if (!validateSampleNumber(sampleNumber, -1, &reason)) {
-        QMessageBox::warning(this, tr("样本号不可用"), reason);
+        MedicalMessageBox::warning(this, tr("样本号不可用"), reason);
         if (m_quickSampleNoEdit) {
             m_quickSampleNoEdit->setFocus();
             m_quickSampleNoEdit->selectAll();
@@ -3511,7 +3594,7 @@ void AddSampleWidget::confirmSamples()
         return;
     }
     if (m_sampleTable->rowCount() == 0) {
-        QMessageBox::information(this, tr("确认加样"),
+        MedicalMessageBox::information(this, tr("确认加样"),
                                  tr("加样列表为空。"));
         return;
     }
@@ -3582,7 +3665,7 @@ void AddSampleWidget::confirmSamples()
     }
 
     if (!problems.isEmpty()) {
-        QMessageBox::warning(this, tr("确认加样"),
+        MedicalMessageBox::warning(this, tr("确认加样"),
                              problems.join(QLatin1Char('\n')));
         if (firstProblemRow >= 0) {
             m_sampleTable->selectRow(firstProblemRow);
@@ -3592,7 +3675,7 @@ void AddSampleWidget::confirmSamples()
     }
 
     if (draftRows.isEmpty()) {
-        QMessageBox::information(this, tr("确认加样"),
+        MedicalMessageBox::information(this, tr("确认加样"),
                                  tr("当前没有待定样本。"));
         return;
     }
@@ -3601,14 +3684,14 @@ void AddSampleWidget::confirmSamples()
     for (int row : draftRows) {
         QueuedSample sample;
         if (!queuedSampleFromRow(row, &sample)) {
-            QMessageBox::warning(this, tr("确认加样"),
+            MedicalMessageBox::warning(this, tr("确认加样"),
                                  tr("第 %1 行样本数据不完整。")
                                  .arg(row + 1));
             return;
         }
         QString error;
         if (!m_testQueue.enqueue(sample, &error)) {
-            QMessageBox::warning(this, tr("确认加样"), error);
+            MedicalMessageBox::warning(this, tr("确认加样"), error);
             return;
         }
     }
@@ -3621,11 +3704,18 @@ void AddSampleWidget::confirmSamples()
             m_updatingTable = false;
         }
         updateRowEditability(row);
+        // 通知结果信息表插入一条“待测”占位记录
+        if (QTableWidgetItem *sampleNo =
+                m_sampleTable->item(row, SampleNoColumn)) {
+            emit sampleQueued(sampleNo->text().trimmed(),
+                              sampleQualityIsPlasma()
+                              ? tr("血浆") : tr("全血"));
+        }
     }
 
     qInfo() << "Confirm samples:" << draftRows.size()
             << "queue size:" << m_testQueue.size();
-    QMessageBox::information(
+    MedicalMessageBox::information(
                 this, tr("确认加样"),
                 tr("已确认 %1 个样本进入待测队列（当前队列 %2 个）。")
                 .arg(draftRows.size())
@@ -3640,7 +3730,7 @@ void AddSampleWidget::removeSelectedSamples()
     const QModelIndexList selected =
             m_sampleTable->selectionModel()->selectedRows();
     if (selected.isEmpty()) {
-        QMessageBox::information(this, tr("删除样本"),
+        MedicalMessageBox::information(this, tr("删除样本"),
                                  tr("请先选择要删除的样本行。"));
         return;
     }
@@ -3650,9 +3740,11 @@ void AddSampleWidget::removeSelectedSamples()
         rows.insert(index.row());
     }
     for (int row : rows) {
-        QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
-        if (status && status->text() == tr("测试中")) {
-            QMessageBox::warning(
+        QTableWidgetItem *sampleNo = m_sampleTable->item(row,
+                                                         SampleNoColumn);
+        if (sampleNo
+                && m_testingSamples.contains(sampleNo->text().trimmed())) {
+            MedicalMessageBox::warning(
                         this, tr("删除样本"),
                         tr("选中的样本中有正在测试的样本，不能删除。"));
             m_sampleTable->selectRow(row);
@@ -3660,7 +3752,7 @@ void AddSampleWidget::removeSelectedSamples()
         }
     }
 
-    if (QMessageBox::question(
+    if (MedicalMessageBox::question(
                 this, tr("删除样本"),
                 tr("确定删除选中的 %1 个样本？").arg(selected.size()),
                 QMessageBox::Yes | QMessageBox::No,
@@ -3706,14 +3798,14 @@ void AddSampleWidget::modifySampleNumber()
         }
     }
     if (row < 0 || row >= m_sampleTable->rowCount()) {
-        QMessageBox::information(this, tr("修改样本号"),
+        MedicalMessageBox::information(this, tr("修改样本号"),
                                  tr("请先选择一行样本。"));
         return;
     }
 
     QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
     if (!status || status->text() != tr("待定")) {
-        QMessageBox::information(
+        MedicalMessageBox::information(
                     this, tr("修改样本号"),
                     tr("只有待定样本可以修改样本号；"
                        "已确认或测试中的样本不能修改。"));
@@ -3756,7 +3848,7 @@ void AddSampleWidget::modifySampleNumber()
             return;
         }
 
-        QMessageBox::warning(this, tr("样本号不可用"), reason);
+        MedicalMessageBox::warning(this, tr("样本号不可用"), reason);
     }
 }
 
@@ -3778,7 +3870,7 @@ void AddSampleWidget::handleTableItemChanged(QTableWidgetItem *item)
     if (column == PositionColumn) {
         const QString text = item->text().trimmed();
         if (!positionStringValid(text, item->row())) {
-            QMessageBox::warning(
+            MedicalMessageBox::warning(
                         this, tr("样本位置无效"),
                         testModeIsPppPrp()
                         ? tr("PPP+PRP 模式每个样本占用两个孔，"
@@ -3963,6 +4055,9 @@ bool AddSampleWidget::holeInTable(const QString &hole,
         if (row == exceptRow) {
             continue;
         }
+        if (isRowPositionReleased(row)) {
+            continue;
+        }
         if (QTableWidgetItem *item =
                 m_sampleTable->item(row, PositionColumn)) {
             if (positionParts(item->text()).contains(trimmed)) {
@@ -4098,7 +4193,7 @@ void AddSampleWidget::appendSampleRow(const QString &sampleNumber,
     if (QTableWidgetItem *item = m_sampleTable->item(row, StatusColumn)) {
         item->setToolTip(
                     tr("待定：可编辑/移动孔位；待测：已确认进入队列；"
-                       "测试中：不能删除"));
+                       "加样完成：已进入测试流程，测试状态请在结果信息表查看"));
     }
     if (QTableWidgetItem *item = m_sampleTable->item(row, SampleNoColumn)) {
         item->setToolTip(tr("双击可修改样本号"));

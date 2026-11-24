@@ -22,6 +22,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
+#include "MedicalMessageBox.h"
 #include <QPushButton>
 #include <QShowEvent>
 #include <QStandardPaths>
@@ -770,7 +771,7 @@ void CoordinateMaintenanceWidget::importCoordinates()
     if (!CoordinateFileIo::load(path, &document, &error)) {
         qWarning() << "坐标导入失败:" << path << error;
         setFeedback(tr("导入失败：%1").arg(error), true);
-        QMessageBox::warning(
+        MedicalMessageBox::warning(
                     this, tr("导入坐标"),
                     tr("无法读取坐标文件：\n%1").arg(error));
         return;
@@ -781,7 +782,8 @@ void CoordinateMaintenanceWidget::importCoordinates()
     const QString currentModel =
             QString::fromLatin1(machineModelName(m_coordinates->machineModel()));
 
-    QMessageBox box(this);
+    MedicalMessageBox box(this);
+    box.applyMedicalStyle();
     box.setIcon(QMessageBox::Question);
     box.setWindowTitle(tr("导入坐标"));
     box.setText(tr("确定用该文件覆盖当前机型的全部坐标吗？"));
@@ -871,7 +873,7 @@ void CoordinateMaintenanceWidget::exportCoordinates()
     if (!CoordinateFileIo::save(*m_coordinates, path, &error)) {
         qWarning() << "坐标导出失败:" << path << error;
         setFeedback(tr("导出失败：%1").arg(error), true);
-        QMessageBox::warning(
+        MedicalMessageBox::warning(
                     this, tr("导出坐标"),
                     tr("无法写入坐标文件：\n%1").arg(error));
         return;

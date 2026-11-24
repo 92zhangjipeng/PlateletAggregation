@@ -7,16 +7,15 @@
 #include <QWidget>
 
 /**
- * 主界面模组下方的试剂余量面板。
+ * 主界面模组左侧的试剂余量面板（竖排）。
  *
- * 11 个瓶子：
- * 0=S1清洗液（按实拍白色方瓶：切角方瓶身、短粗螺纹圆口）
- * 1=AA左, 2=AA右
- * 3/4=ADP左/右, 5/6=COL左/右, 7/8=EPI左/右, 9/10=RIS左/右
+ * 11 个瓶子，按行排列：
+ * 第1行 = S1清洗液（居中，按实拍白色方瓶：切角方瓶身、短粗螺纹圆口）
+ * 之后每行成对：AA左/右、ADP左/右、COL左/右、EPI左/右、RIS左/右
  *    （按实拍透明玻璃小瓶：圆柱瓶身、圆肩、窄颈、顶部翻边瓶口）
  *
- * 每个瓶子支持 0~100% 液位；默认给一组演示液位，后续可调用
- * setLevel()/setLevels() 接入真实余量。
+ * 每个瓶子支持 0~100% 液位；未连接主板时全部显示 0%，
+ * 连接后由主窗口按主板耗材余量调用 setLevel() 更新真实比例。
  */
 class ReagentBottlePanel : public QWidget
 {
@@ -44,7 +43,8 @@ public:
     double level(int bottleIndex) const;
     void setLevel(int bottleIndex, double percent);
     void setLevels(const QVector<double> &levels);
-    void resetDemoLevels();
+    /** 全部液位置 0%（未连接/未读到主板余量时） */
+    void clearLevels();
 
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;

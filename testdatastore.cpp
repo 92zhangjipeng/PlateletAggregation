@@ -8,6 +8,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFileInfo>
+#include <QSet>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStandardPaths>
@@ -23,8 +24,8 @@ QString normalizedReagent(const QString &reagent)
 
 bool isAllowedReagent(const QString &reagent)
 {
-    return reagent == QLatin1String("PPP")
-            || reagent == QLatin1String("AA")
+    // PPP 不是试剂，是样本级基准值（samples.ppp_value），不能写进试剂表。
+    return reagent == QLatin1String("AA")
             || reagent == QLatin1String("ADP")
             || reagent == QLatin1String("COL")
             || reagent == QLatin1String("EPI")
@@ -62,11 +63,16 @@ TestDataStore::~TestDataStore()
 
 QString TestDataStore::defaultDatabasePath()
 {
-    QString directory = QStandardPaths::writableLocation(
-                QStandardPaths::AppDataLocation);
-    if (directory.isEmpty()) {
-        directory = QDir(QCoreApplication::applicationDirPath())
-                .filePath(QStringLiteral("data"));
+    // 数据库文件放在程序目录下的 data 文件夹，便于查找和备份
+    QString directory = QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("data"));
+    if (!QFileInfo(directory).isDir() && !QDir().mkpath(directory)) {
+        // 程序目录不可写（如安装在 Program Files）时退回用户数据目录
+        directory = QStandardPaths::writableLocation(
+                    QStandardPaths::AppDataLocation);
+        if (directory.isEmpty()) {
+            directory = QCoreApplication::applicationDirPath();
+        }
     }
     return QDir(directory).filePath(
                 QStringLiteral("platelet_test_data.db"));
@@ -202,10 +208,15 @@ bool TestDataStore::sampleNumberExists(const QString &sampleNumber) const
         return false;
     }
 
+    // 只检查当天：同一样本号在不同天允许再次使用，落库时按日期分成
+    // 不同的 samples 行（不同 id/test_time），各自保存 300 点数据。
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
-        "SELECT 1 FROM samples WHERE sample_no = :no LIMIT 1"));
+        "SELECT 1 FROM samples WHERE sample_no = :no"
+        "   AND substr(test_time, 1, 10) = :today LIMIT 1"));
     query.bindValue(QStringLiteral(":no"), trimmed);
+    query.bindValue(QStringLiteral(":today"),
+                    QDate::currentDate().toString(Qt::ISODate));
     if (!query.exec()) {
         qWarning() << "sampleNumberExists query failed:"
                    << query.lastError().text();
@@ -228,6 +239,16 @@ bool TestDataStore::ensureSchema(QString *error)
             "  sample_type TEXT,"
             "  machine_model TEXT,"
             "  operator_name TEXT,"
+            "  category TEXT,"
+            "  gender_entry TEXT,"
+            "  ward TEXT,"
+            "  bed TEXT,"
+            "  sending_doctor TEXT,"
+            "  testing_doctor TEXT,"
+            "  reviewing_doctor TEXT,"
+            "  diagnosis TEXT,"
+            "  test_status TEXT,"
+            "  ppp_value INTEGER,"
             "  test_time TEXT NOT NULL,"
             "  created_at TEXT NOT NULL,"
             "  remark TEXT"
@@ -238,13 +259,17 @@ bool TestDataStore::ensureSchema(QString *error)
         QStringLiteral(
             "CREATE INDEX IF NOT EXISTS idx_samples_time"
             " ON samples(test_time)"),
+        // 同一样本号可能在不同天重复使用：按 (样本号, 日期) 查当天记录。
+        QStringLiteral(
+            "CREATE INDEX IF NOT EXISTS idx_samples_no_time"
+            " ON samples(sample_no, test_time)"),
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS sample_tests ("
             "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "  sample_id INTEGER NOT NULL,"
-            "  test_index INTEGER NOT NULL,"
+            "  test_index INTEGER NOT NULL CHECK(test_index BETWEEN 1 AND 5),"
             "  reagent TEXT NOT NULL CHECK(reagent IN"
-            "    ('PPP','AA','ADP','COL','EPI','RIS')),"
+            "    ('AA','ADP','COL','EPI','RIS')),"
             "  prp0 INTEGER,"
             "  points_count INTEGER NOT NULL DEFAULT 0,"
             "  reaction_seconds INTEGER NOT NULL DEFAULT 300,"
@@ -272,14 +297,7 @@ bool TestDataStore::ensureSchema(QString *error)
             ")"),
         QStringLiteral(
             "CREATE INDEX IF NOT EXISTS idx_test_points_test"
-            " ON test_points(test_id, second)"),
-        QStringLiteral(
-            "CREATE VIEW IF NOT EXISTS v_sample_test_summary AS"
-            " SELECT s.id AS sample_id, s.sample_no, s.patient_name,"
-            "        s.sample_type, s.machine_model, s.test_time,"
-            "        t.id AS test_id, t.reagent, t.prp0, t.points_count"
-            " FROM samples s"
-            " LEFT JOIN sample_tests t ON t.sample_id = s.id")
+            " ON test_points(test_id, second)")
     };
 
     for (const QString &sql : statements) {
@@ -292,6 +310,81 @@ bool TestDataStore::ensureSchema(QString *error)
             return false;
         }
     }
+
+    // 旧库升级：samples 表补新列（已存在则报错被忽略）
+    QSqlQuery alter(m_db);
+    alter.exec(QStringLiteral(
+        "ALTER TABLE samples ADD COLUMN category TEXT"));
+    alter.exec(QStringLiteral(
+        "ALTER TABLE samples ADD COLUMN gender_entry TEXT"));
+    alter.exec(QStringLiteral(
+        "ALTER TABLE samples ADD COLUMN ward TEXT"));
+    alter.exec(QStringLiteral(
+        "ALTER TABLE samples ADD COLUMN bed TEXT"));
+    alter.exec(QStringLiteral(
+        "ALTER TABLE samples ADD COLUMN sending_doctor TEXT"));
+    alter.exec(QStringLiteral(
+        "ALTER TABLE samples ADD COLUMN testing_doctor TEXT"));
+    alter.exec(QStringLiteral(
+        "ALTER TABLE samples ADD COLUMN reviewing_doctor TEXT"));
+    alter.exec(QStringLiteral(
+        "ALTER TABLE samples ADD COLUMN diagnosis TEXT"));
+    alter.exec(QStringLiteral(
+        "ALTER TABLE samples ADD COLUMN test_status TEXT"));
+    alter.exec(QStringLiteral(
+        "ALTER TABLE samples ADD COLUMN ppp_value INTEGER"));
+
+    // 旧版本把 PPP 当成一条 sample_tests 记录保存（test_index=0）。
+    // PPP 只是样本级基准值：迁到 samples.ppp_value 后删除旧试剂行。
+    QSqlQuery migrate(m_db);
+    if (!migrate.exec(QStringLiteral(
+            "UPDATE samples SET ppp_value = ("
+            "  SELECT t.prp0 FROM sample_tests t"
+            "  WHERE t.sample_id = samples.id AND t.reagent = 'PPP'"
+            "  ORDER BY t.id LIMIT 1)"
+            " WHERE ppp_value IS NULL AND EXISTS ("
+            "  SELECT 1 FROM sample_tests t"
+            "  WHERE t.sample_id = samples.id AND t.reagent = 'PPP')"))) {
+        if (error) {
+            *error = tr("迁移旧 PPP 数据失败：%1")
+                    .arg(migrate.lastError().text());
+        }
+        return false;
+    }
+    if (!migrate.exec(QStringLiteral(
+            "DELETE FROM sample_tests WHERE reagent = 'PPP'"))) {
+        if (error) {
+            *error = tr("删除旧 PPP 试剂行失败：%1")
+                    .arg(migrate.lastError().text());
+        }
+        return false;
+    }
+
+    // 视图定义随 ppp_value 变化，旧库需要先删除再重建。
+    if (!migrate.exec(QStringLiteral(
+            "DROP VIEW IF EXISTS v_sample_test_summary"))) {
+        if (error) {
+            *error = tr("重建测试汇总视图失败：%1")
+                    .arg(migrate.lastError().text());
+        }
+        return false;
+    }
+    if (!migrate.exec(QStringLiteral(
+            "CREATE VIEW v_sample_test_summary AS"
+            " SELECT s.id AS sample_id, s.sample_no, s.patient_name,"
+            "        s.sample_type, s.machine_model, s.test_time,"
+            "        s.ppp_value,"
+            "        t.id AS test_id, t.reagent, t.prp0, t.points_count"
+            " FROM samples s"
+            " LEFT JOIN sample_tests t ON t.sample_id = s.id"
+            "   AND t.reagent <> 'PPP'"))) {
+        if (error) {
+            *error = tr("创建测试汇总视图失败：%1")
+                    .arg(migrate.lastError().text());
+        }
+        return false;
+    }
+
     return true;
 }
 
@@ -307,21 +400,26 @@ bool TestDataStore::validateSample(const SampleTestData &sample,
         }
         return false;
     }
-    if (sample.tests.isEmpty()) {
+    if (sample.tests.isEmpty() && sample.pppValue < 0) {
         if (error) {
-            *error = tr("样本至少需要一条 PPP 或试剂测试数据。");
+            *error = tr("样本至少需要 PPP 基准值或一条试剂测试数据。");
         }
         return false;
     }
-    if (sample.tests.size() > 6) {
+    if (sample.tests.size() > 5) {
         if (error) {
-            *error = tr("一个样本最多保存 1 个 PPP + 5 个试剂测试。");
+            *error = tr("一个样本最多保存 5 个试剂测试。");
+        }
+        return false;
+    }
+    if (sample.pppValue > 4095) {
+        if (error) {
+            *error = tr("PPP 基准值超出 AD 有效范围（0~4095）：%1")
+                    .arg(sample.pppValue);
         }
         return false;
     }
 
-    int pppCount = 0;
-    int reagentCount = 0;
     QStringList seenReagents;
     for (const TestCurveData &test : sample.tests) {
         const QString reagent = normalizedReagent(test.reagent);
@@ -339,31 +437,20 @@ bool TestDataStore::validateSample(const SampleTestData &sample,
         }
         seenReagents.append(reagent);
 
-        if (reagent == QLatin1String("PPP")) {
-            ++pppCount;
-        } else {
-            ++reagentCount;
-        }
         if (test.prpPoints.size() > 300) {
             if (error) {
                 *error = tr("%1 的 PRP 点数超过 300。").arg(reagent);
             }
             return false;
         }
-        if (!test.aggregationPoints.isEmpty()
-                && test.aggregationPoints.size() != test.prpPoints.size()) {
+        // 集聚率可以少于 PRP 点（基准无效时没有集聚数据），
+        // 但绝不能多于 PRP 点；缺失部分按 NULL 保存。
+        if (test.aggregationPoints.size() > test.prpPoints.size()) {
             if (error) {
-                *error = tr("%1 的集聚曲线点数与 PRP 点数不一致。").arg(reagent);
+                *error = tr("%1 的集聚曲线点数多于 PRP 点数。").arg(reagent);
             }
             return false;
         }
-    }
-
-    if (pppCount > 1 || reagentCount > 5) {
-        if (error) {
-            *error = tr("一个样本只允许 1 个 PPP 和最多 5 个试剂测试。");
-        }
-        return false;
     }
     return true;
 }
@@ -399,11 +486,11 @@ qint64 TestDataStore::saveSample(const SampleTestData &sample, QString *error)
         "INSERT INTO samples("
         "  sample_no, patient_name, patient_id, gender, age,"
         "  sample_type, machine_model, operator_name,"
-        "  test_time, created_at, remark"
+        "  ppp_value, test_time, created_at, remark"
         ") VALUES ("
         "  :sample_no, :patient_name, :patient_id, :gender, :age,"
         "  :sample_type, :machine_model, :operator_name,"
-        "  :test_time, :created_at, :remark"
+        "  :ppp_value, :test_time, :created_at, :remark"
         ")"));
     sampleQuery.bindValue(":sample_no", sample.sampleNumber.trimmed());
     sampleQuery.bindValue(":patient_name", sample.patientName);
@@ -414,6 +501,8 @@ qint64 TestDataStore::saveSample(const SampleTestData &sample, QString *error)
     sampleQuery.bindValue(":sample_type", sample.sampleType);
     sampleQuery.bindValue(":machine_model", sample.machineModel);
     sampleQuery.bindValue(":operator_name", sample.operatorName);
+    sampleQuery.bindValue(":ppp_value", sample.pppValue >= 0
+                          ? QVariant(sample.pppValue) : QVariant());
     sampleQuery.bindValue(":test_time", isoTime(sample.testTime));
     sampleQuery.bindValue(":created_at", currentIsoTime());
     sampleQuery.bindValue(":remark", sample.remark);
@@ -445,8 +534,7 @@ qint64 TestDataStore::saveSample(const SampleTestData &sample, QString *error)
     int reagentIndex = 0;
     for (const TestCurveData &test : sample.tests) {
         const QString reagent = normalizedReagent(test.reagent);
-        const int testIndex = (reagent == QLatin1String("PPP"))
-                ? 0 : ++reagentIndex;
+        const int testIndex = ++reagentIndex;
 
         testQuery.bindValue(":sample_id", sampleId);
         testQuery.bindValue(":test_index", testIndex);
@@ -494,6 +582,261 @@ qint64 TestDataStore::saveSample(const SampleTestData &sample, QString *error)
     return sampleId;
 }
 
+qint64 TestDataStore::ensureSample(const SampleTestData &sample,
+                                   QString *error)
+{
+    if (error) {
+        error->clear();
+    }
+    const QString sampleNumber = sample.sampleNumber.trimmed();
+    if (sampleNumber.isEmpty()) {
+        if (error) {
+            *error = tr("样本号不能为空。");
+        }
+        return -1;
+    }
+    if (!isOpen() && !open(error)) {
+        return -1;
+    }
+
+    // 样本号在不同天可能重复使用：同一天才视为同一条样本记录，
+    // 跨天必须新建 samples 行，用 id + test_time 区分各自的 300 点数据。
+    const QDate testDate = (sample.testTime.isValid()
+                            ? sample.testTime : QDateTime::currentDateTime())
+            .date();
+    QSqlQuery findQuery(m_db);
+    findQuery.prepare(QStringLiteral(
+        "SELECT id FROM samples WHERE sample_no = :sample_no"
+        "   AND substr(test_time, 1, 10) = :test_date"
+        " ORDER BY id DESC LIMIT 1"));
+    findQuery.bindValue(":sample_no", sampleNumber);
+    findQuery.bindValue(":test_date", testDate.toString(Qt::ISODate));
+    if (!findQuery.exec()) {
+        if (error) {
+            *error = tr("查询样本失败：%1").arg(findQuery.lastError().text());
+        }
+        return -1;
+    }
+    if (findQuery.next()) {
+        return findQuery.value(0).toLongLong();
+    }
+
+    QSqlQuery insertQuery(m_db);
+    insertQuery.prepare(QStringLiteral(
+        "INSERT INTO samples("
+        "  sample_no, patient_name, patient_id, gender, age,"
+        "  sample_type, machine_model, operator_name,"
+        "  ppp_value, test_time, created_at, remark"
+        ") VALUES ("
+        "  :sample_no, :patient_name, :patient_id, :gender, :age,"
+        "  :sample_type, :machine_model, :operator_name,"
+        "  :ppp_value, :test_time, :created_at, :remark"
+        ")"));
+    insertQuery.bindValue(":sample_no", sampleNumber);
+    insertQuery.bindValue(":patient_name", sample.patientName);
+    insertQuery.bindValue(":patient_id", sample.patientId);
+    insertQuery.bindValue(":gender", sample.gender);
+    insertQuery.bindValue(":age", sample.age >= 0 ? QVariant(sample.age)
+                                                   : QVariant());
+    insertQuery.bindValue(":sample_type", sample.sampleType);
+    insertQuery.bindValue(":machine_model", sample.machineModel);
+    insertQuery.bindValue(":operator_name", sample.operatorName);
+    insertQuery.bindValue(":ppp_value", sample.pppValue >= 0
+                          ? QVariant(sample.pppValue) : QVariant());
+    insertQuery.bindValue(":test_time", isoTime(sample.testTime));
+    insertQuery.bindValue(":created_at", currentIsoTime());
+    insertQuery.bindValue(":remark", sample.remark);
+    if (!insertQuery.exec()) {
+        if (error) {
+            *error = tr("写入样本信息失败：%1")
+                    .arg(insertQuery.lastError().text());
+        }
+        return -1;
+    }
+    return insertQuery.lastInsertId().toLongLong();
+}
+
+bool TestDataStore::appendTest(qint64 sampleId, const TestCurveData &test,
+                               QString *error)
+{
+    if (error) {
+        error->clear();
+    }
+    if (sampleId <= 0) {
+        if (error) {
+            *error = tr("样本 id 无效。");
+        }
+        return false;
+    }
+    const QString reagent = normalizedReagent(test.reagent);
+    if (!isAllowedReagent(reagent)) {
+        if (error) {
+            *error = tr("不支持的试剂类型：%1").arg(test.reagent);
+        }
+        return false;
+    }
+    if (test.prpPoints.size() > 300) {
+        if (error) {
+            *error = tr("%1 的 PRP 点数超过 300。").arg(reagent);
+        }
+        return false;
+    }
+    // 集聚率可以少于 PRP 点（基准无效时没有集聚数据），
+    // 但绝不能多于 PRP 点；缺失部分按 NULL 保存。
+    if (test.aggregationPoints.size() > test.prpPoints.size()) {
+        if (error) {
+            *error = tr("%1 的集聚曲线点数多于 PRP 点数。").arg(reagent);
+        }
+        return false;
+    }
+    if (!isOpen() && !open(error)) {
+        return false;
+    }
+    if (!m_db.transaction()) {
+        if (error) {
+            *error = tr("开启数据库事务失败：%1").arg(m_db.lastError().text());
+        }
+        return false;
+    }
+
+    auto rollback = [this](QString *errorMessage, const QString &message) {
+        m_db.rollback();
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+        return false;
+    };
+
+    QSqlQuery existingQuery(m_db);
+    existingQuery.prepare(QStringLiteral(
+        "SELECT reagent FROM sample_tests"
+        " WHERE sample_id = :sample_id AND reagent <> 'PPP'"));
+    existingQuery.bindValue(":sample_id", sampleId);
+    if (!existingQuery.exec()) {
+        return rollback(error, tr("读取已有测试记录失败：%1")
+                        .arg(existingQuery.lastError().text()));
+    }
+    int reagentCount = 0;
+    while (existingQuery.next()) {
+        const QString existing = existingQuery.value(0).toString();
+        if (existing == reagent) {
+            return rollback(error, tr("%1 已保存过，不能重复写入")
+                            .arg(reagent));
+        }
+        ++reagentCount;
+    }
+    if (reagentCount >= 5) {
+        return rollback(error, tr("一个样本最多 5 个试剂测试。"));
+    }
+
+    const int testIndex = reagentCount + 1;
+
+    QSqlQuery testQuery(m_db);
+    testQuery.prepare(QStringLiteral(
+        "INSERT INTO sample_tests("
+        "  sample_id, test_index, reagent, prp0, points_count,"
+        "  reaction_seconds, module_no, local_channel, global_channel,"
+        "  status, created_at"
+        ") VALUES ("
+        "  :sample_id, :test_index, :reagent, :prp0, :points_count,"
+        "  :reaction_seconds, :module_no, :local_channel, :global_channel,"
+        "  :status, :created_at"
+        ")"));
+    testQuery.bindValue(":sample_id", sampleId);
+    testQuery.bindValue(":test_index", testIndex);
+    testQuery.bindValue(":reagent", reagent);
+    testQuery.bindValue(":prp0", test.prp0 >= 0 ? QVariant(test.prp0)
+                                                 : QVariant());
+    testQuery.bindValue(":points_count", test.prpPoints.size());
+    testQuery.bindValue(":reaction_seconds", 300);
+    testQuery.bindValue(":module_no", test.moduleNumber > 0
+                        ? QVariant(test.moduleNumber) : QVariant());
+    testQuery.bindValue(":local_channel", test.localChannel > 0
+                        ? QVariant(test.localChannel) : QVariant());
+    testQuery.bindValue(":global_channel", test.globalChannel > 0
+                        ? QVariant(test.globalChannel) : QVariant());
+    testQuery.bindValue(":status", test.status);
+    testQuery.bindValue(":created_at", currentIsoTime());
+    if (!testQuery.exec()) {
+        return rollback(error, tr("写入 %1 测试记录失败：%2")
+                        .arg(reagent, testQuery.lastError().text()));
+    }
+    const qint64 testId = testQuery.lastInsertId().toLongLong();
+
+    QSqlQuery pointQuery(m_db);
+    pointQuery.prepare(QStringLiteral(
+        "INSERT INTO test_points("
+        "  test_id, second, prp_value, aggregation_percent"
+        ") VALUES (:test_id, :second, :prp_value, :aggregation_percent)"));
+    for (int i = 0; i < test.prpPoints.size(); ++i) {
+        pointQuery.bindValue(":test_id", testId);
+        pointQuery.bindValue(":second", i + 1);
+        pointQuery.bindValue(":prp_value", test.prpPoints.at(i));
+        pointQuery.bindValue(
+                    ":aggregation_percent",
+                    i < test.aggregationPoints.size()
+                    ? QVariant(test.aggregationPoints.at(i)) : QVariant());
+        if (!pointQuery.exec()) {
+            return rollback(error, tr("写入 %1 第 %2 个 PRP 点失败：%3")
+                            .arg(reagent)
+                            .arg(i + 1)
+                            .arg(pointQuery.lastError().text()));
+        }
+    }
+
+    if (!m_db.commit()) {
+        return rollback(error, tr("提交 %1 测试数据失败：%2")
+                        .arg(reagent, m_db.lastError().text()));
+    }
+    return true;
+}
+
+bool TestDataStore::setSamplePppValue(qint64 sampleId, int pppValue,
+                                      QString *error)
+{
+    if (error) {
+        error->clear();
+    }
+    if (sampleId <= 0) {
+        if (error) {
+            *error = tr("样本 id 无效。");
+        }
+        return false;
+    }
+    if (pppValue > 4095) {
+        if (error) {
+            *error = tr("PPP 基准值超出 AD 有效范围（0~4095）：%1")
+                    .arg(pppValue);
+        }
+        return false;
+    }
+    if (!isOpen() && !open(error)) {
+        return false;
+    }
+
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "UPDATE samples SET ppp_value = :ppp_value WHERE id = :id"));
+    // -1 表示本次没有读到有效 PPP，写入 NULL，后续读到再更新。
+    query.bindValue(":ppp_value", pppValue >= 0
+                    ? QVariant(pppValue) : QVariant());
+    query.bindValue(":id", sampleId);
+    if (!query.exec()) {
+        if (error) {
+            *error = tr("写入 PPP 基准值失败：%1")
+                    .arg(query.lastError().text());
+        }
+        return false;
+    }
+    if (query.numRowsAffected() == 0) {
+        if (error) {
+            *error = tr("找不到样本 id=%1，PPP 基准值未保存。").arg(sampleId);
+        }
+        return false;
+    }
+    return true;
+}
+
 bool TestDataStore::loadSample(qint64 sampleId, SampleTestData *sample,
                                QString *error) const
 {
@@ -516,7 +859,8 @@ bool TestDataStore::loadSample(qint64 sampleId, SampleTestData *sample,
     QSqlQuery sampleQuery(m_db);
     sampleQuery.prepare(QStringLiteral(
         "SELECT sample_no, patient_name, patient_id, gender, age,"
-        "       sample_type, machine_model, operator_name, remark, test_time"
+        "       sample_type, machine_model, operator_name, remark, test_time,"
+        "       ppp_value"
         " FROM samples WHERE id = :id"));
     sampleQuery.bindValue(":id", sampleId);
     if (!sampleQuery.exec() || !sampleQuery.next()) {
@@ -541,12 +885,15 @@ bool TestDataStore::loadSample(qint64 sampleId, SampleTestData *sample,
     result.remark = sampleQuery.value(8).toString();
     result.testTime = QDateTime::fromString(sampleQuery.value(9).toString(),
                                             Qt::ISODate);
+    result.pppValue = sampleQuery.value(10).isNull()
+            ? -1 : sampleQuery.value(10).toInt();
 
     QSqlQuery testQuery(m_db);
     testQuery.prepare(QStringLiteral(
         "SELECT id, reagent, prp0, module_no, local_channel,"
         "       global_channel, status"
         " FROM sample_tests WHERE sample_id = :sample_id"
+        "   AND reagent <> 'PPP'"
         " ORDER BY test_index, id"));
     testQuery.bindValue(":sample_id", sampleId);
     if (!testQuery.exec()) {
@@ -614,9 +961,13 @@ QVector<SampleSummary> TestDataStore::recentSamples(int limit,
     QSqlQuery query(m_db);
     query.prepare(QStringLiteral(
         "SELECT s.id, s.sample_no, s.patient_name, s.sample_type,"
-        "       s.machine_model, s.test_time,"
+        "       s.machine_model, s.test_time, s.ppp_value, s.category,"
+        "       s.gender_entry, s.ward, s.bed, s.sending_doctor,"
+        "       s.testing_doctor, s.reviewing_doctor, s.diagnosis,"
+        "       s.test_status, s.remark,"
         "       (SELECT COUNT(*) FROM sample_tests t"
-        "        WHERE t.sample_id = s.id) AS test_count"
+        "        WHERE t.sample_id = s.id AND t.reagent <> 'PPP')"
+        "        AS test_count"
         " FROM samples s"
         " ORDER BY s.test_time DESC, s.id DESC"
         " LIMIT :limit"));
@@ -637,8 +988,195 @@ QVector<SampleSummary> TestDataStore::recentSamples(int limit,
         summary.machineModel = query.value(4).toString();
         summary.testTime = QDateTime::fromString(query.value(5).toString(),
                                                  Qt::ISODate);
-        summary.testCount = query.value(6).toInt();
+        summary.pppValue = query.value(6).isNull()
+                ? -1 : query.value(6).toInt();
+        summary.department = query.value(7).toString();
+        summary.gender = query.value(8).toString();
+        summary.ward = query.value(9).toString();
+        summary.bed = query.value(10).toString();
+        summary.sendingDoctor = query.value(11).toString();
+        summary.testingDoctor = query.value(12).toString();
+        summary.reviewingDoctor = query.value(13).toString();
+        summary.diagnosis = query.value(14).toString();
+        summary.testStatus = query.value(15).toString();
+        summary.remark = query.value(16).toString();
+        summary.testCount = query.value(17).toInt();
         result.append(summary);
     }
     return result;
+}
+
+bool TestDataStore::updateSampleEntryValue(qint64 sampleId,
+                                           const QString &entryKey,
+                                           const QString &value,
+                                           QString *error)
+{
+    // entryKey 只允许来自信息录入类别的已知键，防注入列名；
+    // patient_name 为结果信息表直接编辑的姓名列。
+    static const QSet<QString> allowed = {
+        QStringLiteral("patient_name"),
+        QStringLiteral("category"), QStringLiteral("gender_entry"),
+        QStringLiteral("ward"), QStringLiteral("bed"),
+        QStringLiteral("sending_doctor"), QStringLiteral("testing_doctor"),
+        QStringLiteral("reviewing_doctor"), QStringLiteral("diagnosis"),
+        QStringLiteral("remark")
+    };
+    if (!allowed.contains(entryKey)) {
+        if (error) {
+            *error = tr("不支持的信息类别：%1").arg(entryKey);
+        }
+        return false;
+    }
+    if (!isOpen()) {
+        if (error) {
+            *error = tr("测试数据库尚未打开。");
+        }
+        return false;
+    }
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "UPDATE samples SET %1 = :value WHERE id = :id")
+            .arg(entryKey));
+    query.bindValue(QStringLiteral(":value"), value.trimmed());
+    query.bindValue(QStringLiteral(":id"), sampleId);
+    if (!query.exec()) {
+        if (error) {
+            *error = tr("更新信息失败：%1").arg(query.lastError().text());
+        }
+        return false;
+    }
+    return true;
+}
+
+qint64 TestDataStore::ensurePendingSample(const QString &sampleNumber,
+                                          const QString &sampleType,
+                                          QString *error)
+{
+    if (error) {
+        error->clear();
+    }
+    const QString trimmed = sampleNumber.trimmed();
+    if (trimmed.isEmpty()) {
+        if (error) {
+            *error = tr("样本号不能为空。");
+        }
+        return -1;
+    }
+    if (!isOpen() && !open(error)) {
+        return -1;
+    }
+
+    // 只复用当天的样本行；同一样本号跨天再次测试时新建一行。
+    QSqlQuery findQuery(m_db);
+    findQuery.prepare(QStringLiteral(
+        "SELECT id FROM samples WHERE sample_no = :sample_no"
+        "   AND substr(test_time, 1, 10) = :test_date"
+        " ORDER BY id DESC LIMIT 1"));
+    findQuery.bindValue(QStringLiteral(":sample_no"), trimmed);
+    findQuery.bindValue(QStringLiteral(":test_date"),
+                        QDate::currentDate().toString(Qt::ISODate));
+    if (!findQuery.exec()) {
+        if (error) {
+            *error = tr("查询样本失败：%1").arg(findQuery.lastError().text());
+        }
+        return -1;
+    }
+    if (findQuery.next()) {
+        return findQuery.value(0).toLongLong();
+    }
+
+    QSqlQuery insertQuery(m_db);
+    insertQuery.prepare(QStringLiteral(
+        "INSERT INTO samples("
+        "  sample_no, sample_type, test_time, created_at, test_status"
+        ") VALUES ("
+        "  :sample_no, :sample_type, :test_time, :created_at, :test_status"
+        ")"));
+    insertQuery.bindValue(QStringLiteral(":sample_no"), trimmed);
+    insertQuery.bindValue(QStringLiteral(":sample_type"), sampleType);
+    insertQuery.bindValue(QStringLiteral(":test_time"), currentIsoTime());
+    insertQuery.bindValue(QStringLiteral(":created_at"), currentIsoTime());
+    insertQuery.bindValue(QStringLiteral(":test_status"),
+                          tr("待测"));
+    if (!insertQuery.exec()) {
+        if (error) {
+            *error = tr("写入待测样本失败：%1")
+                    .arg(insertQuery.lastError().text());
+        }
+        return -1;
+    }
+    return insertQuery.lastInsertId().toLongLong();
+}
+
+bool TestDataStore::updateSampleTestStatus(const QString &sampleNumber,
+                                           const QString &status,
+                                           QString *error)
+{
+    if (error) {
+        error->clear();
+    }
+    if (!isOpen()) {
+        if (error) {
+            *error = tr("测试数据库尚未打开。");
+        }
+        return false;
+    }
+    // 同一样本号可能跨天存在多条记录：只更新最近一次测试的样本行，
+    // 不能把历史日期的记录一起改掉。
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "UPDATE samples SET test_status = :status"
+        " WHERE id = (SELECT id FROM samples"
+        "             WHERE sample_no = :sample_no"
+        "             ORDER BY id DESC LIMIT 1)"));
+    query.bindValue(QStringLiteral(":status"), status);
+    query.bindValue(QStringLiteral(":sample_no"), sampleNumber.trimmed());
+    if (!query.exec()) {
+        if (error) {
+            *error = tr("更新测试状态失败：%1")
+                    .arg(query.lastError().text());
+        }
+        return false;
+    }
+    return true;
+}
+
+bool TestDataStore::updateSampleTestStatusById(qint64 sampleId,
+                                               const QString &status,
+                                               QString *error)
+{
+    if (error) {
+        error->clear();
+    }
+    if (sampleId <= 0) {
+        if (error) {
+            *error = tr("样本 id 无效。");
+        }
+        return false;
+    }
+    if (!isOpen()) {
+        if (error) {
+            *error = tr("测试数据库尚未打开。");
+        }
+        return false;
+    }
+    QSqlQuery query(m_db);
+    query.prepare(QStringLiteral(
+        "UPDATE samples SET test_status = :status WHERE id = :id"));
+    query.bindValue(QStringLiteral(":status"), status);
+    query.bindValue(QStringLiteral(":id"), sampleId);
+    if (!query.exec()) {
+        if (error) {
+            *error = tr("更新测试状态失败：%1")
+                    .arg(query.lastError().text());
+        }
+        return false;
+    }
+    if (query.numRowsAffected() == 0) {
+        if (error) {
+            *error = tr("找不到样本 id=%1。").arg(sampleId);
+        }
+        return false;
+    }
+    return true;
 }

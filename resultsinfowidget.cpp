@@ -6,6 +6,7 @@
 #include "resultstablewidget.h"
 #include "testdatastore.h"
 
+#include <QDebug>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -84,12 +85,25 @@ ResultsInfoWidget::ResultsInfoWidget(TestDataStore *store, QWidget *parent)
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll->setStyleSheet(QStringLiteral(
         "QScrollArea#resultsTableScroll { background: #F4F8FC; border: none; }"
-        "QScrollArea#resultsTableScroll > QWidget > QWidget {"
+        // 只设置滚动区视口背景；表格自身保持白色卡片样式。
+        "QScrollArea#resultsTableScroll"
+        " > QWidget#qt_scrollarea_viewport {"
         "  background: #F4F8FC;"
         "}"));
 
     m_table = new ResultsTableWidget(scroll);
     scroll->setWidget(m_table);
+    connect(m_table, &ResultsTableWidget::entryValueChanged,
+            this, [this](qint64 sampleId, const QString &entryKey,
+                         const QString &value) {
+        if (m_store && m_store->isOpen()) {
+            QString error;
+            if (!m_store->updateSampleEntryValue(sampleId, entryKey,
+                                                 value, &error)) {
+                qWarning() << "更新信息失败:" << error;
+            }
+        }
+    });
     root->addWidget(scroll, 1);
 
     refresh();

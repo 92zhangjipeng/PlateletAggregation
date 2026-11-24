@@ -53,7 +53,9 @@ quint8 MotionProtocol::lastCommandNumber() const
 
 void MotionProtocol::resetCommandNumber(quint8 next)
 {
-    m_nextCmdNum = (next == 0) ? 1 : next;
+    // 老软件动作序列的 cmd_num 从 0 开始（0、1、2、3…），这里保留 0；
+    // 部分主板对第一条动作命令的命令号有要求。
+    m_nextCmdNum = next;
 }
 
 void MotionProtocol::setCmdSize(quint8 cmdSize)
@@ -89,6 +91,13 @@ QByteArray MotionProtocol::moveGripperTo(int height, Area area,
     return buildZMove(Axis::Gripper, height, area, grabCup, liquidLevel);
 }
 
+QByteArray MotionProtocol::moveGripperDownSpeed(int speed, int limitHeight,
+                                                Area area, bool grabCup)
+{
+    m_lastError.clear();
+    return buildZSpeedMove(Axis::Gripper, speed, limitHeight, area, grabCup);
+}
+
 QByteArray MotionProtocol::moveReagentNeedleTo(int height, Area area,
                                                bool liquidLevel)
 {
@@ -115,19 +124,19 @@ QByteArray MotionProtocol::resetXy(int speed)
                         OperationMode::NegativeSpeed, 0, speed, speed);
 }
 
-QByteArray MotionProtocol::resetGripper(int speed, Area area)
+QByteArray MotionProtocol::resetGripper(int speed, Area area, bool grabCup)
 {
-    return buildZReset(Axis::Gripper, speed, area);
+    return buildZReset(Axis::Gripper, speed, area, grabCup);
 }
 
 QByteArray MotionProtocol::resetReagentNeedle(int speed, Area area)
 {
-    return buildZReset(Axis::ReagentNeedle, speed, area);
+    return buildZReset(Axis::ReagentNeedle, speed, area, false);
 }
 
 QByteArray MotionProtocol::resetSampleNeedle(int speed, Area area)
 {
-    return buildZReset(Axis::SampleNeedle, speed, area);
+    return buildZReset(Axis::SampleNeedle, speed, area, false);
 }
 
 QByteArray MotionProtocol::moveBloodPump(int units, bool aspirate,
@@ -200,13 +209,33 @@ QByteArray MotionProtocol::buildZMove(Axis axis, qint32 height, Area area,
     const quint8 axisByte = static_cast<quint8>(
                 zReference(axis)
                 | ((static_cast<quint8>(area) & 0x03) << 2)
-                | (grabCup ? 0x10 : 0x00)
+                | (grabCup ? 0x10 : 0x00)   // gripper_status / 空气阀
                 | (liquidLevel ? 0x20 : 0x00));
     return buildCommand(Slave::ZAxisBoard, axis, OperationMode::Position,
                         axisByte, height, 0);
 }
 
-QByteArray MotionProtocol::buildZReset(Axis axis, int speed, Area area)
+QByteArray MotionProtocol::buildZSpeedMove(Axis axis, int speed,
+                                           int limitHeight, Area area,
+                                           bool grabCup)
+{
+    m_lastError.clear();
+    if (speed <= 0 || speed > PumpFullScale) {
+        m_lastError = QStringLiteral("速度模式速度必须在 1~%1，收到 %2")
+                .arg(PumpFullScale).arg(speed);
+        return QByteArray();
+    }
+    const quint8 axisByte = static_cast<quint8>(
+                zReference(axis)
+                | ((static_cast<quint8>(area) & 0x03) << 2)
+                | (grabCup ? 0x10 : 0x00));
+    // 正速度模式：distance1=速度，distance2=行程上限
+    return buildCommand(Slave::ZAxisBoard, axis, OperationMode::PositiveSpeed,
+                        axisByte, speed, limitHeight);
+}
+
+QByteArray MotionProtocol::buildZReset(Axis axis, int speed, Area area,
+                                        bool grabCup)
 {
     m_lastError.clear();
     if (speed <= 0 || speed > PumpFullScale) {
@@ -214,9 +243,10 @@ QByteArray MotionProtocol::buildZReset(Axis axis, int speed, Area area)
                 .arg(PumpFullScale).arg(speed);
         return QByteArray();
     }
-    // 旧上位机复位时 sport_asix 固定为 0。
+    // 旧上位机复位时 sport_asix 固定为 0；抓手复位可带 gripper_status。
     const quint8 axisByte = static_cast<quint8>(
-                (static_cast<quint8>(area) & 0x03) << 2);
+                ((static_cast<quint8>(area) & 0x03) << 2)
+                | (grabCup ? 0x10 : 0x00));
     return buildCommand(Slave::ZAxisBoard, axis, OperationMode::NegativeSpeed,
                         axisByte, speed, 0);
 }
@@ -249,7 +279,7 @@ quint8 MotionProtocol::takeCommandNumber()
     const quint8 number = m_nextCmdNum;
     m_lastCmdNum = number;
     m_nextCmdNum = (number >= 0xFF)
-            ? 1 : static_cast<quint8>(number + 1);
+            ? 0 : static_cast<quint8>(number + 1);
     return number;
 }
 
@@ -307,7 +337,11 @@ MotionProtocol::Frame MotionProtocol::parse(const QByteArray &frame,
 
 bool MotionProtocol::Frame::isReport() const
 {
-    return valid && type == FrameType::Report;
+    // 老软件解析运动回包时不检查 ctrl.bit0（type）。部分主板 0x17
+    // 完成帧的 type 位仍为 0，若严格要求 type=1 会永远等不到完成报告。
+    // 串口收到的 0x17 帧只可能是从机应答，因此按“有效应答”处理；
+    // type 位仍保留在 Frame::type 中供日志排查。
+    return valid;
 }
 
 bool MotionProtocol::Frame::isError() const
@@ -318,6 +352,20 @@ bool MotionProtocol::Frame::isError() const
 QString MotionProtocol::Frame::faultDescription() const
 {
     return faultText(fault);
+}
+
+quint32 MotionProtocol::Frame::gripperVacuum() const
+{
+    if (!isReport() || axis != Axis::Gripper) {
+        return 0;
+    }
+    // 与老软件 backHandsSuckAirValue 一致：报告帧 distance2 即负压原始值。
+    return static_cast<quint32>(distance2);
+}
+
+bool MotionProtocol::Frame::gripperSuctionBit() const
+{
+    return (axisByte & 0x10) != 0;
 }
 
 QString MotionProtocol::axisName(Axis axis)

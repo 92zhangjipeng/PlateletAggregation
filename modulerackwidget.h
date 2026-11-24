@@ -113,13 +113,12 @@ public slots:
     /** 设置该通道的样本/PRP 等曲线头部信息 */
     void setChannelTestInfo(int localChannel, const ChannelTestInfo &info);
     /**
-     * 每秒 AD 值。
-     * - 始终更新玻璃管底部的 AD 显示；
-     * - 全局测试状态为 true、通道已启用且试管已插入时，还会把该值追加到
-     *   “测试曲线”，并按每秒一次递增 elapsedSeconds。
+     * 每秒 AD 值：只更新玻璃管底部的 AD 显示。
+     * 测试曲线/集聚曲线和 elapsedSeconds 由 TestScheduler 在吐试剂后
+     * 按同一个反应秒数统一追加，保证两条曲线时间基准一致。
      */
     void setChannelAdValue(int localChannel, int adValue);
-    /** 显式追加测试曲线点（如果不想使用 AD 自动采集） */
+    /** 追加测试曲线点（由 TestScheduler 在反应中每秒调用一次） */
     void appendChannelTestPoint(int localChannel, double seconds, double value);
     /** 追加集聚曲线点，seconds 为秒，value 为集聚百分比 */
     void appendChannelAggregationPoint(int localChannel, double seconds,

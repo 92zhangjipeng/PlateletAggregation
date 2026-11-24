@@ -7,15 +7,20 @@
 #include "consumablesdialog.h"
 #include "settingsdialog.h"
 #include "CommunicationWorker.h"
+#include "cleaningcontroller.h"
+#include "resetcontroller.h"
 #include "coordinatefileio.h"
 #include "coordinateverificationcontroller.h"
+#include "instrumentparameters.h"
 #include "motioncontroller.h"
 #include "perfusioncontroller.h"
+#include "pumppositiontracker.h"
+#include "testscheduler.h"
+#include "testactioncontroller.h"
 #include "AppIcon.h"
 #include "CustomTitleBar.h"
 #include "FramelessWindowSupport.h"
 #include "moduleoverviewwidget.h"
-#include "modulerackwidget.h"
 #include "reagentbottlepanel.h"
 #include "mainboardstatusicons.h"
 #include "mainboardpoller.h"
@@ -30,6 +35,7 @@
 
 #include <QAbstractButton>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QDateTime>
 #include <QDebug>
 #include <QDesktopServices>
@@ -44,15 +50,20 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include "MedicalMessageBox.h"
+#include <QScopedValueRollback>
+#include <QSettings>
 #include <QMetaObject>
 #include <QPainter>
 #include <QPainterPath>
+#include <QRadialGradient>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QShowEvent>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QStackedWidget>
 #include <QStringList>
@@ -75,14 +86,34 @@ namespace {
 constexpr int kStartupConnectTimeoutMs = 30000;   // 启动后 30 秒内必须连上仪器
 
 // 联机启动校准参数
-constexpr double kModuleTargetTemperatureCelsius = 37.0;
-constexpr int kHeatingTimeoutMs = 5 * 60 * 1000;  // 升温 37℃ 超时保护
+// 模组目标温度按模组从 QSettings 读取，默认 35℃，可在模组控制页设置
+// 升温超时改为基础设置项（默认 60s），每次升温开始时读入 m_heatingTimeoutMs
 constexpr int kDimmingTargetAd = 3300;
 constexpr int kDimmingResidualThreshold = 100;    // 超 ±100 视为疑似残留试杯
 constexpr int kLedTuningTolerance = 3;            // AD 允许 ±3
 constexpr int kMaxCupRetries = 1;   // 丢杯后只重新调光一次
 constexpr int kMaxInvalidAdSamples = 8;
 constexpr int kDiscardSimulatedMs = 2000;
+
+/** 主板耗材位置 -> 主界面试剂瓶面板索引；无对应瓶返回 -1。 */
+int reagentBottleForConsumablePosition(int position)
+{
+    using namespace MainBoardConsumable;
+    switch (position) {
+    case AA:            return ReagentBottlePanel::AA_Left;
+    case AA_Second:     return ReagentBottlePanel::AA_Right;
+    case ADP:           return ReagentBottlePanel::ADP_Left;
+    case ADP_Second:    return ReagentBottlePanel::ADP_Right;
+    case COL:           return ReagentBottlePanel::COL_Left;
+    case COL_Second:    return ReagentBottlePanel::COL_Right;
+    case EPI:           return ReagentBottlePanel::EPI_Left;
+    case EPI_Second:    return ReagentBottlePanel::EPI_Right;
+    case RIS:           return ReagentBottlePanel::RIS_Left;
+    case RIS_Second:    return ReagentBottlePanel::RIS_Right;
+    case InternalCleanS1: return ReagentBottlePanel::S1Clean;
+    default:            return -1;
+    }
+}
 
 // 调光后 AD 会慢慢爬升，必须等稳定后再判断。
 constexpr int kDimmingSettleMinMs = 4000;
@@ -275,10 +306,100 @@ QIcon makeToolbarIcon(ToolbarIconType type, const QColor &color,
     return icon;
 }
 
+/**
+ * 紧挨圆形开始按钮的功能按钮：在内侧边缘叠加一条凹弧阴影，
+ * 让圆形按钮看起来“镶嵌”在左右按钮中间。
+ * shadowOnRight=true 表示阴影画在按钮右缘（用于左侧按钮）。
+ */
+class ConcaveEdgeButton : public QToolButton {
+public:
+    ConcaveEdgeButton(bool shadowOnRight, QWidget *parent)
+        : QToolButton(parent), m_shadowOnRight(shadowOnRight) {}
+
+protected:
+    void paintEvent(QPaintEvent *event) override {
+        QToolButton::paintEvent(event);
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF area = QRectF(rect());
+        const qreal h = area.height();
+        // 圆形开始按钮几何：直径90 + 3px 白边 => 外缘半径约 48；
+        // 顶栏布局中开始按钮与左右按钮组之间的间距为 6px。
+        const qreal circleRadius = 48.0;
+        const qreal gap = 6.0;
+        // 圆心在本按钮内侧边缘外 gap 处，与按钮垂直居中对齐，
+        // 与真实开始按钮的圆心严格重合。
+        const QPointF circleCenter = m_shadowOnRight
+                ? QPointF(area.right() + gap, h / 2.0)
+                : QPointF(area.left() - gap, h / 2.0);
+
+        // 只在按钮内侧一条窄带内绘制，避免盖住按钮外侧
+        const qreal band = 24.0;
+        const QRectF clip = m_shadowOnRight
+                ? QRectF(area.right() - band, area.top(), band, h)
+                : QRectF(area.left(), area.top(), band, h);
+
+        p.save();
+        p.setClipRect(clip);
+
+        // 凹槽阴影：径向渐变以圆心为中心，沿圆周方向衰减，
+        // 最深的一环正好落在圆的外缘上，随圆弧弯曲。
+        const qreal fade = 20.0;
+        QRadialGradient shade(circleCenter, circleRadius + fade);
+        shade.setColorAt(0.00, QColor(23, 74, 109, 0));
+        shade.setColorAt((circleRadius - 4.0) / (circleRadius + fade),
+                         QColor(23, 74, 109, 0));
+        shade.setColorAt(circleRadius / (circleRadius + fade),
+                         QColor(23, 74, 109, 105));
+        shade.setColorAt((circleRadius + 6.0) / (circleRadius + fade),
+                         QColor(23, 74, 109, 45));
+        shade.setColorAt(1.00, QColor(23, 74, 109, 0));
+        p.setPen(Qt::NoPen);
+        p.setBrush(shade);
+        p.drawRect(area);
+
+        // 凹槽最深处：沿圆形按钮外缘画一条 2px 深色弧线（真正的圆弧）
+        QPen rimPen(QColor(23, 74, 109, 80), 2.0);
+        p.setPen(rimPen);
+        p.setBrush(Qt::NoBrush);
+        QRectF circle(circleCenter.x() - circleRadius,
+                      circleCenter.y() - circleRadius,
+                      circleRadius * 2.0, circleRadius * 2.0);
+        if (m_shadowOnRight) {
+            p.drawArc(circle, 90 * 16, 180 * 16);   // 圆的左半弧
+        } else {
+            p.drawArc(circle, 270 * 16, 180 * 16);  // 圆的右半弧
+        }
+
+        // 凹槽外侧的白色高光弧线：像被圆压出的唇边，同样沿圆弧弯曲
+        const qreal hlRadius = circleRadius + 3.5;
+        QRectF hlCircle(circleCenter.x() - hlRadius,
+                        circleCenter.y() - hlRadius,
+                        hlRadius * 2.0, hlRadius * 2.0);
+        p.setPen(QPen(QColor(255, 255, 255, 190), 1.2));
+        if (m_shadowOnRight) {
+            p.drawArc(hlCircle, 96 * 16, 168 * 16);
+        } else {
+            p.drawArc(hlCircle, 276 * 16, 168 * 16);
+        }
+        p.restore();
+    }
+private:
+    bool m_shadowOnRight;
+};
+
 QToolButton *createTopFunctionButton(const QString &text, const QIcon &icon,
-                                     QWidget *parent, int width)
+                                     QWidget *parent, int width,
+                                     bool concaveRight = false,
+                                     bool concaveLeft = false)
 {
-    auto *button = new QToolButton(parent);
+    QToolButton *button;
+    if (concaveRight || concaveLeft) {
+        // 紧挨圆形开始按钮的按钮：内侧边缘叠加凹弧阴影
+        button = new ConcaveEdgeButton(concaveRight, parent);
+    } else {
+        button = new QToolButton(parent);
+    }
     button->setObjectName(QStringLiteral("topFunctionButton"));
     button->setCursor(Qt::PointingHandCursor);
     button->setFocusPolicy(Qt::NoFocus);
@@ -338,12 +459,12 @@ QString mainBoardRegTypeText(quint8 type)
     switch (type) {
     case 0: return QStringLiteral("AA");
     case 1: return QStringLiteral("EPI");
-    case 2: return QStringLiteral("ADR");
+    case 2: return QStringLiteral("ADP");
     case 3: return QStringLiteral("COL");
     case 4: return QStringLiteral("RIS");
-    case 5: return QObject::tr("内部清洗剂");
-    case 6: return QObject::tr("试管/外部清洗液");
-    case 7: return QObject::tr("无");
+    case 5: return QObject::tr("内部清洗剂 S1");
+    case 6: return QObject::tr("试管");
+    case 7: return QObject::tr("外部清洗液 S2");
     default: return QObject::tr("未知(%1)").arg(type);
     }
 }
@@ -353,14 +474,14 @@ QString mainBoardConsTypeText(quint8 type)
     switch (type) {
     case 0: return QStringLiteral("AA");
     case 1: return QStringLiteral("EPI");
-    case 2: return QStringLiteral("ADR");
+    case 2: return QStringLiteral("ADP");
     case 3: return QStringLiteral("COL");
     case 4: return QStringLiteral("RIS");
     case 5: return QObject::tr("内部清洗剂");
     case 6: return QObject::tr("试管");
     case 7: return QStringLiteral("AA1");
     case 8: return QStringLiteral("EPI1");
-    case 9: return QStringLiteral("ADR1");
+    case 9: return QStringLiteral("ADP1");
     case 10: return QStringLiteral("COL1");
     case 11: return QStringLiteral("RIS1");
     case 12: return QObject::tr("无");
@@ -399,6 +520,10 @@ MainWindow::MainWindow(QWidget *parent)
     setMinimumSize(960, 640);
     m_machineModel = machineModelFromSettings();
     m_instrumentCoordinates.setMachineModel(m_machineModel);
+    for (int i = 0; i < MainBoardConsumable::kPositionCount; ++i) {
+        m_lastWrittenConsumableRatio[i] = -1;
+        m_lastSeenConsumableRatio[i] = -1;
+    }
 
     // 先设置样式，再创建子控件：Qt 5.10 下反过来可能不会给首个可见页面 polish
     setStyleSheet(QStringLiteral(
@@ -440,6 +565,54 @@ MainWindow::MainWindow(QWidget *parent)
         "QLineEdit#loginInput:focus {"
         "  border: 1px solid #2C7BBF;"
         "  background: #F7FBFF;"
+        "}"
+        "QComboBox#loginInput {"
+        "  background: #FFFFFF;"
+        "  color: #1F2D3D;"
+        "  border: 1px solid #C5D4E4;"
+        "  border-radius: 6px;"
+        "  padding: 4px 8px 4px 10px;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 14px;"
+        "}"
+        "QComboBox#loginInput:focus, QComboBox#loginInput:on {"
+        "  border: 1px solid #2C7BBF;"
+        "  background: #F7FBFF;"
+        "}"
+        "QComboBox#loginInput::drop-down {"
+        "  subcontrol-origin: padding;"
+        "  subcontrol-position: center right;"
+        "  width: 24px;"
+        "  border: none;"
+        "  background: transparent;"
+        "}"
+        "QComboBox#loginInput::down-arrow {"
+        "  image: url(:/img/arrow_down.png);"
+        "  width: 12px;"
+        "  height: 12px;"
+        "}"
+        "QComboBox#loginInput::drop-down:hover {"
+        "  background: #E8F1FA;"
+        "  border-radius: 6px;"
+        "}"
+        "QComboBox#loginInput QLineEdit {"
+        "  background: transparent;"
+        "  border: none;"
+        "  padding: 0px;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 14px;"
+        "  selection-background-color: #2C7BBF;"
+        "  selection-color: #FFFFFF;"
+        "}"
+        "QComboBox#loginInput QAbstractItemView {"
+        "  background: #FFFFFF;"
+        "  color: #1F2D3D;"
+        "  border: 1px solid #C5D4E4;"
+        "  outline: none;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 14px;"
+        "  selection-background-color: #2C7BBF;"
+        "  selection-color: #FFFFFF;"
         "}"
         "QPushButton#loginButton {"
         "  background: #1F4E79;"
@@ -659,6 +832,25 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_connectDeadlineTimer, &QTimer::timeout,
             this, &MainWindow::handleStartupTimeout);
 
+    // 刷卡充值写卡窗口 watchdog：主板未回报结果时恢复轮询并提示。
+    m_cardRechargeTimer = new QTimer(this);
+    m_cardRechargeTimer->setSingleShot(true);
+    m_cardRechargeTimer->setInterval(6000);
+    connect(m_cardRechargeTimer, &QTimer::timeout, this, [this]() {
+        if (m_cardRechargeState != CardRechargeState::Writing) {
+            return;
+        }
+        finishCardRecharge(
+                    false,
+                    tr("主板在 6 秒内没有回报充值结果，请检查耗材余量后重新刷卡。"));
+    });
+
+    connect(&TestSession::instance(), &TestSession::testingActiveChanged,
+            this, [this](bool) {
+        updateConsumablesOperationState();
+        updateStartButtonAppearance();
+    });
+
     auto *central = new QWidget(this);
     auto *centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(0, 0, 0, 0);
@@ -680,6 +872,8 @@ MainWindow::MainWindow(QWidget *parent)
     }
 
     m_stack = new QStackedWidget(central);
+    // 确保内置测试账号 test/空密码 存在
+    SettingsDialog::ensureTestUser();
     m_loginPage = createLoginPage();
     m_mainPage = createMainPage();
     m_stack->addWidget(m_loginPage);
@@ -716,9 +910,15 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_verificationController,
             &CoordinateVerificationController::finished,
             this, [this](bool ok, const QString &message) {
+        // 定位校验属于手动动作，期间暂停了周期采集，结束后恢复。
+        if (m_commWorker) {
+            QMetaObject::invokeMethod(m_commWorker, "resumePeriodicPolling",
+                                      Qt::QueuedConnection);
+        }
+        updateConsumablesOperationState();
         showActionHint(message);
         if (!ok) {
-            QMessageBox::warning(this, tr("定位校验"), message);
+            MedicalMessageBox::warning(this, tr("定位校验"), message);
         }
     });
 
@@ -741,6 +941,24 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_perfusionController, &PerfusionController::finished,
             this, [this](bool ok, const QString &message) {
+        // 灌注期间暂停了主板/模组轮询，无论成功、失败还是取消都要恢复，
+        // 否则后续升温、调光和耗材状态都不会再刷新。
+        if (m_commWorker) {
+            QMetaObject::invokeMethod(m_commWorker, "resumePeriodicPolling",
+                                      Qt::QueuedConnection);
+        }
+        // test 模式的“两泵排空”复用同一个控制器，但不进入升温/调光。
+        if (m_perfusionController->lastRunWasPumpEmpty()) {
+            if (!ok) {
+                m_testModePumpEmptyStarted = false;
+            }
+            updateConsumablesOperationState();
+            showActionHint(message);
+            if (!ok) {
+                MedicalMessageBox::warning(this, tr("泵排空"), message);
+            }
+            return;
+        }
         if (m_startupState != StartupCalibrationState::Perfusion) {
             return;
         }
@@ -748,6 +966,78 @@ MainWindow::MainWindow(QWidget *parent)
             beginStartupHeating();
         } else {
             abortStartupCalibration(message, true);
+        }
+    });
+
+    // 主页「清洗」：清洗双针，完成后按实际吸走的洗针量扣内部清洗液 S1。
+    m_cleaningController = new CleaningController(&m_instrumentCoordinates,
+                                                  this);
+    m_cleaningController->setProtocol(&m_motionController->protocol());
+    connect(m_cleaningController, &CleaningController::sendRequested,
+            m_motionController, &platelet::MotionController::sendCommand);
+    connect(m_motionController, &platelet::MotionController::reportReceived,
+            m_cleaningController, &CleaningController::handleReport);
+    connect(m_cleaningController, &CleaningController::statusChanged,
+            this, [this](const QString &status) {
+        showActionHint(status);
+    });
+    connect(m_cleaningController, &CleaningController::finished,
+            this, [this](bool ok, const QString &message) {
+        // 清洗是手动动作，老软件同样在动作期间暂停主板/模组采集。
+        if (m_commWorker) {
+            QMetaObject::invokeMethod(m_commWorker, "resumePeriodicPolling",
+                                      Qt::QueuedConnection);
+        }
+        updateConsumablesOperationState();
+        if (!ok) {
+            showActionHint(message);
+            MedicalMessageBox::warning(this, tr("清洗失败"), message);
+            return;
+        }
+        const double usedUl = m_cleaningController->sampleWashVolumeUl()
+                + m_cleaningController->reagentWashVolumeUl();
+        QString error;
+        if (!consumeConsumableUl(MainBoardConsumable::InternalCleanS1,
+                                 usedUl, &error)) {
+            showActionHint(tr("清洗完成，但扣清洗液失败：%1").arg(error));
+        } else {
+            showActionHint(tr("清洗完成，已扣内部清洗液 %1 µL")
+                           .arg(usedUl, 0, 'f', 1));
+        }
+
+        // 清洗结束后再执行一次复位：三 Z 复位 → XY 负速度复位 → XY 到原点。
+        if (m_resetController && m_serialConnected
+                && m_startupState == StartupCalibrationState::Idle
+                && !m_resetController->isBusy()) {
+            if (m_commWorker) {
+                QMetaObject::invokeMethod(m_commWorker, "pausePeriodicPolling",
+                                          Qt::QueuedConnection);
+            }
+            m_resetController->start();
+        }
+    });
+
+    // 主界面「复位」：三 Z 复位 → XY 负速度复位 → XY 到清洗位。
+    m_resetController = new ResetController(&m_instrumentCoordinates, this);
+    m_resetController->setProtocol(&m_motionController->protocol());
+    connect(m_resetController, &ResetController::sendRequested,
+            m_motionController, &platelet::MotionController::sendCommand);
+    connect(m_motionController, &platelet::MotionController::reportReceived,
+            m_resetController, &ResetController::handleReport);
+    connect(m_resetController, &ResetController::statusChanged,
+            this, [this](const QString &status) {
+        showActionHint(status);
+    });
+    connect(m_resetController, &ResetController::finished,
+            this, [this](bool ok, const QString &message) {
+        if (m_commWorker) {
+            QMetaObject::invokeMethod(m_commWorker, "resumePeriodicPolling",
+                                      Qt::QueuedConnection);
+        }
+        updateConsumablesOperationState();
+        showActionHint(message);
+        if (!ok) {
+            MedicalMessageBox::warning(this, tr("复位"), message);
         }
     });
 
@@ -780,13 +1070,12 @@ MainWindow::~MainWindow()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    const bool testing = testingActive()
-            || (m_moduleOverview
-                && m_moduleOverview->isChannelOneSimulationRunning());
+    const bool testing = testingActive();
     const QString message = testing
             ? tr("当前有测试正在进行，关闭软件会中断测试。\n\n确定要关闭吗？")
             : tr("确定要关闭血小板聚集分析仪吗？");
-    QMessageBox box(this);
+    MedicalMessageBox box(this);
+    box.applyMedicalStyle();
     box.setIcon(QMessageBox::Question);
     box.setWindowTitle(tr("退出确认"));
     box.setText(message);
@@ -838,10 +1127,16 @@ QWidget *MainWindow::createLoginPage()
     auto *userCaption = new QLabel(tr("用户名"), card);
     userCaption->setObjectName(QStringLiteral("loginCaption"));
 
-    m_usernameEdit = new QLineEdit(card);
+    m_usernameEdit = new QComboBox(card);
     m_usernameEdit->setObjectName(QStringLiteral("loginInput"));
-    m_usernameEdit->setPlaceholderText(tr("请输入用户名"));
+    m_usernameEdit->setEditable(true);
+    m_usernameEdit->setInsertPolicy(QComboBox::NoInsert);
     m_usernameEdit->setMinimumHeight(36);
+    if (QLineEdit *userLine = m_usernameEdit->lineEdit()) {
+        userLine->setPlaceholderText(tr("请输入或选择用户名"));
+        userLine->setFrame(false);
+    }
+    refreshLoginUserNames();
 
     auto *passwordCaption = new QLabel(tr("密码"), card);
     passwordCaption->setObjectName(QStringLiteral("loginCaption"));
@@ -868,7 +1163,8 @@ QWidget *MainWindow::createLoginPage()
     buttonRow->addWidget(loginButton, 1);
     buttonRow->addWidget(cancelButton, 1);
 
-    auto *hint = new QLabel(tr("开发阶段：暂不校验用户名和密码"), card);
+    auto *hint = new QLabel(
+                tr(""), card);
     hint->setObjectName(QStringLiteral("loginHint"));
     hint->setAlignment(Qt::AlignCenter);
 
@@ -905,10 +1201,24 @@ QWidget *MainWindow::createLoginPage()
             close();
         }
     });
-    connect(m_usernameEdit, &QLineEdit::returnPressed, this, &MainWindow::handleLogin);
+    if (QLineEdit *userLine = m_usernameEdit->lineEdit()) {
+        connect(userLine, &QLineEdit::returnPressed, this, &MainWindow::handleLogin);
+    }
     connect(m_passwordEdit, &QLineEdit::returnPressed, this, &MainWindow::handleLogin);
 
     return page;
+}
+
+void MainWindow::refreshLoginUserNames()
+{
+    if (!m_usernameEdit) {
+        return;
+    }
+    const QString current = m_usernameEdit->currentText();
+    const QSignalBlocker blocker(m_usernameEdit);
+    m_usernameEdit->clear();
+    m_usernameEdit->addItems(SettingsDialog::existingUserNames());
+    m_usernameEdit->setCurrentText(current);
 }
 
 QWidget *MainWindow::createMainPage()
@@ -944,15 +1254,20 @@ QWidget *MainWindow::createMainPage()
     const TopFunctionSpec leftSpecs[] = {
         { tr("主页"), ToolbarIconType::Home },
         { tr("结果信息"), ToolbarIconType::Results },
-        { tr("耗材管理"), ToolbarIconType::Consumables },
-        { tr("试管盘"), ToolbarIconType::Tray },
         { tr("查询"), ToolbarIconType::Search },
-        { tr("质控"), ToolbarIconType::Quality }
+        { tr("质控"), ToolbarIconType::Quality },
+        { tr("试管盘"), ToolbarIconType::Tray },
+        { tr("耗材管理"), ToolbarIconType::Consumables }
     };
-    for (const TopFunctionSpec &spec : leftSpecs) {
+    // 左侧最后一个按钮（耗材管理）右缘画凹弧；右侧第一个按钮（加样）
+    // 左缘画凹弧，把圆形开始按钮“镶嵌”在中间。
+    const int leftSpecCount = int(sizeof(leftSpecs) / sizeof(leftSpecs[0]));
+    for (int specIndex = 0; specIndex < leftSpecCount; ++specIndex) {
+        const TopFunctionSpec &spec = leftSpecs[specIndex];
+        const bool concaveRight = specIndex == leftSpecCount - 1;
         auto *button = createTopFunctionButton(
                     spec.text, makeToolbarIcon(spec.icon, topIconColor),
-                    leftGroup, 64);
+                    leftGroup, 64, concaveRight, false);
         if (spec.icon == ToolbarIconType::Home) {
             connect(button, &QToolButton::clicked,
                     this, &MainWindow::showHomeTab);
@@ -989,7 +1304,7 @@ QWidget *MainWindow::createMainPage()
     m_startButton->setText(tr("开始"));
     m_startButton->setIcon(makeToolbarIcon(ToolbarIconType::Play, Qt::white,
                                            QColor("#5F7A8F")));
-    m_startButton->setToolTip(tr("模拟通道 1 开始测试"));
+    m_startButton->setToolTip(tr("开始测试"));
     connect(m_startButton, &QToolButton::clicked,
             this, &MainWindow::handleStartTest);
 
@@ -1001,21 +1316,21 @@ QWidget *MainWindow::createMainPage()
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(4);
 
-    auto *logButton = createTopFunctionButton(
-                tr("日志"), makeToolbarIcon(ToolbarIconType::Log,
+    auto *addSampleButton = createTopFunctionButton(
+                tr("加样"), makeToolbarIcon(ToolbarIconType::AddSample,
                                              topIconColor),
-                rightGroup, 64);
-    connect(logButton, &QToolButton::clicked,
-            this, &MainWindow::openLogs);
-    rightLayout->addWidget(logButton);
+                rightGroup, 64, false, true);
+    connect(addSampleButton, &QToolButton::clicked,
+            this, &MainWindow::openAddSample);
+    rightLayout->addWidget(addSampleButton);
 
-    m_pauseButton = createTopFunctionButton(
-                tr("暂停"), makeToolbarIcon(ToolbarIconType::Pause,
+    auto *cleanButton = createTopFunctionButton(
+                tr("清洗"), makeToolbarIcon(ToolbarIconType::Clean,
                                              topIconColor),
                 rightGroup, 64);
-    connect(m_pauseButton, &QToolButton::clicked,
-            this, &MainWindow::handlePauseResume);
-    rightLayout->addWidget(m_pauseButton);
+    connect(cleanButton, &QToolButton::clicked,
+            this, &MainWindow::handleCleaning);
+    rightLayout->addWidget(cleanButton);
 
     auto *resetButton = createTopFunctionButton(
                 tr("复位"), makeToolbarIcon(ToolbarIconType::Reset,
@@ -1025,21 +1340,21 @@ QWidget *MainWindow::createMainPage()
             this, &MainWindow::handleResetTest);
     rightLayout->addWidget(resetButton);
 
-    auto *cleanButton = createTopFunctionButton(
-                tr("清洗"), makeToolbarIcon(ToolbarIconType::Clean,
+    m_pauseButton = createTopFunctionButton(
+                tr("暂停"), makeToolbarIcon(ToolbarIconType::Pause,
                                              topIconColor),
                 rightGroup, 64);
-    connect(cleanButton, &QToolButton::clicked, this,
-            [this]() { showPendingFunction(tr("清洗")); });
-    rightLayout->addWidget(cleanButton);
+    connect(m_pauseButton, &QToolButton::clicked,
+            this, &MainWindow::handlePauseResume);
+    rightLayout->addWidget(m_pauseButton);
 
-    auto *addSampleButton = createTopFunctionButton(
-                tr("加样"), makeToolbarIcon(ToolbarIconType::AddSample,
+    auto *logButton = createTopFunctionButton(
+                tr("日志"), makeToolbarIcon(ToolbarIconType::Log,
                                              topIconColor),
                 rightGroup, 64);
-    connect(addSampleButton, &QToolButton::clicked,
-            this, &MainWindow::openAddSample);
-    rightLayout->addWidget(addSampleButton);
+    connect(logButton, &QToolButton::clicked,
+            this, &MainWindow::openLogs);
+    rightLayout->addWidget(logButton);
 
     auto *settingsButton = createTopFunctionButton(
                 tr("设置"), makeToolbarIcon(ToolbarIconType::Settings,
@@ -1051,6 +1366,8 @@ QWidget *MainWindow::createMainPage()
 
     // 左右各 6 个按钮，按 1:1 分配横向空间；每个按钮 Expanding，
     // 按钮宽度一致并铺满整条顶栏。
+    // 紧挨圆形按钮的两侧按钮带凹弧阴影：左按钮右缘凹、右按钮左缘凹，
+    // 形成圆形开始按钮“镶嵌”在中间的效果。
     topLayout->addWidget(leftGroup, 1, Qt::AlignVCenter);
     topLayout->addWidget(m_startButton, 0, Qt::AlignCenter);
     topLayout->addWidget(rightGroup, 1, Qt::AlignVCenter);
@@ -1059,29 +1376,19 @@ QWidget *MainWindow::createMainPage()
 
     auto *content = new QWidget(page);
     content->setObjectName(QStringLiteral("contentArea"));
-    auto *contentLayout = new QVBoxLayout(content);
+    auto *contentLayout = new QHBoxLayout(content);
     contentLayout->setContentsMargins(24, 24, 24, 24);
     contentLayout->setSpacing(12);
+
+    // 试剂余量面板移到左侧竖排放置
+    m_reagentPanel = new ReagentBottlePanel(content);
+    m_reagentPanel->setFixedWidth(220);
+    contentLayout->addWidget(m_reagentPanel, 0);
 
     m_moduleOverview = new ModuleOverviewWidget(content);
     m_moduleOverview->setMachineModel(m_machineModel);
     contentLayout->addWidget(m_moduleOverview, 1);
 
-    // 模组下方：11 个 3D 试剂瓶的余量面板
-    m_reagentPanel = new ReagentBottlePanel(content);
-    m_reagentPanel->setFixedHeight(160);
-    contentLayout->addWidget(m_reagentPanel);
-
-    connect(m_moduleOverview, &ModuleOverviewWidget::channelOneSimulationFinished,
-            this, [this]() {
-        // 仅在自然跑到 300 秒完成时保存；手动复位/中断不保存。
-        saveCompletedSimulationData();
-        if (m_startButton) {
-            m_startButton->setEnabled(true);
-        }
-        m_channelOneDemoPaused = false;
-        updatePauseButtonAppearance();
-    });
     applyChannelSettings();
 
     // 小窗口时内容可滚动，保证试剂瓶区域不会被挤掉
@@ -1186,12 +1493,44 @@ QWidget *MainWindow::createMainPage()
 
 void MainWindow::handleLogin()
 {
-    // 开发阶段：不校验用户名和密码，后期在这里接入用户管理
     const QString userName = m_usernameEdit
-            ? m_usernameEdit->text().trimmed() : QString();
-    qInfo() << "操作员登录:"
-            << (userName.isEmpty() ? QStringLiteral("(未填写)") : userName);
+            ? m_usernameEdit->currentText().trimmed() : QString();
+    const QString password = m_passwordEdit
+            ? m_passwordEdit->text() : QString();
+
+    if (userName.isEmpty()) {
+        MedicalMessageBox::warning(this, tr("登录失败"), tr("请输入用户名"));
+        if (m_usernameEdit) {
+            m_usernameEdit->setFocus();
+        }
+        return;
+    }
+
+    QString role;
+    if (!SettingsDialog::validateUserCredentials(userName, password, &role)) {
+        qWarning() << "登录失败:" << userName;
+        MedicalMessageBox::warning(this, tr("登录失败"),
+                             tr("用户名或密码错误。\n\n"
+                                "默认管理员：admin / 1\n"
+                                "测试账号：test / 空密码"));
+        if (m_passwordEdit) {
+            m_passwordEdit->clear();
+            m_passwordEdit->setFocus();
+        }
+        return;
+    }
+
+    qInfo() << "操作员登录:" << userName << "角色:" << role;
     m_hasLoggedIn = true;
+    m_currentUserName = userName;
+    m_currentUserRole = role;
+    if (m_settingsDialog) {
+        m_settingsDialog->setCurrentUser(m_currentUserName, m_currentUserRole);
+    }
+    // test 账号用于机械动作测试：不执行开机灌注/升温/调光。
+    m_skipStartupCalibration =
+            (userName.compare(QStringLiteral("test"),
+                              Qt::CaseInsensitive) == 0);
     if (m_passwordEdit) {
         m_passwordEdit->clear();
     }
@@ -1200,7 +1539,11 @@ void MainWindow::handleLogin()
     }
     m_stack->setCurrentWidget(m_mainPage);
     // 坐标在登录前已从 JSON 读入内存；登录后若已联机，立即开始
-    // “开机灌注 → 升温到 37℃ → 调光”。
+    // “开机灌注 → 升温 → 调光”。test 账号跳过整套启动校准，
+    // 但同样要进入 test 模式准备（恢复主板/模组周期轮询、建立泵零位）。
+    if (m_skipStartupCalibration) {
+        qInfo() << "test 用户登录：跳过开机灌注/升温/调光";
+    }
     maybeStartStartupCalibration();
     // 注意：这里不重置通道/模拟状态，保证「切换用户 → 取消」能回到原主界面
 }
@@ -1215,8 +1558,9 @@ void MainWindow::returnToLogin()
     if (m_passwordEdit) {
         m_passwordEdit->clear();
     }
+    refreshLoginUserNames();
     if (m_usernameEdit) {
-        m_usernameEdit->clear();
+        m_usernameEdit->setCurrentText(QString());
         m_usernameEdit->setFocus();
     }
     m_stack->setCurrentWidget(m_loginPage);
@@ -1224,39 +1568,203 @@ void MainWindow::returnToLogin()
 
 void MainWindow::handleStartTest()
 {
-    if (!m_moduleOverview) {
+    createEmptyPlaceholderTabs();
+    if (!m_addSampleWidget || !m_trayModel || !m_moduleOverview) {
+        showActionHint(tr("测试依赖未初始化"));
         return;
     }
-    if (!m_moduleOverview->isChannelEnabled(1, 1)) {
-        showActionHint(tr("通道1已禁用，请先在「基础配置」中启用"));
+    if (!m_serialConnected) {
+        showActionHint(tr("仪器未连接，无法开始测试"));
         return;
     }
-    showHomeTab();
-    if (m_startButton) {
-        m_startButton->setEnabled(false);
+    if (m_startupState != StartupCalibrationState::Idle) {
+        showActionHint(tr("启动校准进行中，不能开始测试"));
+        return;
     }
-    m_channelOneDemoPaused = false;
-    updatePauseButtonAppearance();
-    if (m_actionHint) {
-        m_actionHint->clear();
+    if ((m_perfusionController && m_perfusionController->isBusy())
+            || (m_cleaningController && m_cleaningController->isBusy())
+            || (m_verificationController
+                && m_verificationController->isBusy())
+            || (m_resetController && m_resetController->isBusy())) {
+        showActionHint(tr("当前有动作正在进行，请稍后再开始"));
+        return;
     }
 
-    // 临时演示：开始按钮模拟通道1测试；接入真实流程后替换为下发启动命令
-    qInfo() << "开始测试：通道1模拟";
-    m_moduleOverview->startChannelOneSimulation();
+    // test 模式没有开机灌注，开始测试前确保泵零位已建立；
+    // 若首次/上次排空失败，这里会自动重试一次。
+    if (m_skipStartupCalibration) {
+        PumpPositionTracker &pumps = PumpPositionTracker::instance();
+        if (!pumps.sampleValid() || !pumps.reagentValid()) {
+            m_testModePumpEmptyStarted = false;
+            startTestModePreparation();
+            showActionHint(tr("test 模式正在建立泵零位，请稍后再开始测试"));
+            return;
+        }
+    }
+
+    if (!m_testScheduler) {
+        m_testScheduler = new TestScheduler(m_addSampleWidget, m_trayModel,
+                                            m_moduleOverview, this);
+        connect(m_testScheduler, &TestScheduler::statusChanged,
+                this, [this](const QString &status) {
+            qInfo() << "测试状态:" << status;
+            showActionHint(status);
+        });
+        connect(m_testScheduler, &TestScheduler::errorOccurred,
+                this, [this](const QString &message) {
+            qWarning() << "测试错误:" << message;
+            showActionHint(message);
+            MedicalMessageBox::warning(this, tr("无法开始测试"), message);
+        });
+        connect(m_testScheduler, &TestScheduler::pppBaselineFinished,
+                this, [this](const QString &sampleNumber, int pppValue) {
+            savePppBaseline(sampleNumber, pppValue);
+        });
+        connect(m_testScheduler, &TestScheduler::reagentTestFinished,
+                this, [this](const QString &sampleNumber,
+                             const TestCurveData &test) {
+            saveTestResult(sampleNumber, test);
+        });
+        // PPP 基准值 < 1000：把样本标记为“异常结果”
+        connect(m_testScheduler, &TestScheduler::sampleMarkedAbnormal,
+                this, [this](const QString &sampleNumber) {
+            if (m_testDataStore && m_testDataStore->isOpen()) {
+                const qint64 sampleId =
+                        m_sampleTestIds.value(sampleNumber, 0);
+                if (sampleId > 0) {
+                    m_testDataStore->updateSampleTestStatusById(
+                                sampleId, tr("异常结果"));
+                } else {
+                    m_testDataStore->updateSampleTestStatus(
+                                sampleNumber, tr("异常结果"));
+                }
+            }
+            if (m_resultsInfoWidget) {
+                m_resultsInfoWidget->refresh();
+            }
+        });
+        // 测试中止时，把正在测试的样本标记为“异常结果”
+        connect(m_testScheduler, &TestScheduler::errorOccurred,
+                this, [this](const QString &message) {
+            Q_UNUSED(message);
+            if (!m_addSampleWidget || !m_testDataStore) {
+                return;
+            }
+            // 加样表中状态为“测试中”的样本统一标为异常
+            const QVector<QueuedSample> queued =
+                    m_addSampleWidget->testQueue()->samples();
+            Q_UNUSED(queued);
+            if (m_testDataStore->isOpen()) {
+                // 调度器中止后其活动样本不可访问，退化为：
+                // 将所有 test_status=测试中 的样本更新为异常结果
+                const QVector<SampleSummary> rows =
+                        m_testDataStore->recentSamples(500);
+                for (const SampleSummary &row : rows) {
+                    if (row.testStatus == tr("测试中")) {
+                        // 按样本 id 更新，避免同号跨天时改到别的记录。
+                        m_testDataStore->updateSampleTestStatusById(
+                                    row.id, tr("异常结果"));
+                        m_addSampleWidget->setSampleAbnormal(
+                                    row.sampleNumber);
+                    }
+                }
+            }
+        });
+
+        // 动作层：把调度器的六类请求展开成串行运动命令。
+        m_testActionController = new TestActionController(
+                    &m_instrumentCoordinates, m_moduleOverview, this);
+        m_testActionController->setProtocol(
+                    &m_motionController->protocol());
+        // 测试时 AD/主板轮询保持开启，单条 0x17 动作命令在途期间必须
+        // 静默 0x16 读命令，否则复位/移动完成应答会被冲掉导致超时。
+        connect(m_testActionController,
+                &TestActionController::motionExchangeActiveChanged,
+                m_commWorker, &CommunicationWorker::setMotionExchangeActive,
+                Qt::QueuedConnection);
+        connect(m_testActionController,
+                &TestActionController::sendRequested,
+                m_motionController,
+                &platelet::MotionController::sendCommand);
+        connect(m_motionController,
+                &platelet::MotionController::reportReceived,
+                m_testActionController,
+                &TestActionController::handleReport);
+        connect(m_testActionController,
+                &TestActionController::actionFinished,
+                m_testScheduler,
+                &TestScheduler::handleActionFinished);
+        connect(m_testActionController,
+                &TestActionController::pppValueRead,
+                m_testScheduler, &TestScheduler::setPppValue);
+        connect(m_testActionController,
+                &TestActionController::prp0ValueRead,
+                m_testScheduler, &TestScheduler::setPrp0Value);
+        connect(m_testActionController,
+                &TestActionController::reagentDispensed,
+                m_testScheduler, &TestScheduler::handleReagentDispensed);
+        connect(m_testActionController,
+                &TestActionController::statusChanged,
+                this, [this](const QString &status) {
+            qInfo() << "测试动作:" << status;
+            showActionHint(status);
+        });
+        connect(m_testScheduler, &TestScheduler::addSampleRequested,
+                m_testActionController, &TestActionController::addSample);
+        connect(m_testScheduler, &TestScheduler::washSampleNeedleRequested,
+                m_testActionController,
+                &TestActionController::washSampleNeedle);
+        connect(m_testScheduler, &TestScheduler::movePppCupRequested,
+                m_testActionController, &TestActionController::movePppCup);
+        connect(m_testScheduler, &TestScheduler::setupReagentRequested,
+                m_testActionController, &TestActionController::setupReagent);
+        connect(m_testScheduler, &TestScheduler::washReagentNeedleRequested,
+                m_testActionController,
+                &TestActionController::washReagentNeedle);
+        connect(m_testScheduler, &TestScheduler::discardCupRequested,
+                m_testActionController, &TestActionController::discardCup);
+        connect(m_testScheduler, &TestScheduler::cancelActionRequested,
+                m_testActionController, &TestActionController::cancel);
+        connect(m_testScheduler, &TestScheduler::parkAtOriginRequested,
+                m_testActionController, &TestActionController::parkAtOrigin);
+        connect(m_testActionController,
+                &TestActionController::cupPlacedInChannel,
+                m_testScheduler, &TestScheduler::handleCupPlaced);
+        connect(m_testActionController,
+                &TestActionController::cupRemovedFromChannel,
+                m_testScheduler, &TestScheduler::handleCupRemoved);
+        // 测试进行中在加样页确认新样本后立即唤醒调度器继续做，
+        // 不需要等当前批次结束再按一次「开始」。
+        connect(m_addSampleWidget, &AddSampleWidget::sampleQueued,
+                m_testScheduler, &TestScheduler::notifyWorkAvailable);
+        m_testScheduler->setActionLayerReady(true);
+    }
+
+    showHomeTab();
+    if (!m_testScheduler->isActionLayerReady()) {
+        showActionHint(tr("测试动作层尚未接入"));
+        return;
+    }
+    qInfo() << "开始测试";
+    m_testScheduler->start();
+    updatePauseButtonAppearance();
+    updateStartButtonAppearance();
 }
 
 void MainWindow::handlePauseResume()
 {
-    if (!m_moduleOverview || !m_moduleOverview->isChannelOneSimulationRunning()) {
+    if (!m_testScheduler || !m_testScheduler->isRunning()) {
         showActionHint(tr("请先点击「开始」"));
         return;
     }
-
-    m_channelOneDemoPaused = !m_channelOneDemoPaused;
-    m_moduleOverview->setChannelOneSimulationPaused(m_channelOneDemoPaused);
+    if (m_testScheduler->isPaused()) {
+        m_testScheduler->resume();
+    } else {
+        m_testScheduler->pause();
+        // 暂停只停机械臂动作：调度器在当前动作完成后不再下发新动作。
+        // 模组和主板的周期轮询全部照常运行。
+    }
     updatePauseButtonAppearance();
-    qInfo() << (m_channelOneDemoPaused ? "测试已暂停" : "测试已继续");
 }
 
 void MainWindow::updatePauseButtonAppearance()
@@ -1264,30 +1772,297 @@ void MainWindow::updatePauseButtonAppearance()
     if (!m_pauseButton) {
         return;
     }
+    const bool paused = m_testScheduler && m_testScheduler->isPaused();
+    m_pauseButton->setText(paused ? tr("继续") : tr("暂停"));
+    m_pauseButton->setIcon(makeToolbarIcon(
+                               paused ? ToolbarIconType::Play
+                                      : ToolbarIconType::Pause,
+                               QColor("#1F4E79")));
+}
 
-    const QString text = m_channelOneDemoPaused ? tr("继续") : tr("暂停");
-    const ToolbarIconType iconType = m_channelOneDemoPaused
-            ? ToolbarIconType::Play : ToolbarIconType::Pause;
-    m_pauseButton->setText(text);
-    m_pauseButton->setIcon(makeToolbarIcon(iconType, QColor("#1F4E79")));
+void MainWindow::updateStartButtonAppearance()
+{
+    if (!m_startButton) {
+        return;
+    }
+    // 测试会话期间（包括当前无样本、等待加样）开始按钮保持“测试中”样式；
+    // 新确认的样本会自动继续，点「复位」才结束本次测试。
+    const bool running = m_testScheduler && m_testScheduler->isRunning();
+    m_startButton->setEnabled(!running);
+    m_startButton->setCursor(running ? Qt::ArrowCursor
+                                     : Qt::PointingHandCursor);
+    m_startButton->setText(running ? tr("测试中") : tr("开始"));
+    m_startButton->setToolTip(
+                running
+                ? tr("测试进行中：可在加样页继续确认样本，复位结束测试")
+                : tr("开始测试"));
 }
 
 void MainWindow::handleResetTest()
 {
-    if (!m_moduleOverview) {
+    const bool wasTesting = testingActive()
+            || (m_testScheduler && m_testScheduler->isRunning());
+
+    if (m_moduleOverview) {
+        if (m_testScheduler) {
+            m_testScheduler->reset();
+        }
+        m_moduleOverview->resetAll();
+        qInfo() << "测试已复位";
+        updateStartButtonAppearance();
+        updatePauseButtonAppearance();
+        if (m_actionHint) {
+            m_actionHint->clear();
+        }
+    }
+
+    // 测试状态复位后，再执行机械复位：三 Z 复位 → XY 负速度复位 → 清洗位。
+    if (!m_resetController) {
         return;
     }
-    m_moduleOverview->stopChannelOneSimulation();
-    m_moduleOverview->resetAll();
-    qInfo() << "测试已复位";
-    m_channelOneDemoPaused = false;
-    if (m_startButton) {
-        m_startButton->setEnabled(true);
+    if (!m_serialConnected) {
+        showActionHint(tr("仪器未连接，仅复位了测试状态"));
+        return;
     }
-    updatePauseButtonAppearance();
-    if (m_actionHint) {
-        m_actionHint->clear();
+    if (m_startupState != StartupCalibrationState::Idle) {
+        showActionHint(tr("启动校准进行中，不能执行机械复位"));
+        return;
     }
+    if (wasTesting) {
+        showActionHint(tr("测试状态已复位；请等测试动作完全停止后再点一次复位"));
+        return;
+    }
+    if ((m_perfusionController && m_perfusionController->isBusy())
+            || (m_cleaningController && m_cleaningController->isBusy())
+            || (m_verificationController
+                && m_verificationController->isBusy())
+            || m_resetController->isBusy()) {
+        showActionHint(tr("当前有动作正在进行，请稍后再复位"));
+        return;
+    }
+
+    // 复位期间只走 0x17 动作帧，暂停周期采集避免干扰。
+    if (m_commWorker) {
+        QMetaObject::invokeMethod(m_commWorker, "pausePeriodicPolling",
+                                  Qt::QueuedConnection);
+    }
+    m_resetController->start();
+}
+
+void MainWindow::handleCleaning()
+{
+    if (!m_serialConnected) {
+        showActionHint(tr("仪器未连接，无法清洗"));
+        return;
+    }
+    if (m_startupState != StartupCalibrationState::Idle) {
+        showActionHint(tr("启动校准进行中，不能清洗"));
+        return;
+    }
+    if (testingActive()
+            || (m_testScheduler && m_testScheduler->isRunning())) {
+        showActionHint(tr("测试进行中，不能清洗"));
+        return;
+    }
+    if ((m_perfusionController && m_perfusionController->isBusy())
+            || (m_cleaningController && m_cleaningController->isBusy())
+            || (m_resetController && m_resetController->isBusy())) {
+        showActionHint(tr("当前有动作正在进行，请稍后再清洗"));
+        return;
+    }
+    if (!m_cleaningController) {
+        showActionHint(tr("清洗控制器未初始化"));
+        return;
+    }
+    if (!m_consumableValid[MainBoardConsumable::InternalCleanS1]) {
+        showActionHint(tr("尚未读到内部清洗液余量，请稍后再试"));
+        return;
+    }
+
+    const double needUl = sampleWashVolumeUl() + reagentWashVolumeUl();
+    const double remainUl = consumableRemainingUl(
+                MainBoardConsumable::InternalCleanS1);
+    if (remainUl < needUl) {
+        showActionHint(tr("内部清洗液不足：剩余约 %1 µL，本次需要 %2 µL")
+                       .arg(remainUl, 0, 'f', 1)
+                       .arg(needUl, 0, 'f', 1));
+        return;
+    }
+
+    m_cleaningController->setCleaningTimeMs(
+                perfusionCleaningTimeMsFromSettings());
+    // 清洗期间只走 0x17 动作帧，和开机灌注一样暂停周期采集。
+    if (m_commWorker) {
+        QMetaObject::invokeMethod(m_commWorker, "pausePeriodicPolling",
+                                  Qt::QueuedConnection);
+    }
+    m_cleaningController->start();
+    updateConsumablesOperationState();
+}
+
+double MainWindow::consumableRemainingUl(int position) const
+{
+    if (position < 0 || position >= MainBoardConsumable::kPositionCount) {
+        return 0.0;
+    }
+    if (m_consumableRemainingValid[position]) {
+        return m_consumableRemainingUl[position];
+    }
+    if (!m_consumableValid[position]) {
+        return 0.0;
+    }
+    const double capacity = consumableCapacityUl(position);
+    if (capacity <= 0.0) {
+        return 0.0;
+    }
+    return mainboardRatioToUl(m_consumableRatios[position], capacity);
+}
+
+bool MainWindow::consumeConsumableUl(int position, double usedUl,
+                                     QString *error)
+{
+    if (error) {
+        error->clear();
+    }
+    if (position < 0 || position >= MainBoardConsumable::kPositionCount) {
+        if (error) {
+            *error = tr("耗材位置无效");
+        }
+        return false;
+    }
+    if (usedUl <= 0.0) {
+        return true;
+    }
+    if (!m_consumableValid[position]) {
+        if (error) {
+            *error = tr("尚未读到该耗材余量");
+        }
+        return false;
+    }
+    const double capacity = consumableCapacityUl(position);
+    if (capacity <= 0.0) {
+        if (error) {
+            *error = tr("该耗材容量未设置");
+        }
+        return false;
+    }
+
+    double remain = consumableRemainingUl(position);
+    if (remain < usedUl) {
+        if (error) {
+            *error = tr("余量不足：剩余约 %1 µL，需要 %2 µL")
+                    .arg(remain, 0, 'f', 1)
+                    .arg(usedUl, 0, 'f', 1);
+        }
+        return false;
+    }
+
+    remain -= usedUl;
+    if (remain < 0.0) {
+        remain = 0.0;
+    }
+    const int ratio = mainboardUlToRatio(remain, capacity);
+    const int bottles = m_consumableBottles[position];
+    writeConsumableRatio(position, bottles, ratio);
+
+    m_consumableRemainingUl[position] = remain;
+    m_consumableRemainingValid[position] = true;
+    m_consumableRatios[position] = ratio;
+    if (m_consumablesDialog) {
+        m_consumablesDialog->setConsumableAmount(position, bottles, ratio);
+    }
+    qInfo() << "耗材扣减" << position << "用量" << usedUl
+            << "µL 剩余" << remain << "µL 比例" << ratio << "/512";
+    return true;
+}
+
+void MainWindow::writeConsumableRatio(int position, int bottles, int ratio)
+{
+    if (!m_commWorker) {
+        return;
+    }
+    const QByteArray frame = MainBoardPoller::consumableWriteFrame(
+                position, bottles, ratio, true);
+    if (frame.isEmpty()) {
+        qWarning() << "耗材比例写帧失败" << position << ratio;
+        return;
+    }
+    m_lastWrittenConsumableRatio[position] = ratio;
+    QMetaObject::invokeMethod(
+                m_commWorker, "sendFrameRequested", Qt::QueuedConnection,
+                Q_ARG(QByteArray, frame),
+                Q_ARG(QString, tr("耗材扣减：位置%1 比例%2/512")
+                      .arg(position).arg(ratio)));
+}
+
+void MainWindow::savePppBaseline(const QString &sampleNumber, int pppValue)
+{
+    if (!m_testDataStore) {
+        return;
+    }
+    SampleTestData sample;
+    sample.sampleNumber = sampleNumber;
+    sample.sampleType = sampleQualityIsPlasma() ? tr("血浆") : tr("全血");
+    sample.machineModel = QString::fromLatin1(
+                machineModelName(m_machineModel));
+    sample.testTime = QDateTime::currentDateTime();
+    sample.pppValue = pppValue;
+
+    QString error;
+    qint64 sampleId = m_sampleTestIds.value(sampleNumber, 0);
+    if (sampleId <= 0) {
+        sampleId = m_testDataStore->ensureSample(sample, &error);
+        if (sampleId > 0) {
+            m_sampleTestIds.insert(sampleNumber, sampleId);
+        }
+    }
+    if (sampleId <= 0) {
+        qWarning() << "保存 PPP 基准值失败（样本）:" << sampleNumber << error;
+        showActionHint(tr("PPP 基准值保存失败：%1").arg(error));
+        return;
+    }
+    if (!m_testDataStore->setSamplePppValue(sampleId, pppValue, &error)) {
+        qWarning() << "保存 PPP 基准值失败:" << sampleNumber << error;
+        showActionHint(tr("PPP 基准值保存失败：%1").arg(error));
+        return;
+    }
+    qInfo() << "PPP 基准值已落库" << sampleNumber << "PPP" << pppValue;
+}
+
+void MainWindow::saveTestResult(const QString &sampleNumber,
+                                const TestCurveData &test)
+{
+    if (!m_testDataStore) {
+        return;
+    }
+    SampleTestData sample;
+    sample.sampleNumber = sampleNumber;
+    sample.sampleType = sampleQualityIsPlasma() ? tr("血浆") : tr("全血");
+    sample.machineModel = QString::fromLatin1(
+                machineModelName(m_machineModel));
+    sample.testTime = QDateTime::currentDateTime();
+
+    QString error;
+    qint64 sampleId = m_sampleTestIds.value(sampleNumber, 0);
+    if (sampleId <= 0) {
+        sampleId = m_testDataStore->ensureSample(sample, &error);
+        if (sampleId > 0) {
+            m_sampleTestIds.insert(sampleNumber, sampleId);
+        }
+    }
+    if (sampleId <= 0) {
+        qWarning() << "保存样本失败:" << sampleNumber << error;
+        showActionHint(tr("测试数据保存失败：%1").arg(error));
+        return;
+    }
+    if (!m_testDataStore->appendTest(sampleId, test, &error)) {
+        qWarning() << "保存测试失败:" << sampleNumber
+                   << test.reagent << error;
+        showActionHint(tr("测试数据保存失败：%1").arg(error));
+        return;
+    }
+    qInfo() << "测试结果已落库" << sampleNumber << test.reagent
+            << "PRP0" << test.prp0 << "点数" << test.prpPoints.size();
 }
 
 void MainWindow::showHomeTab()
@@ -1303,9 +2078,12 @@ void MainWindow::createConsumablesTab()
         return;
     }
     m_consumablesDialog = new ConsumablesDialog(m_mainTabs);
+    connect(m_consumablesDialog, &ConsumablesDialog::reagentReplaceRequested,
+            this, &MainWindow::handleReagentReplaceRequested);
     m_consumablesDialog->embedAsPage();
     QScrollArea *scroll = makePageScroll(m_consumablesDialog, m_mainTabs);
     m_consumablesTabIndex = m_mainTabs->addTab(scroll, tr("耗材管理"));
+    updateConsumablesOperationState();
 }
 
 void MainWindow::createTubeTrayTab()
@@ -1332,10 +2110,60 @@ void MainWindow::createResultTabs()
         m_resultsTabIndex = m_mainTabs->addTab(m_resultsInfoWidget,
                                                tr("结果信息"));
     }
+    connectAddSampleStatusToResults();
     if (!m_queryWidget) {
         m_queryWidget = new QueryWidget(m_testDataStore, m_mainTabs);
         m_queryTabIndex = m_mainTabs->addTab(m_queryWidget, tr("查询"));
     }
+}
+
+void MainWindow::connectAddSampleStatusToResults()
+{
+    // 加样页状态停在“加样完成”；结果信息表在加样完成时登记该样本为
+    // “测试中”，后续测试结束/异常结果也只更新结果信息表。
+    // 加样页和结果页都是延迟创建的，谁后创建谁负责完成接线。
+    if (m_addSampleResultsWired || !m_addSampleWidget
+            || !m_resultsInfoWidget) {
+        return;
+    }
+    m_addSampleResultsWired = true;
+    connect(m_addSampleWidget, &AddSampleWidget::sampleStatusChanged,
+            this, [this](const QString &sampleNumber, const QString &status) {
+        if (!m_testDataStore || !m_testDataStore->isOpen()) {
+            return;
+        }
+        QString error;
+        qint64 sampleId = m_sampleTestIds.value(sampleNumber, 0);
+        if (status == tr("测试中") || sampleId <= 0) {
+            // 每次测试在当天新建/复用 samples 行；跨天同号会自动新建，
+            // 后续 PPP/每个试剂的 300 点都写入这个 id 对应的记录。
+            sampleId = m_testDataStore->ensurePendingSample(
+                        sampleNumber,
+                        sampleQualityIsPlasma() ? tr("血浆") : tr("全血"),
+                        &error);
+            if (sampleId > 0) {
+                m_sampleTestIds.insert(sampleNumber, sampleId);
+            } else {
+                qWarning() << "登记测试样本失败:"
+                           << sampleNumber << error;
+            }
+        }
+        const bool statusUpdated = sampleId > 0
+                ? m_testDataStore->updateSampleTestStatusById(
+                    sampleId, status, &error)
+                : m_testDataStore->updateSampleTestStatus(
+                    sampleNumber, status, &error);
+        if (!statusUpdated) {
+            qWarning() << "更新结果信息状态失败:"
+                       << sampleNumber << status << error;
+        }
+        if (status == tr("测试结束") || status == tr("异常结果")) {
+            m_sampleTestIds.remove(sampleNumber);
+        }
+        if (m_resultsInfoWidget) {
+            m_resultsInfoWidget->refresh();
+        }
+    });
 }
 
 void MainWindow::createEmptyPlaceholderTabs()
@@ -1355,6 +2183,7 @@ void MainWindow::createEmptyPlaceholderTabs()
                                                 m_testDataStore, m_mainTabs);
         QScrollArea *scroll = makePageScroll(m_addSampleWidget, m_mainTabs);
         m_addSampleTabIndex = m_mainTabs->addTab(scroll, tr("加样"));
+        connectAddSampleStatusToResults();
     }
 }
 
@@ -1538,7 +2367,7 @@ void MainWindow::createLogTab()
     connect(openDirButton, &QPushButton::clicked, this, [this]() {
         const QString directory = AppLog::logDirectory();
         if (directory.isEmpty() || !QDir(directory).exists()) {
-            QMessageBox::information(
+            MedicalMessageBox::information(
                         this, tr("运行日志"),
                         tr("日志目录尚未创建，暂时没有可打开的目录。"));
             return;
@@ -1627,6 +2456,7 @@ void MainWindow::createSettingsTab()
     m_settingsDialog = new SettingsDialog(m_commWorker,
                                           &m_instrumentCoordinates,
                                           m_mainTabs, m_machineModel);
+    m_settingsDialog->setCurrentUser(m_currentUserName, m_currentUserRole);
     m_settingsDialog->setActiveSampleCountProvider([this]() {
         return m_addSampleWidget ? m_addSampleWidget->activeSampleCount()
                                  : 0;
@@ -1642,8 +2472,14 @@ void MainWindow::createSettingsTab()
         }
     });
     connect(m_settingsDialog, &SettingsDialog::coordinateMotionRequested,
-            m_verificationController,
-            &CoordinateVerificationController::start);
+            this, [this](const InstrumentCoordinates::MoveTarget &target) {
+        // 定位校验前暂停主板/模组周期采集，避免读命令干扰复位/XY 动作。
+        if (m_commWorker) {
+            QMetaObject::invokeMethod(m_commWorker, "pausePeriodicPolling",
+                                      Qt::QueuedConnection);
+        }
+        m_verificationController->start(target);
+    });
     connect(m_settingsDialog, &SettingsDialog::machineModelChanged,
             this, &MainWindow::setMachineModel);
     connect(m_settingsDialog, &SettingsDialog::channelEnabledChanged,
@@ -1655,17 +2491,6 @@ void MainWindow::createSettingsTab()
         const int localChannel = (globalChannel - 1) % 4 + 1;
         m_moduleOverview->setChannelEnabled(moduleNumber, localChannel,
                                             enabled);
-
-        // 正在模拟的 CH1 被禁用时立即停止测试并恢复开始按钮
-        if (globalChannel == 1 && !enabled
-                && m_moduleOverview->isChannelOneSimulationRunning()) {
-            m_moduleOverview->stopChannelOneSimulation();
-            m_channelOneDemoPaused = false;
-            updatePauseButtonAppearance();
-            if (m_startButton) {
-                m_startButton->setEnabled(true);
-            }
-        }
     });
     m_settingsDialog->embedAsPage();
     QScrollArea *scroll = makePageScroll(m_settingsDialog, m_mainTabs);
@@ -1698,6 +2523,7 @@ void MainWindow::refreshConsumablesTab()
 void MainWindow::openConsumables()
 {
     createConsumablesTab();
+    updateConsumablesOperationState();
     refreshConsumablesTab();
     if (m_mainTabs && m_consumablesTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_consumablesTabIndex);
@@ -1719,10 +2545,8 @@ void MainWindow::handleTrayReplaceRequested(int trayIndex)
     }
 
     // 测试中禁止更换
-    if (testingActive()
-            || (m_moduleOverview
-                && m_moduleOverview->isChannelOneSimulationRunning())) {
-        QMessageBox::warning(
+    if (testingActive()) {
+        MedicalMessageBox::warning(
                     this, tr("更换试管盘"),
                     tr("当前正在测试，不能更换试管盘。\n"
                        "请等待所有通道测试结束后再更换。"));
@@ -1730,7 +2554,7 @@ void MainWindow::handleTrayReplaceRequested(int trayIndex)
     }
 
     if (!m_serialConnected) {
-        QMessageBox::warning(
+        MedicalMessageBox::warning(
                     this, tr("更换试管盘"),
                     tr("仪器未连接，无法更新主板试管盘余量。\n"
                        "请连接仪器后再更换。"));
@@ -1739,7 +2563,7 @@ void MainWindow::handleTrayReplaceRequested(int trayIndex)
 
     const int position = MainBoardConsumable::TestTube;
     if (!m_consumableValid[position] || m_consumableBottles[position] < 0) {
-        QMessageBox::warning(
+        MedicalMessageBox::warning(
                     this, tr("更换试管盘"),
                     tr("尚未读取到主板试管盘余量，请稍后重试。"));
         return;
@@ -1747,7 +2571,7 @@ void MainWindow::handleTrayReplaceRequested(int trayIndex)
 
     const int currentTrays = m_consumableBottles[position];
     if (currentTrays <= 0) {
-        QMessageBox::warning(
+        MedicalMessageBox::warning(
                     this, tr("更换试管盘"),
                     tr("试管盘余量不足（0 板），请先刷卡充值后再更换。"));
         return;
@@ -1772,7 +2596,7 @@ void MainWindow::handleTrayReplaceRequested(int trayIndex)
                 .arg(trayIndex + 1)
                 .arg(currentTrays);
     }
-    if (QMessageBox::question(this, tr("更换试管盘"), firstText,
+    if (MedicalMessageBox::question(this, tr("更换试管盘"), firstText,
                               QMessageBox::Yes | QMessageBox::No,
                               QMessageBox::No) != QMessageBox::Yes) {
         return;
@@ -1781,7 +2605,7 @@ void MainWindow::handleTrayReplaceRequested(int trayIndex)
     // 二次确认：重新读取余量，避免轮询期间数值变化
     if (!m_serialConnected || !m_consumableValid[position]
             || m_consumableBottles[position] <= 0) {
-        QMessageBox::warning(
+        MedicalMessageBox::warning(
                     this, tr("更换试管盘"),
                     tr("试管盘余量已变化或仪器已断开，请重试。"));
         return;
@@ -1795,14 +2619,14 @@ void MainWindow::handleTrayReplaceRequested(int trayIndex)
             .arg(trayIndex + 1)
             .arg(latestTrays)
             .arg(newTrayCount);
-    if (QMessageBox::question(this, tr("再次确认更换"), secondText,
+    if (MedicalMessageBox::question(this, tr("再次确认更换"), secondText,
                               QMessageBox::Yes | QMessageBox::No,
                               QMessageBox::No) != QMessageBox::Yes) {
         return;
     }
 
     if (!m_commWorker) {
-        QMessageBox::warning(
+        MedicalMessageBox::warning(
                     this, tr("更换试管盘"),
                     tr("通讯线程未启动，无法更新主板数量。"));
         return;
@@ -1811,7 +2635,7 @@ void MainWindow::handleTrayReplaceRequested(int trayIndex)
     const QByteArray frame = MainBoardPoller::consumableWriteFrame(
                 position, newTrayCount, 521, true);
     if (frame.isEmpty()) {
-        QMessageBox::warning(
+        MedicalMessageBox::warning(
                     this, tr("更换试管盘"),
                     tr("生成主板写入命令失败，请重试。"));
         return;
@@ -1831,6 +2655,570 @@ void MainWindow::handleTrayReplaceRequested(int trayIndex)
     showActionHint(tr("试管盘 %1 已更换，余量 %2 板")
                    .arg(trayIndex + 1)
                    .arg(newTrayCount));
+}
+
+bool MainWindow::reagentReplacementBlocked(QString *reason) const
+{
+    const auto blocked = [reason](const QString &text) {
+        if (reason) {
+            *reason = text;
+        }
+        return true;
+    };
+
+    if (!m_serialConnected) {
+        return blocked(tr("仪器未连接，不能更换试剂"));
+    }
+    if (m_startupState != StartupCalibrationState::Idle) {
+        return blocked(tr("启动校准进行中，不能更换试剂"));
+    }
+    if (m_cardRechargeState == CardRechargeState::Writing) {
+        return blocked(tr("刷卡充值写入中，不能更换试剂"));
+    }
+    if (testingActive()
+            || (m_testScheduler && m_testScheduler->isRunning())
+            || (m_testActionController && m_testActionController->isBusy())
+            || (m_perfusionController && m_perfusionController->isBusy())
+            || (m_cleaningController && m_cleaningController->isBusy())
+            || (m_verificationController
+                && m_verificationController->isBusy())
+            || (m_resetController && m_resetController->isBusy())) {
+        return blocked(tr("测试机械臂正在运动或测试进行中，不能更换试剂"));
+    }
+    return false;
+}
+
+void MainWindow::updateConsumablesOperationState()
+{
+    if (!m_consumablesDialog) {
+        return;
+    }
+    QString reason;
+    const bool blocked = reagentReplacementBlocked(&reason);
+    m_consumablesDialog->setReplaceAllowed(!blocked, reason);
+}
+
+void MainWindow::handleReagentReplaceRequested(int position)
+{
+    if (!MainBoardConsumable::isReagentPosition(position)) {
+        return;
+    }
+
+    QScopedValueRollback<bool> replaceGuard(m_reagentReplaceInProgress, true);
+    QString reason;
+    if (reagentReplacementBlocked(&reason)) {
+        MedicalMessageBox::warning(this, tr("更换试剂"), reason);
+        return;
+    }
+    if (!m_commWorker) {
+        MedicalMessageBox::warning(this, tr("更换试剂"),
+                             tr("通讯线程未启动，无法更新主板。"));
+        return;
+    }
+
+    const int mainPosition =
+            MainBoardConsumable::mainPositionForReagent(position);
+    if (!m_consumableValid[mainPosition]
+            || m_consumableBottles[mainPosition] < 0) {
+        MedicalMessageBox::warning(this, tr("更换试剂"),
+                             tr("尚未读取到该试剂的总瓶数，请稍后重试。"));
+        return;
+    }
+
+    const QString name =
+            MainBoardConsumable::positionDisplayName(position);
+    const int currentTotal = m_consumableBottles[mainPosition];
+    if (currentTotal <= 0) {
+        MedicalMessageBox::warning(
+                    this, tr("更换试剂"),
+                    tr("%1 的总瓶数为 0，不能更换。\n"
+                       "请先刷卡充值，再更换试剂。").arg(name));
+        return;
+    }
+    if (currentTotal <= 1) {
+        // 仍允许更换最后一瓶，但提醒更换后库存为 0。
+        qInfo() << "更换试剂：当前总瓶数仅剩" << currentTotal;
+    }
+
+    const QString firstText =
+            tr("确定更换 %1 吗？\n\n"
+               "当前该试剂总瓶数：%2 瓶\n"
+               "更换后总瓶数：%3 瓶（消耗 1 瓶库存）\n"
+               "更换后该侧单瓶余量补满 100%（主板比例 512）。")
+            .arg(name)
+            .arg(currentTotal)
+            .arg(currentTotal - 1);
+    if (MedicalMessageBox::question(this, tr("更换试剂"), firstText,
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+
+    // 第一次确认后再次校验，避免期间开始测试或余量被充值改变。
+    if (reagentReplacementBlocked(&reason)) {
+        MedicalMessageBox::warning(this, tr("更换试剂"), reason);
+        return;
+    }
+    const int latestTotal = m_consumableBottles[mainPosition];
+    if (latestTotal != currentTotal || latestTotal <= 0) {
+        MedicalMessageBox::warning(
+                    this, tr("更换试剂"),
+                    tr("总瓶数已变化（%1 → %2），请重新操作。")
+                    .arg(currentTotal).arg(latestTotal));
+        return;
+    }
+
+    const int newTotal = latestTotal - 1;
+    const QString secondText =
+            tr("再次确认：即将更换 %1。\n\n"
+               "主板总瓶数：%2 → %3\n"
+               "该侧单瓶余量：写入 512（100%）\n\n"
+               "确定继续吗？")
+            .arg(name)
+            .arg(latestTotal)
+            .arg(newTotal);
+    if (MedicalMessageBox::question(this, tr("再次确认更换试剂"), secondText,
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+
+    struct WriteRequest {
+        QByteArray frame;
+        QString description;
+    };
+    QVector<WriteRequest> requests;
+
+    const QByteArray primary = MainBoardPoller::consumableWriteFrame(
+                position, newTotal, MainBoardConsumable::kRatioMax, true);
+    if (primary.isEmpty()) {
+        MedicalMessageBox::warning(this, tr("更换试剂"),
+                             tr("生成主板写入命令失败，请重试。"));
+        return;
+    }
+    requests.append({ primary,
+                      tr("更换%1：写入总瓶数%2、单瓶512")
+                      .arg(name).arg(newTotal) });
+
+    // AA~RIS 左右瓶共享总瓶数：同步另一侧的总瓶数，保留该侧单瓶比例。
+    int otherPosition = -1;
+    if (position >= MainBoardConsumable::AA_Second) {
+        otherPosition = mainPosition;
+    } else {
+        otherPosition = position + (MainBoardConsumable::AA_Second
+                                    - MainBoardConsumable::AA);
+    }
+    if (otherPosition >= 0
+            && otherPosition < MainBoardConsumable::kPositionCount
+            && m_consumableValid[otherPosition]
+            && m_consumableRatios[otherPosition] >= 0) {
+        const QByteArray secondary = MainBoardPoller::consumableWriteFrame(
+                    otherPosition, newTotal,
+                    m_consumableRatios[otherPosition], true);
+        if (!secondary.isEmpty()) {
+            requests.append(
+            { secondary,
+              tr("同步%1总瓶数%2")
+              .arg(MainBoardConsumable::positionDisplayName(otherPosition))
+              .arg(newTotal) });
+        }
+    }
+
+    for (const WriteRequest &request : requests) {
+        QMetaObject::invokeMethod(
+                    m_commWorker, "sendFrameRequested", Qt::QueuedConnection,
+                    Q_ARG(QByteArray, request.frame),
+                    Q_ARG(QString, request.description));
+    }
+
+    // 软件缓存立即更新，主板下一轮读取会回填真实值。
+    m_consumableBottles[mainPosition] = newTotal;
+    m_consumableValid[mainPosition] = true;
+    m_consumableBottles[position] = newTotal;
+    m_consumableValid[position] = true;
+    m_consumableRatios[position] = MainBoardConsumable::kRatioMax;
+    m_lastWrittenConsumableRatio[position] = MainBoardConsumable::kRatioMax;
+    m_lastSeenConsumableRatio[position] = MainBoardConsumable::kRatioMax;
+    if (otherPosition >= 0
+            && otherPosition < MainBoardConsumable::kPositionCount) {
+        m_consumableBottles[otherPosition] = newTotal;
+        m_consumableValid[otherPosition] = true;
+    }
+
+    const double capacity = consumableCapacityUl(position);
+    if (capacity > 0.0) {
+        m_consumableRemainingUl[position] = capacity;
+        m_consumableRemainingValid[position] = true;
+    }
+
+    if (m_consumablesDialog) {
+        m_consumablesDialog->setConsumableAmount(
+                    mainPosition, newTotal,
+                    m_consumableRatios[mainPosition]);
+        if (position != mainPosition) {
+            m_consumablesDialog->setConsumableAmount(
+                        position, newTotal, MainBoardConsumable::kRatioMax);
+        }
+    }
+    const int bottle = reagentBottleForConsumablePosition(position);
+    if (bottle >= 0 && m_reagentPanel) {
+        m_reagentPanel->setLevel(bottle, 100.0);
+    }
+
+    qInfo() << "更换试剂" << name << "总瓶数" << latestTotal
+            << "->" << newTotal << "，该侧补满512";
+    showActionHint(tr("%1 已更换，总瓶数 %2 瓶")
+                   .arg(name).arg(newTotal));
+}
+
+QString MainWindow::cardBatchText(int year, int month)
+{
+    if (year <= 0 || month <= 0 || month > 12) {
+        return QStringLiteral("--");
+    }
+    const int fullYear = year < 100 ? 2000 + year : year;
+    return QStringLiteral("%1-%2")
+            .arg(fullYear)
+            .arg(month, 2, 10, QLatin1Char('0'));
+}
+
+void MainWindow::handleCardRechargeStatus(const MainBoardStatus &status)
+{
+    const quint8 mfc = status.mfcStatus;
+
+    if (m_cardRechargeState == CardRechargeState::Writing) {
+        // 正常结果由充值命令的直接回执处理；这里兼容 0xFE 状态帧先到的情况。
+        if (mfc == 5) {
+            finishCardRecharge(true, tr("主板回报充值成功"));
+        } else if (mfc == 6) {
+            finishCardRecharge(false, tr("主板回报充值失败"));
+        } else if (mfc == 3 || mfc == 4) {
+            finishCardRecharge(false, tr("读卡/刷卡异常，充值未完成"));
+        }
+        m_lastCardMfcStatus = mfc;
+        return;
+    }
+
+    if (mfc == 0) {
+        // 只有真正回到“正常”才允许下一张卡，避免写完卡后连续重复充值。
+        m_cardReaderNormalSeen = true;
+        m_cardWaitingReset = false;
+        m_lastCardFailureSignature = -1;
+    } else if (mfc == 1 || mfc == 7) {
+        m_cardReaderNormalSeen = true;
+    } else if (mfc == 2) {
+        if (!m_hasLoggedIn) {
+            // 登录前不自动写卡，避免上电/维护时误充值。
+            m_lastCardMfcStatus = mfc;
+            return;
+        }
+        if (m_cardWaitingReset || !m_cardReaderNormalSeen) {
+            m_lastCardMfcStatus = mfc;
+            return;
+        }
+        if (m_lastCardMfcStatus == 2) {
+            return;
+        }
+        if (m_startupState != StartupCalibrationState::Idle) {
+            m_cardWaitingReset = true;
+            showActionHint(tr("启动校准进行中，刷卡充值暂不可用"));
+        } else {
+            beginCardRecharge(status);
+        }
+    } else if (mfc == 3 || mfc == 4 || mfc == 6) {
+        const int signature = int(mfc)
+                | (int(status.regType) << 4)
+                | (int(status.regRemain) << 8);
+        if (signature != m_lastCardFailureSignature) {
+            m_lastCardFailureSignature = signature;
+            const QString reason = mfc == 3
+                    ? tr("读卡失败")
+                    : (mfc == 4 ? tr("刷卡设备异常") : tr("主板充值失败"));
+            showActionHint(tr("刷卡失败：%1").arg(reason));
+            if (m_consumablesDialog) {
+                m_consumablesDialog->setRechargeStatus(
+                            tr("刷卡失败：%1").arg(reason), false);
+            }
+        }
+        m_cardWaitingReset = true;
+    }
+
+    m_lastCardMfcStatus = mfc;
+}
+
+void MainWindow::beginCardRecharge(const MainBoardStatus &status)
+{
+    const auto reject = [this](const QString &message) {
+        m_cardWaitingReset = true;
+        showActionHint(message);
+        if (m_consumablesDialog) {
+            m_consumablesDialog->setRechargeStatus(message, false);
+        }
+        qWarning() << "刷卡充值未开始:" << message;
+    };
+
+    if (!m_serialConnected || !m_commWorker) {
+        reject(tr("仪器未连接，充值未开始"));
+        return;
+    }
+    if (m_reagentReplaceInProgress) {
+        reject(tr("正在更换试剂，请更换完成后再刷卡"));
+        return;
+    }
+    // 灌注/清洗/定位校验期间会暂停主板轮询保护运动命令；此时不能
+    // 插入刷卡充值，否则动作结束恢复轮询会打断 RFID 写卡窗口。
+    if (testingActive()
+            || (m_perfusionController && m_perfusionController->isBusy())
+            || (m_cleaningController && m_cleaningController->isBusy())
+            || (m_verificationController
+                && m_verificationController->isBusy())
+            || (m_resetController && m_resetController->isBusy())) {
+        reject(tr("仪器正在执行动作，请动作完成后再刷卡"));
+        return;
+    }
+
+    const int cardType = int(status.regType);
+    const int cardQty = int(status.regRemain);
+    if (cardQty <= 0) {
+        reject(tr("卡内数量为 0，未写入"));
+        return;
+    }
+
+    const int position = MainBoardConsumable::positionForCardType(cardType);
+    if (position < 0) {
+        reject(tr("未知刷卡类型（编码 %1），未写入").arg(cardType));
+        return;
+    }
+
+    const bool reagent = MainBoardConsumable::isReagentPosition(position);
+    const int mainPosition = reagent
+            ? MainBoardConsumable::mainPositionForReagent(position)
+            : position;
+    if (!m_consumableValid[mainPosition]
+            || m_consumableBottles[mainPosition] < 0) {
+        reject(tr("尚未读取到 %1 的总瓶数，请稍后重新刷卡")
+               .arg(MainBoardConsumable::positionDisplayName(mainPosition)));
+        return;
+    }
+
+    const int newTotal = m_consumableBottles[mainPosition] + cardQty;
+    if (newTotal > 0xFF) {
+        reject(tr("%1 充值后总瓶数 %2 超过上限 255，未写入")
+               .arg(MainBoardConsumable::positionDisplayName(position))
+               .arg(newTotal));
+        return;
+    }
+
+    const QByteArray frame = MainBoardPoller::cardRechargeConfirmFrame(
+                cardType, newTotal);
+    if (frame.isEmpty()) {
+        reject(tr("生成充值确认命令失败"));
+        return;
+    }
+
+    const QString name =
+            MainBoardConsumable::positionDisplayName(position);
+    m_cardRechargeState = CardRechargeState::Writing;
+    m_cardWaitingReset = true;
+    updateConsumablesOperationState();
+    m_rechargeCardType = cardType;
+    m_rechargeCardQty = cardQty;
+    m_rechargePosition = position;
+    m_rechargeNewTotal = newTotal;
+    m_rechargeBatch = cardBatchText(status.regYear, status.regMonth);
+    m_cardRechargeTimer->start();
+
+    QMetaObject::invokeMethod(
+                m_commWorker, "sendCardRechargeConfirm", Qt::QueuedConnection,
+                Q_ARG(QByteArray, frame),
+                Q_ARG(int, cardType),
+                Q_ARG(QString, tr("确认刷卡充值：%1 +%2 瓶")
+                      .arg(name).arg(cardQty)));
+
+    const QString progress =
+            tr("刷卡充值：%1 +%2 瓶，批号 %3，正在写入主板…")
+            .arg(name).arg(cardQty).arg(m_rechargeBatch);
+    showActionHint(progress);
+    if (m_consumablesDialog) {
+        m_consumablesDialog->setRechargeStatus(progress, true);
+    }
+    qInfo() << "刷卡充值开始" << name << "卡数量" << cardQty
+            << "原总瓶数" << (newTotal - cardQty)
+            << "新总瓶数" << newTotal << "批号" << m_rechargeBatch;
+}
+
+void MainWindow::handleCardRechargeResult(int mfcStatus, int cardType,
+                                          int cardQty, int year, int month)
+{
+    if (m_cardRechargeState != CardRechargeState::Writing) {
+        qInfo() << "忽略非充值中的刷卡回执" << mfcStatus
+                << "类型" << cardType << "数量" << cardQty;
+        return;
+    }
+
+    if (m_rechargeBatch == QLatin1String("--")) {
+        m_rechargeBatch = cardBatchText(year, month);
+    }
+    if (mfcStatus == 5) {
+        finishCardRecharge(true, tr("充值写入成功"));
+    } else if (mfcStatus == 6) {
+        finishCardRecharge(false, tr("主板回报充值写入失败"));
+    } else if (mfcStatus == 3 || mfcStatus == 4) {
+        finishCardRecharge(false, tr("读卡异常，充值未完成"));
+    } else {
+        qInfo() << "充值回执中间状态" << mfcStatus << "，继续等待";
+    }
+}
+
+void MainWindow::finishCardRecharge(bool ok, const QString &message)
+{
+    if (m_cardRechargeState != CardRechargeState::Writing) {
+        return;
+    }
+    m_cardRechargeTimer->stop();
+    m_cardRechargeState = CardRechargeState::Idle;
+    m_cardWaitingReset = true;
+    updateConsumablesOperationState();
+
+    const int position = m_rechargePosition;
+    const QString name = position >= 0
+            ? MainBoardConsumable::positionDisplayName(position)
+            : QStringLiteral("--");
+    const int cardQty = m_rechargeCardQty;
+    const int newTotal = m_rechargeNewTotal;
+
+    if (ok && position >= 0) {
+        const int mainPosition =
+                MainBoardConsumable::isReagentPosition(position)
+                ? MainBoardConsumable::mainPositionForReagent(position)
+                : position;
+        if (mainPosition >= 0
+                && mainPosition < MainBoardConsumable::kPositionCount) {
+            m_consumableBottles[mainPosition] = newTotal;
+            m_consumableValid[mainPosition] = true;
+        }
+        if (position != mainPosition) {
+            m_consumableBottles[position] = newTotal;
+            m_consumableValid[position] = true;
+        }
+
+        // 左右瓶共享总瓶数：把另一侧槽位也同步为新总瓶数，保留其单瓶比例。
+        int otherPosition = -1;
+        if (MainBoardConsumable::isReagentPosition(position)) {
+            otherPosition = position >= MainBoardConsumable::AA_Second
+                    ? mainPosition
+                    : position + (MainBoardConsumable::AA_Second
+                                  - MainBoardConsumable::AA);
+        }
+        if (otherPosition >= 0
+                && otherPosition < MainBoardConsumable::kPositionCount) {
+            m_consumableBottles[otherPosition] = newTotal;
+            m_consumableValid[otherPosition] = true;
+            if (m_commWorker
+                    && m_consumableRatios[otherPosition] >= 0) {
+                const QByteArray sync =
+                        MainBoardPoller::consumableWriteFrame(
+                            otherPosition, newTotal,
+                            m_consumableRatios[otherPosition], true);
+                if (!sync.isEmpty()) {
+                    QMetaObject::invokeMethod(
+                                m_commWorker, "sendFrameRequested",
+                                Qt::QueuedConnection,
+                                Q_ARG(QByteArray, sync),
+                                Q_ARG(QString,
+                                      tr("充值后同步%1总瓶数%2")
+                                      .arg(MainBoardConsumable::
+                                           positionDisplayName(otherPosition))
+                                      .arg(newTotal)));
+                }
+            }
+        }
+
+        if (m_consumablesDialog) {
+            m_consumablesDialog->setConsumableAmount(
+                        mainPosition, newTotal,
+                        m_consumableRatios[mainPosition]);
+            if (position != mainPosition) {
+                m_consumablesDialog->setConsumableAmount(
+                            position, newTotal,
+                            m_consumableRatios[position]);
+            }
+            m_consumablesDialog->setRechargeStatus(
+                        tr("充值成功：%1 +%2 瓶，总瓶数 %3")
+                        .arg(name).arg(cardQty).arg(newTotal), true);
+        }
+        showActionHint(tr("刷卡充值成功：%1 +%2 瓶，总瓶数 %3")
+                       .arg(name).arg(cardQty).arg(newTotal));
+        qInfo() << "刷卡充值成功" << name << "+" << cardQty
+                << "总瓶数" << newTotal << "批号" << m_rechargeBatch;
+    } else {
+        if (m_consumablesDialog) {
+            m_consumablesDialog->setRechargeStatus(
+                        tr("充值失败：%1").arg(message), false);
+        }
+        showActionHint(tr("刷卡充值失败：%1").arg(message));
+        qWarning() << "刷卡充值失败" << name << message;
+    }
+
+    // 成功时上面已把“同步另一侧总瓶数”命令排入队列；这里再恢复轮询，
+    // 保证同步写命令先于新一轮状态/耗材读取发出。
+    if (m_commWorker) {
+        QMetaObject::invokeMethod(m_commWorker, "resumeMainboardPolling",
+                                  Qt::QueuedConnection);
+    }
+
+    QStringList history;
+    history << QDateTime::currentDateTime().toString(
+                   QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+            << name
+            << QStringLiteral("+%1").arg(cardQty)
+            << QStringLiteral("总%1").arg(newTotal)
+            << QStringLiteral("批号%1").arg(m_rechargeBatch)
+            << (ok ? tr("成功") : tr("失败"));
+    if (!ok) {
+        history << message;
+    }
+    appendConsumableRechargeHistory(history.join(QLatin1Char('|')));
+
+    if (!ok) {
+        MedicalMessageBox::warning(this, tr("刷卡充值失败"), message);
+    }
+
+    m_rechargeCardType = -1;
+    m_rechargeCardQty = 0;
+    m_rechargePosition = -1;
+    m_rechargeNewTotal = 0;
+    m_rechargeBatch.clear();
+}
+
+void MainWindow::resetCardRechargeState()
+{
+    if (m_cardRechargeTimer) {
+        m_cardRechargeTimer->stop();
+    }
+    m_cardRechargeState = CardRechargeState::Idle;
+    m_cardReaderNormalSeen = false;
+    m_cardWaitingReset = false;
+    m_lastCardMfcStatus = 0xFF;
+    m_lastCardFailureSignature = -1;
+    m_rechargeCardType = -1;
+    m_rechargeCardQty = 0;
+    m_rechargePosition = -1;
+    m_rechargeNewTotal = 0;
+    m_rechargeBatch.clear();
+}
+
+void MainWindow::appendConsumableRechargeHistory(const QString &entry)
+{
+    QSettings settings;
+    QStringList history = settings.value(
+                QStringLiteral("consumable/rechargeHistory")).toStringList();
+    history.append(entry);
+    while (history.size() > 200) {
+        history.removeFirst();
+    }
+    settings.setValue(QStringLiteral("consumable/rechargeHistory"), history);
+    settings.sync();
 }
 
 void MainWindow::showPendingFunction(const QString &name)
@@ -1856,70 +3244,6 @@ void MainWindow::showActionHint(const QString &text)
         });
     }
     m_actionHintTimer->start();
-}
-
-void MainWindow::saveCompletedSimulationData()
-{
-    if (!m_moduleOverview || !m_testDataStore) {
-        return;
-    }
-    ModuleRackWidget *rack = m_moduleOverview->moduleRack(1);
-    if (!rack || rack->channelProgress(1) < 100) {
-        return;   // 复位/中断不保存
-    }
-
-    const QVector<QPointF> curve = rack->testCurve(1);
-    if (curve.size() < 300) {
-        return;   // 完整试剂测试应有 300 个 PRP 点
-    }
-
-    const ModuleRackWidget::ChannelTestInfo info =
-            rack->channelTestInfo(1);
-    SampleTestData sample;
-    sample.sampleNumber = info.sampleNumber.isEmpty()
-            ? QStringLiteral("0001") : info.sampleNumber;
-    sample.sampleType = sampleQualityIsPlasma()
-            ? tr("血浆") : tr("全血");
-    sample.machineModel = QString::fromLatin1(
-                machineModelName(m_machineModel));
-    sample.testTime = QDateTime::currentDateTime();
-    sample.remark = tr("通道1模拟测试自动保存");
-
-    TestCurveData test;
-    test.reagent = info.reagentName.isEmpty()
-            ? QStringLiteral("AA") : info.reagentName;
-    test.prp0 = info.prp0Value >= 0 ? info.prp0Value : info.prpValue;
-    test.moduleNumber = 1;
-    test.localChannel = 1;
-    test.globalChannel = 1;
-    test.status = tr("完成");
-    for (int i = 0; i < qMin(curve.size(), 300); ++i) {
-        test.prpPoints.append(qRound(curve.at(i).y()));
-    }
-    const QVector<QPointF> aggregation = rack->aggregationCurve(1);
-    if (aggregation.size() == test.prpPoints.size()) {
-        for (int i = 0; i < aggregation.size(); ++i) {
-            test.aggregationPoints.append(aggregation.at(i).y());
-        }
-    }
-    sample.tests.append(test);
-
-    QString error;
-    const qint64 sampleId = m_testDataStore->saveSample(sample, &error);
-    if (sampleId <= 0) {
-        qWarning() << "Save test data failed:" << error;
-        showActionHint(tr("测试数据保存失败：%1").arg(error));
-        return;
-    }
-    showActionHint(tr("模拟测试完成，已保存测试数据（样本 %1，%2 个点）")
-                   .arg(sample.sampleNumber)
-                   .arg(test.prpPoints.size()));
-    if (m_resultsInfoWidget) {
-        m_resultsInfoWidget->refresh();
-    }
-    if (m_queryWidget) {
-        m_queryWidget->refresh();
-    }
 }
 
 void MainWindow::applyChannelSettings()
@@ -1993,6 +3317,11 @@ void MainWindow::createStartupMask()
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 13px;"
         "}"
+        "QLabel#startupMaskCountdown {"
+        "  color: #8AA2B5;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "}"
         "QProgressBar#startupMaskProgress {"
         "  background: #EAF3F9;"
         "  border: 1px solid #D4E5F1;"
@@ -2038,9 +3367,17 @@ void MainWindow::createStartupMask()
     m_startupMaskProgress->setValue(0);
     m_startupMaskProgress->hide();
 
+    m_startupMaskCountdown = new QLabel(card);
+    m_startupMaskCountdown->setObjectName(
+                QStringLiteral("startupMaskCountdown"));
+    m_startupMaskCountdown->setAlignment(Qt::AlignRight);
+    m_startupMaskCountdown->hide();
+
     cardLayout->addWidget(m_startupMaskTitle);
     cardLayout->addWidget(m_startupMaskDetail);
     cardLayout->addWidget(m_startupMaskProgress);
+    // 升温倒计时固定在提示框右下角
+    cardLayout->addWidget(m_startupMaskCountdown, 0, Qt::AlignRight);
 
     cardRow->addWidget(card);
     cardRow->addStretch(1);
@@ -2171,8 +3508,9 @@ bool MainWindow::allModulesAtTargetTemperature() const
                 || !m_latestTemperatureValid[moduleIndex]) {
             return false;
         }
-        if (m_latestTemperature[moduleIndex]
-                < kModuleTargetTemperatureCelsius - 0.001) {
+        const double target =
+                moduleTargetTemperatureFromSettings(moduleIndex + 1);
+        if (m_latestTemperature[moduleIndex] < target - 0.001) {
             return false;
         }
     }
@@ -2181,6 +3519,10 @@ bool MainWindow::allModulesAtTargetTemperature() const
 
 void MainWindow::maybeStartStartupCalibration()
 {
+    if (m_skipStartupCalibration) {
+        startTestModePreparation();
+        return;
+    }
     if (!m_hasLoggedIn || !m_startupConnected || !m_commWorker) {
         return;
     }
@@ -2189,12 +3531,57 @@ void MainWindow::maybeStartStartupCalibration()
         return;
     }
     // 测试进行中掉线重连时不要打断测试去做灌注/升温/调光。
-    if (testingActive()
-            || (m_moduleOverview
-                && m_moduleOverview->isChannelOneSimulationRunning())) {
+    if (testingActive()) {
         return;
     }
     startStartupCalibration();
+}
+
+void MainWindow::startTestModePreparation()
+{
+    if (!m_hasLoggedIn || !m_startupConnected || !m_commWorker) {
+        return;
+    }
+
+    // test 模式跳过灌注，但主板/模组周期采集仍要启动，否则界面一直显示
+    // 未连接、通道没有 AD/温度，模组状态也不会刷新。
+    if (!m_testModePollingResumed) {
+        m_testModePollingResumed = true;
+        QMetaObject::invokeMethod(m_commWorker, "resumePeriodicPolling",
+                                  Qt::QueuedConnection);
+        qInfo() << "test 用户：跳过开机灌注，恢复主板/模组周期轮询";
+    }
+
+    // 没有灌注就没有泵的已知位置。这里只把两泵排空到 0 建立零位，
+    // 让开始测试/清洗可以按绝对位置计算步数，不动 Z/XY 和液路。
+    PumpPositionTracker &pumps = PumpPositionTracker::instance();
+    if (pumps.sampleValid() && pumps.reagentValid()) {
+        return;
+    }
+    if (m_testModePumpEmptyStarted || !m_perfusionController
+            || m_perfusionController->isBusy()) {
+        return;
+    }
+    if (m_cleaningController && m_cleaningController->isBusy()) {
+        return;
+    }
+    if (m_resetController && m_resetController->isBusy()) {
+        return;
+    }
+    if (m_verificationController && m_verificationController->isBusy()) {
+        return;
+    }
+    if (testingActive()) {
+        return;
+    }
+
+    m_testModePumpEmptyStarted = true;
+    showActionHint(tr("test 模式：正在排空样本泵/试剂泵，建立泵零位…"));
+    // 泵动作期间暂停 0x16 周期采集，避免和 0x17 动作应答抢处理；
+    // 排空结束的 finished 处理里会统一恢复轮询。
+    QMetaObject::invokeMethod(m_commWorker, "pausePeriodicPolling",
+                              Qt::QueuedConnection);
+    m_perfusionController->startPumpEmpty();
 }
 
 void MainWindow::startStartupCalibration()
@@ -2206,9 +3593,7 @@ void MainWindow::startStartupCalibration()
     }
 
     // 测试进行中掉线重连时不要打断测试去做灌注/升温/调光。
-    if (testingActive()
-            || (m_moduleOverview
-                && m_moduleOverview->isChannelOneSimulationRunning())) {
+    if (testingActive()) {
         return;
     }
     m_startupCalibrationAttempted = true;
@@ -2234,6 +3619,7 @@ void MainWindow::startStartupCalibration()
 void MainWindow::beginStartupPerfusion()
 {
     m_startupState = StartupCalibrationState::Perfusion;
+    updateConsumablesOperationState();
     setStartupMaskStatus(
                 tr("开机灌注中"),
                 tr("正在复位三根 Z 轴，随后灌注样本泵和试剂泵；"
@@ -2243,6 +3629,25 @@ void MainWindow::beginStartupPerfusion()
     if (!m_perfusionController) {
         abortStartupCalibration(tr("灌注控制器未初始化"), true);
         return;
+    }
+    // 基础设置里的泵清洗时间（老软件 Config.ini 的 WashesTime）在每次灌注
+    // 启动时读取，修改后下次开机灌注生效。
+    m_perfusionController->setCleaningTimeMs(
+                perfusionCleaningTimeMsFromSettings());
+
+    // 与老软件一致：开机灌注（老软件 boot clean）完成前不启动主板/模组
+    // 周期采集。灌注期间总线上只保留 0x17 运动命令，避免 0x16 轮询
+    // 读命令与主板 XY/泵动作抢处理，导致复位完成应答丢失。
+    // 该调用与灌注首帧同走通讯线程队列，入队顺序保证先暂停再发首帧。
+    qInfo() << "开机灌注开始（灌注完成前不启动主板/模组周期轮询）";
+    if (m_commWorker) {
+        QMetaObject::invokeMethod(m_commWorker, "pausePeriodicPolling",
+                                  Qt::QueuedConnection);
+    }
+    // 老软件灌注动作的命令号从 0 开始（00、01、02、03…），
+    // 这里也从头开始，避免第一条主板 0x17 动作使用 04 被固件忽略。
+    if (m_motionController) {
+        m_motionController->protocol().resetCommandNumber(0);
     }
     m_perfusionController->start();
 }
@@ -2256,20 +3661,43 @@ void MainWindow::beginStartupHeating()
     m_startupState = StartupCalibrationState::Heating;
     setStartupMaskStatus(
                 tr("模组升温中"),
-                tr("正在将所有模组升温至 37℃，达到后开始调光。"),
+                tr("正在将各模组升温至设定温度，达到后开始调光。"),
                 false, 0);
+
+    // 灌注期间模组 AD 轮询是暂停的，先作废旧温度值，
+    // 等恢复轮询后的新样本再判断是否到设定目标温度。
+    for (int moduleIndex = 0; moduleIndex < 3; ++moduleIndex) {
+        m_latestTemperatureValid[moduleIndex] = false;
+    }
 
     const int moduleCount = machineModuleCount(m_machineModel);
     for (int moduleNumber = 1; moduleNumber <= moduleCount; ++moduleNumber) {
         platelet::DetectionModule &module =
                 m_moduleProtocols[moduleNumber - 1];
-        module.setTargetTemperature(kModuleTargetTemperatureCelsius);
+        const double target =
+                moduleTargetTemperatureFromSettings(moduleNumber);
+        module.setTargetTemperature(target);
         sendModuleFrame(moduleNumber,
-                        module.setTemperature(kModuleTargetTemperatureCelsius),
-                        tr("设置模组%1目标温度 37℃").arg(moduleNumber));
+                        module.setTemperature(target),
+                        tr("设置模组%1目标温度 %2℃")
+                        .arg(moduleNumber)
+                        .arg(target, 0, 'f', 2));
     }
 
+    // 升温超时时间从基础设置读取（默认 60 秒），并显示倒计时
+    m_heatingTimeoutMs =
+            qMax(1, moduleHeatingTimeoutSecondsFromSettings()) * 1000;
     m_startupHeatingClock.start();
+    if (m_startupMaskCountdown) {
+        const int totalSeconds = m_heatingTimeoutMs / 1000;
+        m_startupMaskCountdown->setText(
+                    tr("剩余 %1:%2")
+                    .arg(totalSeconds / 60, 2, 10, QLatin1Char('0'))
+                    .arg(totalSeconds % 60, 2, 10, QLatin1Char('0')));
+        m_startupMaskCountdown->show();
+        m_startupMaskCountdown->raise();
+    }
+
     if (!m_startupCheckTimer) {
         m_startupCheckTimer = new QTimer(this);
         m_startupCheckTimer->setInterval(500);
@@ -2292,18 +3720,34 @@ void MainWindow::handleStartupTick()
         if (m_startupCheckTimer) {
             m_startupCheckTimer->stop();
         }
+        if (m_startupMaskCountdown) {
+            m_startupMaskCountdown->hide();
+        }
         beginStartupDimming();
         return;
     }
 
-    if (m_startupHeatingClock.elapsed() >= kHeatingTimeoutMs) {
+    const qint64 elapsedMs = m_startupHeatingClock.elapsed();
+    if (m_startupMaskCountdown) {
+        const int remainingSeconds = qMax(
+                    0, m_heatingTimeoutMs - static_cast<int>(elapsedMs)) / 1000;
+        m_startupMaskCountdown->setText(
+                    tr("剩余 %1:%2")
+                    .arg(remainingSeconds / 60, 2, 10, QLatin1Char('0'))
+                    .arg(remainingSeconds % 60, 2, 10, QLatin1Char('0')));
+    }
+
+    if (elapsedMs >= m_heatingTimeoutMs) {
         if (m_startupCheckTimer) {
             m_startupCheckTimer->stop();
         }
+        if (m_startupMaskCountdown) {
+            m_startupMaskCountdown->hide();
+        }
         abortStartupCalibration(
-                    tr("模组升温超时，%1 分钟内未达到 37℃，"
+                    tr("模组升温超时，%1 秒内未达到 37℃，"
                        "已停止启动校准。")
-                    .arg(kHeatingTimeoutMs / 60000),
+                    .arg(m_heatingTimeoutMs / 1000),
                     true);
     }
 }
@@ -2317,6 +3761,9 @@ void MainWindow::beginStartupDimming()
     m_startupState = StartupCalibrationState::Dimming;
     m_dimmingCheckWaitCount = 0;
     m_cupRetryCount = 0;
+    if (m_startupMaskCountdown) {
+        m_startupMaskCountdown->hide();
+    }
     setStartupMaskStatus(
                 tr("控温调光中"),
                 tr("正在把各通道 AD 对齐到 3300；偏差超过 ±100 时会提示检查残留试杯。"),
@@ -2453,7 +3900,8 @@ void MainWindow::promptResidualCups(const QStringList &failedChannels)
         return;
     }
 
-    QMessageBox box(this);
+    MedicalMessageBox box(this);
+    box.applyMedicalStyle();
     box.setIcon(QMessageBox::Question);
     box.setWindowTitle(tr("疑似残留试杯"));
     box.setText(tr("以下通道 AD 与 3300 的偏差超过 ±100，可能有遗留试杯："));
@@ -2711,7 +4159,9 @@ void MainWindow::finishLedCurrentTuning()
         if (m_startupState != StartupCalibrationState::Saving) {
             return;
         }
-        m_startupState = StartupCalibrationState::Done;
+        // 校准成功且蒙版已撤掉后回到 Idle，清洗/开始测试才允许执行。
+        m_startupState = StartupCalibrationState::Idle;
+        updateConsumablesOperationState();
         if (m_startupMask) {
             m_startupMask->hide();
         }
@@ -2768,6 +4218,9 @@ void MainWindow::abortStartupCalibration(const QString &reason,
     }
     m_startupProgressDone = nullptr;
     m_ledCurrentReadLocked = false;
+    if (m_startupMaskCountdown) {
+        m_startupMaskCountdown->hide();
+    }
 
     if (m_startupMask) {
         m_startupMask->hide();
@@ -2777,18 +4230,19 @@ void MainWindow::abortStartupCalibration(const QString &reason,
     if (userVisible) {
         m_startupState = StartupCalibrationState::Failed;
         if (!reason.isEmpty()) {
-            QMessageBox::warning(this, tr("启动校准未完成"), reason);
+            MedicalMessageBox::warning(this, tr("启动校准未完成"), reason);
         }
     } else {
-        // 断线：允许重新连接后重新开始整套流程。
+        // 断线：本次运行已经尝试过启动校准，重连后不再重复
+        // 灌注/升温/调光；程序重启后才会按第一次连接重新执行。
         m_startupState = StartupCalibrationState::Idle;
-        m_startupCalibrationAttempted = false;
     }
 
     // 状态已不是 Cleaning，cancel() 触发的 finished 不会再次进入本函数。
     if (m_perfusionController && m_perfusionController->isBusy()) {
         m_perfusionController->cancel();
     }
+    updateConsumablesOperationState();
 }
 
 void MainWindow::startInstrumentConnection()
@@ -2855,11 +4309,6 @@ void MainWindow::setupCommunicationThread()
                     data.moduleNumber,
                     data.temperatureValid ? data.temperatureCelsius : -1.0);
         for (int channel = 1; channel <= 4; ++channel) {
-            // 临时演示通道使用自身的模拟 AD，不被真实轮询覆盖
-            if (data.moduleNumber == 1 && channel == 1
-                    && m_moduleOverview->isChannelOneSimulationRunning()) {
-                continue;
-            }
             const int index = channel - 1;
             const int rawValue = (data.channelsValid
                                   && index < data.channels.size())
@@ -2868,6 +4317,11 @@ void MainWindow::setupCommunicationThread()
             // 0 表示本秒没有有效样本，界面显示 AD --
             m_moduleOverview->setChannelAdValue(data.moduleNumber, channel,
                                                 rawValue > 0 ? rawValue : -1);
+            if (m_testScheduler) {
+                m_testScheduler->handleChannelAd(
+                            data.moduleNumber, channel,
+                            rawValue > 0 ? rawValue : -1);
+            }
         }
     });
 
@@ -2875,6 +4329,17 @@ void MainWindow::setupCommunicationThread()
             this, &MainWindow::updateMainboardStatus);
     connect(m_commWorker, &CommunicationWorker::mainBoardConsumableUpdated,
             this, &MainWindow::updateConsumableAmount);
+    connect(m_commWorker, &CommunicationWorker::cardRechargeResult,
+            this, &MainWindow::handleCardRechargeResult);
+    connect(m_commWorker, &CommunicationWorker::cardRechargeCommandSent,
+            this, [this](bool ok, const QString &error) {
+        if (!ok && m_cardRechargeState == CardRechargeState::Writing) {
+            finishCardRecharge(
+                        false,
+                        tr("充值命令发送失败：%1")
+                        .arg(error.isEmpty() ? tr("未知错误") : error));
+        }
+    });
     connect(m_commWorker, &CommunicationWorker::frameReceived,
             this, &MainWindow::handleStartupLedCurrentFrame);
 
@@ -2912,7 +4377,7 @@ void MainWindow::handleStartupTimeout()
     setConnectionStatus(tr("● 串口连接异常，正在重试…"), "offline",
                         tr("启动后 30 秒内未检测到仪器，通讯线程仍会自动重连。"));
 
-    QMessageBox::warning(this, tr("串口连接异常"),
+    MedicalMessageBox::warning(this, tr("串口连接异常"),
                          tr("启动后 30 秒内未检测到仪器（VID 0x0483 / PID 0x5740）。\n\n"
                             "请检查仪器电源、USB 数据线和驱动。\n"
                             "程序会继续自动重连；如果 30 秒后才连接上，"
@@ -2926,6 +4391,8 @@ void MainWindow::updateSerialStatus(bool connected, const QString &portName,
         return;
     }
     m_serialConnected = connected;
+    resetCardRechargeState();
+    updateConsumablesOperationState();
 
     if (!connected) {
         abortStartupCalibration(QString(), false);
@@ -2933,6 +4400,14 @@ void MainWindow::updateSerialStatus(bool connected, const QString &portName,
         for (int position = 0;
              position < MainBoardConsumable::kPositionCount; ++position) {
             m_consumableValid[position] = false;
+            m_consumableRemainingValid[position] = false;
+            m_lastSeenConsumableRatio[position] = -1;
+            m_lastWrittenConsumableRatio[position] = -1;
+            m_consumableBottles[position] = 0;
+            m_consumableRatios[position] = 0;
+        }
+        if (m_reagentPanel) {
+            m_reagentPanel->clearLevels();
         }
         if (m_consumablesDialog) {
             m_consumablesDialog->clearConsumableAmounts();
@@ -2982,7 +4457,7 @@ void MainWindow::updateSerialStatus(bool connected, const QString &portName,
                                     tr("启动连接已超时，请关闭软件后重新启动。"));
                 if (!m_lateRestartPromptShown) {
                     m_lateRestartPromptShown = true;
-                    QMessageBox::warning(this, tr("检测到仪器"),
+                    MedicalMessageBox::warning(this, tr("检测到仪器"),
                                          tr("启动后 30 秒内未连接仪器，现在检测到 %1 已连接。\n\n"
                                             "请关闭软件后重新启动，以保证仪器初始化正确。")
                                          .arg(port));
@@ -3003,6 +4478,11 @@ void MainWindow::updateSerialStatus(bool connected, const QString &portName,
                             .arg(baudRate));
         qInfo() << "仪器串口已连接:" << port
                 << "波特率:" << baudRate;
+        if (m_consumablesDialog) {
+            m_consumablesDialog->setRechargeStatus(
+                        tr("已连接，等待刷卡…"), true);
+        }
+        updateConsumablesOperationState();
         maybeStartStartupCalibration();
         return;
     }
@@ -3014,6 +4494,11 @@ void MainWindow::updateSerialStatus(bool connected, const QString &portName,
         setConnectionStatus(tr("● 仪器未连接，正在重连…"), "offline",
                             tr("仪器串口已断开，正在自动重连。"));
     }
+    if (m_consumablesDialog) {
+        m_consumablesDialog->setRechargeStatus(
+                    tr("串口未连接，等待重连…"), false);
+    }
+    updateConsumablesOperationState();
     qWarning() << "仪器串口未连接，等待自动重连";
 }
 
@@ -3101,11 +4586,34 @@ void MainWindow::updateConsumableAmount(int position, int bottles, int ratio)
         return;
     }
 
+    const int previousBottles = m_consumableBottles[position];
+    const int previousRatio = m_lastSeenConsumableRatio[position];
+    const bool externalRatioChange =
+            previousRatio >= 0
+            && ratio != previousRatio
+            && ratio != m_lastWrittenConsumableRatio[position];
+
     m_consumableBottles[position] = bottles;
     m_consumableRatios[position] = ratio;
     m_consumableValid[position] = bottles >= 0;
+    m_lastSeenConsumableRatio[position] = ratio;
+
+    const double capacity = consumableCapacityUl(position);
+    if (!m_consumableRemainingValid[position]
+            || bottles != previousBottles
+            || externalRatioChange) {
+        m_consumableRemainingUl[position] =
+                mainboardRatioToUl(ratio, capacity);
+        m_consumableRemainingValid[position] = capacity > 0.0;
+    }
+
     if (m_consumablesDialog) {
         m_consumablesDialog->setConsumableAmount(position, bottles, ratio);
+    }
+
+    const int bottle = reagentBottleForConsumablePosition(position);
+    if (bottle >= 0 && m_reagentPanel) {
+        m_reagentPanel->setLevel(bottle, mainboardRatioPercent(ratio));
     }
 }
 
@@ -3117,6 +4625,7 @@ void MainWindow::applyMainboardStatus(const MainBoardStatus &status)
 
     m_latestMainboardStatus = status;
     m_hasMainboardStatus = true;
+    handleCardRechargeStatus(status);
     if (m_consumablesDialog && m_consumablesDialog->isVisible()) {
         m_consumablesDialog->setMainboardStatus(status);
     }

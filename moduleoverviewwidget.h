@@ -12,7 +12,6 @@ class ModuleRackWidget;
 class QHBoxLayout;
 class QLabel;
 class QResizeEvent;
-class QTimer;
 class TestCurveDialog;
 
 /**
@@ -40,6 +39,8 @@ public:
     bool isChannelEnabled(int moduleNumber, int localChannel) const;
     /** 通道运行状态：空闲 / 测试中 / 异常 / 禁用 */
     ChannelRunState channelRunState(int moduleNumber, int localChannel) const;
+    /** 通道最近一次每秒滤波 AD；无效返回 -1 */
+    int channelAdValue(int moduleNumber, int localChannel) const;
 
     /** 全局“开始测试”状态：true 表示有通道正在测试 */
     void setTestingActive(bool active);
@@ -66,7 +67,7 @@ public:
                             const QString &reagentName,
                             int elapsedSeconds,
                             int prpValue);
-    /** 每秒 AD 值；测试状态下会同时追加到该通道的测试曲线 */
+    /** 每秒 AD 值，只更新通道显示；曲线由 TestScheduler 按反应秒数追加 */
     void setChannelAdValue(int moduleNumber, int localChannel, int adValue);
     /** 显式追加测试曲线/集聚曲线数据（x 轴单位为秒） */
     void appendChannelTestPoint(int moduleNumber, int localChannel,
@@ -75,18 +76,7 @@ public:
                                        double seconds, double value);
     void clearChannelCurve(int moduleNumber, int localChannel);
 
-    /** 临时演示：模拟模组1 CH1 正在测试（PRP、AD 每秒刷新、集聚曲线、马达旋转） */
-    void startChannelOneSimulation();
-    void stopChannelOneSimulation();
-    void setChannelOneSimulationPaused(bool paused);
-    bool isChannelOneSimulationRunning() const;
-    bool isChannelOneSimulationPaused() const;
-
     void resetAll();
-
-signals:
-    /** 通道1模拟测试自然结束，或模拟被停止/复位 */
-    void channelOneSimulationFinished();
 
 public slots:
     /** 按数量显示前 count 个模组（1~3） */
@@ -101,7 +91,6 @@ private:
     void updateLayoutSizes();
     void updateGlobalTestState(bool active);
     void openCurveDialog(int moduleNumber, int localChannel);
-    void advanceChannelOneSimulation();
 
     ModuleRackWidget *m_modules[3] = {};
     QLabel *m_titleLabel = nullptr;
@@ -113,11 +102,6 @@ private:
     QHBoxLayout *m_rowLayout = nullptr;
 
     QPointer<TestCurveDialog> m_curveDialog;
-
-    QTimer *m_channelOneDemoTimer = nullptr;
-    int m_channelOneDemoSecond = 0;
-    bool m_channelOneDemoRunning = false;
-    bool m_channelOneDemoPaused = false;
 
     MachineModel m_model = defaultMachineModel();
     int m_activeCount = 3;

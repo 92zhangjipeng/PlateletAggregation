@@ -40,6 +40,30 @@ public slots:
     /** 界面请求发送一帧（queued 调用） */
     void sendFrameRequested(const QByteArray &frame, const QString &description);
 
+    /**
+     * 刷卡充值确认：先暂停主板状态/耗材轮询，再发送确认帧，
+     * 避免 0xFE 读命令冲掉主板 RFID 写卡窗口。
+     */
+    void sendCardRechargeConfirm(const QByteArray &frame, int cardType,
+                                 const QString &description);
+    void resumeMainboardPolling();
+
+    /**
+     * 开机灌注等整段动作期间暂停主板状态/耗材轮询和模组 AD 轮询，
+     * 与老软件一致（老软件在灌注结束前不启动主板/模组采集），
+     * 避免 0x16 读命令与主板的 0x17 运动命令抢处理导致复位应答丢失。
+     */
+    void pausePeriodicPolling();
+    void resumePeriodicPolling();
+
+    /**
+     * 单条 0x17 动作命令交换期间的总线仲裁：true 时暂停发送
+     * 0x16 状态/耗材/模组读命令，收到动作完成应答后立即恢复。
+     * 与 pausePeriodicPolling() 不同，轮询定时器和 AD 滤波状态保持不变，
+     * 适合测试流程中一步一动、步骤间仍要读 AD 的场景。
+     */
+    void setMotionExchangeActive(bool active);
+
     /** 机型协议接入后调用 */
     void setMachineModel(MachineModel model);
 
@@ -62,6 +86,11 @@ signals:
     void mainBoardStatusUpdated(const MainBoardStatus &status);
     /** 主板逐个试剂位读取的耗材剩余总量（试管单位为板，其余为瓶） */
     void mainBoardConsumableUpdated(int position, int bottles, int ratio);
+    /** 刷卡充值确认命令的发送结果 */
+    void cardRechargeCommandSent(bool ok, const QString &error);
+    /** 刷卡充值写入回执：5=成功，6=失败 */
+    void cardRechargeResult(int mfcStatus, int cardType, int cardQty,
+                            int year, int month);
 
 private slots:
     void attemptConnect();

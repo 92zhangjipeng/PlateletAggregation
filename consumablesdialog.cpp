@@ -10,6 +10,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QProgressBar>
+#include <QPushButton>
 #include <QScrollArea>
 #include <QStringList>
 #include <QStyle>
@@ -39,12 +40,12 @@ QString regTypeText(quint8 type)
     switch (type) {
     case 0: return QStringLiteral("AA");
     case 1: return QStringLiteral("EPI");
-    case 2: return QStringLiteral("ADR");
+    case 2: return QStringLiteral("ADP");
     case 3: return QStringLiteral("COL");
     case 4: return QStringLiteral("RIS");
-    case 5: return QObject::tr("内部清洗剂");
-    case 6: return QObject::tr("试管/外部清洗液");
-    case 7: return QObject::tr("无");
+    case 5: return QObject::tr("内部清洗剂 S1");
+    case 6: return QObject::tr("试管");
+    case 7: return QObject::tr("外部清洗液 S2");
     default: return QObject::tr("未知(%1)").arg(type);
     }
 }
@@ -54,14 +55,14 @@ QString consTypeText(quint8 type)
     switch (type) {
     case 0: return QStringLiteral("AA");
     case 1: return QStringLiteral("EPI");
-    case 2: return QStringLiteral("ADR");
+    case 2: return QStringLiteral("ADP");
     case 3: return QStringLiteral("COL");
     case 4: return QStringLiteral("RIS");
     case 5: return QObject::tr("内部清洗剂");
     case 6: return QObject::tr("试管");
     case 7: return QStringLiteral("AA1");
     case 8: return QStringLiteral("EPI1");
-    case 9: return QStringLiteral("ADR1");
+    case 9: return QStringLiteral("ADP1");
     case 10: return QStringLiteral("COL1");
     case 11: return QStringLiteral("RIS1");
     case 12: return QObject::tr("无");
@@ -206,6 +207,24 @@ ConsumablesDialog::ConsumablesDialog(QWidget *parent)
         "}"
         "QLabel#detailValue[state=\"warning\"] { color: #B7791F; }"
         "QLabel#detailValue[state=\"error\"] { color: #C0392B; }"
+        "QLabel#detailValue[state=\"ok\"] { color: #1E7B45; }"
+        "QPushButton#replaceButton {"
+        "  background: #FFFFFF;"
+        "  color: #1F4E79;"
+        "  border: 1px solid #8FB4D6;"
+        "  border-radius: 5px;"
+        "  padding: 0px 10px;"
+        "  min-height: 25px;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "}"
+        "QPushButton#replaceButton:hover { background: #E8F1FA; }"
+        "QPushButton#replaceButton:pressed { background: #D3E6F5; }"
+        "QPushButton#replaceButton:disabled {"
+        "  background: #F5F8FA;"
+        "  color: #A8B4BE;"
+        "  border-color: #DCE7F1;"
+        "}"
         "QFrame#noteCard {"
         "  background: #FFF9EC;"
         "  border: 1px solid #F0DFB6;"
@@ -302,8 +321,11 @@ QWidget *ConsumablesDialog::createContent()
     auto *noteText = new QLabel(
                 tr("状态信息来自主板状态帧（地址 0x05 / 功能码 0x16 / 命令 0xFE），"
                    "每秒自动刷新；各试剂剩余总量由主板逐个读取命令（100~112）获得，"
-                   "试剂/清洗液单位为瓶，试管单位为板。当前版本只读展示；更换耗材、"
-                   "写卡/充值等操作需接入对应主板命令后再开放。"),
+                   "试剂/清洗液单位为瓶，试管单位为板。\n"
+                   "更换 AA~RIS 左/右试剂瓶：测试机械臂运动或未联机时禁止；"
+                   "连续两次确认后从总瓶数扣 1 瓶，并把该侧单瓶补满 512。\n"
+                   "刷卡充值：读到卡后软件自动暂停主板轮询并立即写入，"
+                   "写入结果见「充值状态」；写入期间请勿移开卡片。"),
                 noteCard);
     noteText->setObjectName(QStringLiteral("noteText"));
     noteText->setWordWrap(true);
@@ -406,7 +428,8 @@ QWidget *ConsumablesDialog::createAmountCard(QWidget *parent)
 
     const QStringList headers = {
         tr("试剂 / 耗材"), tr("剩余总量"),
-        tr("单瓶余量（左）"), tr("单瓶余量（右）")
+        tr("单瓶余量（左）"), tr("单瓶余量（右）"),
+        tr("左瓶操作"), tr("右瓶操作")
     };
     for (int column = 0; column < headers.size(); ++column) {
         auto *header = new QLabel(headers.at(column), card);
@@ -415,7 +438,9 @@ QWidget *ConsumablesDialog::createAmountCard(QWidget *parent)
     }
 
     const auto addRow = [this, card, grid](int row, const QString &name,
-                                           AmountRow amountRow) {
+                                           AmountRow amountRow,
+                                           int leftPosition,
+                                           int rightPosition) {
         auto *nameLabel = new QLabel(name, card);
         nameLabel->setObjectName(QStringLiteral("detailValue"));
         grid->addWidget(nameLabel, row, 0);
@@ -426,16 +451,50 @@ QWidget *ConsumablesDialog::createAmountCard(QWidget *parent)
         grid->addWidget(m_amountValues[amountRow], row, 1);
         grid->addWidget(m_amountLeftValues[amountRow], row, 2);
         grid->addWidget(m_amountRightValues[amountRow], row, 3);
+
+        const auto addReplaceButton = [this, card, grid, row](
+                int position, int column) {
+            auto *button = new QPushButton(tr("更换"), card);
+            button->setObjectName(QStringLiteral("replaceButton"));
+            button->setCursor(Qt::PointingHandCursor);
+            button->setMinimumWidth(62);
+            button->setFixedHeight(26);
+            button->setEnabled(m_replaceAllowed);
+            button->setToolTip(
+                        m_replaceAllowed
+                        ? tr("更换 %1：扣除 1 瓶总库存并把该侧补满")
+                          .arg(MainBoardConsumable::positionDisplayName(position))
+                        : (m_replaceDisabledReason.isEmpty()
+                           ? tr("当前不可更换") : m_replaceDisabledReason));
+            m_replaceButtons[position] = button;
+            connect(button, &QPushButton::clicked, this,
+                    [this, position]() {
+                emit reagentReplaceRequested(position);
+            });
+            grid->addWidget(button, row, column);
+        };
+
+        if (leftPosition >= 0) {
+            addReplaceButton(leftPosition, 4);
+        }
+        if (rightPosition >= 0) {
+            addReplaceButton(rightPosition, 5);
+        }
     };
 
-    addRow(1, tr("AA 试剂"), AmountAA);
-    addRow(2, tr("EPI 试剂"), AmountEPI);
-    addRow(3, tr("ADP 试剂"), AmountADP);
-    addRow(4, tr("COL 试剂"), AmountCOL);
-    addRow(5, tr("RIS 试剂"), AmountRIS);
-    addRow(6, tr("内部清洗剂 S1"), AmountInternalClean);
-    addRow(7, tr("试管"), AmountTestTube);
-    addRow(8, tr("外部清洗液 S2"), AmountExternalClean);
+    addRow(1, tr("AA 试剂"), AmountAA,
+           MainBoardConsumable::AA, MainBoardConsumable::AA_Second);
+    addRow(2, tr("EPI 试剂"), AmountEPI,
+           MainBoardConsumable::EPI, MainBoardConsumable::EPI_Second);
+    addRow(3, tr("ADP 试剂"), AmountADP,
+           MainBoardConsumable::ADP, MainBoardConsumable::ADP_Second);
+    addRow(4, tr("COL 试剂"), AmountCOL,
+           MainBoardConsumable::COL, MainBoardConsumable::COL_Second);
+    addRow(5, tr("RIS 试剂"), AmountRIS,
+           MainBoardConsumable::RIS, MainBoardConsumable::RIS_Second);
+    addRow(6, tr("内部清洗剂 S1"), AmountInternalClean, -1, -1);
+    addRow(7, tr("试管"), AmountTestTube, -1, -1);
+    addRow(8, tr("外部清洗液 S2"), AmountExternalClean, -1, -1);
 
     grid->setColumnStretch(1, 1);
     grid->setColumnStretch(2, 1);
@@ -479,6 +538,8 @@ QWidget *ConsumablesDialog::createDetailCard(QWidget *parent)
     m_detailConsumable = makeDetailValue(card);
     m_detailExpiry = makeDetailValue(card);
     m_detailUpdated = makeDetailValue(card);
+    m_detailRecharge = makeDetailValue(card);
+    m_detailRecharge->setText(tr("等待刷卡…"));
 
     addDetailPair(grid, 0, 0, tr("读卡器 MFC"), m_detailMfc, card);
     addDetailPair(grid, 0, 2, tr("刷卡类型"), m_detailRegType, card);
@@ -488,6 +549,7 @@ QWidget *ConsumablesDialog::createDetailCard(QWidget *parent)
     addDetailPair(grid, 2, 2, tr("耗材余量"), m_detailConsumable, card);
     addDetailPair(grid, 3, 0, tr("试剂有效期"), m_detailExpiry, card);
     addDetailPair(grid, 3, 2, tr("最近更新"), m_detailUpdated, card);
+    addDetailPair(grid, 4, 0, tr("充值状态"), m_detailRecharge, card);
 
     grid->setColumnStretch(1, 1);
     grid->setColumnStretch(3, 1);
@@ -711,6 +773,37 @@ void ConsumablesDialog::updateConsumableAmountLabels()
             ConsumablesDialog::tr("当前瓶剩余百分比"));
     setText(m_amountRightValues[AmountExternalClean],
             QStringLiteral("--"), QString());
+}
+
+void ConsumablesDialog::setReplaceAllowed(bool allowed, const QString &reason)
+{
+    m_replaceAllowed = allowed;
+    m_replaceDisabledReason = reason;
+    for (int position = 0; position < MainBoardConsumable::kPositionCount;
+         ++position) {
+        QPushButton *button = m_replaceButtons[position];
+        if (!button) {
+            continue;
+        }
+        button->setEnabled(allowed);
+        button->setToolTip(
+                    allowed
+                    ? tr("更换 %1：扣除 1 瓶总库存并把该侧补满")
+                      .arg(MainBoardConsumable::positionDisplayName(position))
+                    : (reason.isEmpty() ? tr("当前不可更换") : reason));
+    }
+}
+
+void ConsumablesDialog::setRechargeStatus(const QString &text, bool ok)
+{
+    if (!m_detailRecharge) {
+        return;
+    }
+    m_detailRecharge->setText(text);
+    m_detailRecharge->setProperty("state", ok ? "ok" : "error");
+    m_detailRecharge->style()->unpolish(m_detailRecharge);
+    m_detailRecharge->style()->polish(m_detailRecharge);
+    m_detailRecharge->update();
 }
 
 void ConsumablesDialog::clearStatus(const QString &reason)

@@ -4,6 +4,7 @@
 
 #include "modulecontrolwidget.h"
 #include "CommunicationWorker.h"
+#include "appconfig.h"
 
 #include <QMetaObject>
 #include <QGridLayout>
@@ -94,7 +95,10 @@ QGroupBox *ModulePanel::createTemperatureGroup()
     m_targetTempSpin->setDecimals(2);
     m_targetTempSpin->setSingleStep(0.5);
     m_targetTempSpin->setSuffix(QStringLiteral(" ℃"));
-    m_targetTempSpin->setValue(m_module.targetTemperature());
+    // 默认 35℃，可在本页按模组设置；开机升温使用该值判断是否到位。
+    m_targetTempSpin->setValue(
+                moduleTargetTemperatureFromSettings(m_moduleNumber));
+    m_module.setTargetTemperature(m_targetTempSpin->value());
 
     auto *applyButton = makeButton(tr("应用温度"), "primaryButton", group);
     auto *saveButton = makeButton(tr("保存参数"), "secondaryButton", group);
@@ -110,8 +114,11 @@ QGroupBox *ModulePanel::createTemperatureGroup()
     grid->setColumnStretch(1, 1);
 
     connect(applyButton, &QPushButton::clicked, this, [this]() {
-        sendCommand(m_module.setTemperature(m_targetTempSpin->value()),
-                    tr("应用目标温度 %1 ℃").arg(m_targetTempSpin->value(), 0, 'f', 2));
+        const double target = m_targetTempSpin->value();
+        setModuleTargetTemperatureInSettings(m_moduleNumber, target);
+        sendCommand(m_module.setTemperature(target),
+                    tr("应用目标温度 %1 ℃")
+                    .arg(target, 0, 'f', 2));
     });
     connect(saveButton, &QPushButton::clicked, this, [this]() {
         sendCommand(m_module.saveParameters(), tr("保存模组参数"));
@@ -128,7 +135,7 @@ QGroupBox *ModulePanel::createDimmingGroup()
     grid->setHorizontalSpacing(10);
     grid->setVerticalSpacing(10);
 
-    auto *caption = new QLabel(tr("4 路统一调光 (2000~3300)"), group);
+    auto *caption = new QLabel(tr("4 路统一调光 (0~4095)"), group);
 
     m_dimmingSpin = new MedicalSpinBox(group);
     m_dimmingSpin->setRange(DetectionModule::DimmingMin, DetectionModule::DimmingMax);

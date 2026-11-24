@@ -9,6 +9,7 @@
 
 class QLabel;
 class QProgressBar;
+class QPushButton;
 
 /**
  * 耗材管理：集中显示主板每秒上报的耗材信息。
@@ -29,6 +30,14 @@ public slots:
     /** 主板逐个读取的某个位置剩余总量；试管单位为板，其余为瓶 */
     void setConsumableAmount(int position, int bottles, int ratio);
     void clearConsumableAmounts();
+    /** 测试机械臂运动/未联机时禁用更换按钮并显示原因 */
+    void setReplaceAllowed(bool allowed, const QString &reason = QString());
+    /** 更新「充值状态」显示（成功/进行中为绿色，失败为红色） */
+    void setRechargeStatus(const QString &text, bool ok);
+
+signals:
+    /** 请求更换某个试剂位（0~4 左，8~12 右） */
+    void reagentReplaceRequested(int position);
 
 private:
     enum AmountRow {
@@ -78,6 +87,12 @@ private:
     QLabel *m_detailConsumable = nullptr;
     QLabel *m_detailExpiry = nullptr;
     QLabel *m_detailUpdated = nullptr;
+    QLabel *m_detailRecharge = nullptr;
+
+    QPushButton *m_replaceButtons[MainBoardConsumable::kPositionCount] = {};
+    bool m_replaceAllowed = false;
+    QString m_replaceDisabledReason;
+    QString m_replaceEnabledTip;
 };
 
 #endif // CONSUMABLESDIALOG_H

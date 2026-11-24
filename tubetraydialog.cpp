@@ -18,6 +18,7 @@
 #include <QLinearGradient>
 #include <QMenu>
 #include <QMessageBox>
+#include "MedicalMessageBox.h"
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -980,7 +981,7 @@ void TubeTrayDialog::handleTubeClicked(int tubeIndex,
             return;
         }
         if (sampleNumber.isEmpty()) {
-            QMessageBox::warning(this, tr("分配试管"),
+            MedicalMessageBox::warning(this, tr("分配试管"),
                                  tr("样本号不能为空。"));
             return;
         }
@@ -994,7 +995,7 @@ void TubeTrayDialog::handleTubeClicked(int tubeIndex,
     }
 
     if (!ok && !error.isEmpty()) {
-        QMessageBox::warning(this, tr("试管状态维护"), error);
+        MedicalMessageBox::warning(this, tr("试管状态维护"), error);
     }
 }
 

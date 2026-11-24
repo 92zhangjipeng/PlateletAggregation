@@ -55,6 +55,8 @@ void MotionController::setCommunicationWorker(CommunicationWorker *worker)
         }
 
         qInfo() << "运动报告: 从机" << parsed.slaveAddress
+                << "类型" << (parsed.type == MotionProtocol::FrameType::Report
+                              ? "报告" : "命令位回帧")
                 << "轴" << MotionProtocol::axisName(parsed.axis)
                 << "状态" << MotionProtocol::statusText(parsed.status)
                 << "故障" << parsed.faultDescription()

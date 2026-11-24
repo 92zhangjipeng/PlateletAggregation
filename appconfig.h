@@ -52,6 +52,92 @@ inline void setPlasmaPrpAspirateHeightInSettings(int heightMm)
                 qBound(20, heightMm, 99));
 }
 
+/**
+ * 开机灌注时柱塞泵吐回清洗池的冲洗时间（ms），对应老软件 Config.ini 的
+ * WashesTime。默认 6000ms，设置范围 500~65535ms。
+ */
+inline const char *perfusionCleaningTimeSettingsKey()
+{
+    return "basic/perfusionCleaningTimeMs";
+}
+
+inline int perfusionCleaningTimeMsFromSettings()
+{
+    QSettings settings;
+    const int value = settings.value(
+                QString::fromLatin1(perfusionCleaningTimeSettingsKey()),
+                6000).toInt();
+    return qBound(500, value, 65535);
+}
+
+inline void setPerfusionCleaningTimeMsInSettings(int ms)
+{
+    QSettings settings;
+    settings.setValue(
+                QString::fromLatin1(perfusionCleaningTimeSettingsKey()),
+                qBound(500, ms, 65535));
+}
+
+/**
+ * 各模组的目标温度（℃），默认 35℃。可在维护设置 → 模组控制页
+ * 每个模组单独设置；开机升温按该目标判断是否到位。
+ */
+inline const char *moduleTargetTemperatureSettingsKey(int moduleNumber)
+{
+    static const char *keys[] = {
+        "module/targetTemperature1",
+        "module/targetTemperature2",
+        "module/targetTemperature3"
+    };
+    return keys[qBound(1, moduleNumber, 3) - 1];
+}
+
+inline double moduleTargetTemperatureFromSettings(int moduleNumber)
+{
+    QSettings settings;
+    const double value = settings.value(
+                QString::fromLatin1(
+                    moduleTargetTemperatureSettingsKey(moduleNumber)),
+                35.0).toDouble();
+    return qBound(0.0, value, 100.0);
+}
+
+inline void setModuleTargetTemperatureInSettings(int moduleNumber,
+                                                 double celsius)
+{
+    QSettings settings;
+    settings.setValue(
+                QString::fromLatin1(
+                    moduleTargetTemperatureSettingsKey(moduleNumber)),
+                qBound(0.0, celsius, 100.0));
+}
+
+/**
+ * 开机模组升温超时（秒）。默认 60 秒（1 分钟），设置范围 10~3600 秒。
+ * 超时后启动校准中止；升温提示框右下角显示剩余时间倒计时。
+ */
+inline const char *moduleHeatingTimeoutSecondsSettingsKey()
+{
+    return "basic/moduleHeatingTimeoutSeconds";
+}
+
+inline int moduleHeatingTimeoutSecondsFromSettings()
+{
+    QSettings settings;
+    const int value = settings.value(
+                QString::fromLatin1(moduleHeatingTimeoutSecondsSettingsKey()),
+                60).toInt();
+    return qBound(10, value, 3600);
+}
+
+inline void setModuleHeatingTimeoutSecondsInSettings(int seconds)
+{
+    QSettings settings;
+    settings.setValue(
+                QString::fromLatin1(moduleHeatingTimeoutSecondsSettingsKey()),
+                qBound(10, seconds, 3600));
+}
+
 /** 基础参数中“加样扫码”的 QSettings key：开启后每添加一个样本必须扫码 */
 inline const char *addSampleScanBarcodeSettingsKey()
 {

@@ -46,7 +46,7 @@ ReagentBottlePanel::ReagentBottlePanel(QWidget *parent)
         { tr("RIS右"), QColor("#22C55E"), false }
     };
 
-    resetDemoLevels();
+    clearLevels();
 }
 
 int ReagentBottlePanel::bottleCount() const
@@ -84,27 +84,20 @@ void ReagentBottlePanel::setLevels(const QVector<double> &levels)
     update();
 }
 
-void ReagentBottlePanel::resetDemoLevels()
+void ReagentBottlePanel::clearLevels()
 {
-    m_levels = {
-        100.0,  // S1清洗液
-        85.0, 82.0,   // AA左 / AA右
-        74.0, 68.0,   // ADP左 / ADP右
-        61.0, 57.0,   // COL左 / COL右
-        52.0, 47.0,   // EPI左 / EPI右
-        41.0, 36.0    // RIS左 / RIS右
-    };
+    m_levels.fill(0.0, m_specs.size());
     update();
 }
 
 QSize ReagentBottlePanel::sizeHint() const
 {
-    return QSize(1100, 160);
+    return QSize(230, 620);
 }
 
 QSize ReagentBottlePanel::minimumSizeHint() const
 {
-    return QSize(720, 146);
+    return QSize(200, 480);
 }
 
 void ReagentBottlePanel::paintEvent(QPaintEvent *event)
@@ -141,34 +134,49 @@ void ReagentBottlePanel::paintEvent(QPaintEvent *event)
     titleFont.setBold(true);
     p.setFont(titleFont);
     p.setPen(QColor("#1F4E79"));
-    p.drawText(QRectF(card.left() + 16.0, card.top() + 8.0,
-                      card.width() - 32.0, 20.0),
+    p.drawText(QRectF(card.left() + 10.0, card.top() + 8.0,
+                      card.width() - 20.0, 20.0),
                Qt::AlignLeft | Qt::AlignVCenter, tr("试剂余量"));
 
     QFont hintFont(QStringLiteral("Microsoft YaHei"));
     hintFont.setPixelSize(9);
     p.setFont(hintFont);
     p.setPen(QColor("#8AA0B2"));
-    p.drawText(QRectF(card.left() + 110.0, card.top() + 8.0,
-                      card.width() - 126.0, 20.0),
+    p.drawText(QRectF(card.left() + 10.0, card.top() + 8.0,
+                      card.width() - 20.0, 20.0),
                Qt::AlignRight | Qt::AlignVCenter,
-               tr("S1 · AA · ADP · COL · EPI · RIS    液位 0~100%"));
+               tr("液位 0~100%"));
 
     p.setPen(QPen(QColor(213, 230, 241, 190), 1.0));
-    p.drawLine(QPointF(card.left() + 16.0, card.top() + 31.0),
-               QPointF(card.right() - 16.0, card.top() + 31.0));
+    p.drawLine(QPointF(card.left() + 10.0, card.top() + 31.0),
+               QPointF(card.right() - 10.0, card.top() + 31.0));
 
-    // 11 个瓶位
+    // 竖排布局：第1行 S1清洗液 居中；之后每行成对的试剂瓶
+    // （AA左/右、ADP左/右、COL左/右、EPI左/右、RIS左/右）
     const qreal sideMargin = 10.0;
     const QRectF slotArea(card.left() + sideMargin, card.top() + 35.0,
                           card.width() - sideMargin * 2.0,
                           card.height() - 39.0);
-    const qreal slotWidth = slotArea.width() / qMax(1, m_specs.size());
+    const int rowCount = 1 + m_specs.size() / 2;   // 1 行 S1 + 5 行成对瓶
+    const qreal rowHeight = slotArea.height() / rowCount;
 
-    for (int i = 0; i < m_specs.size(); ++i) {
-        const QRectF slot(slotArea.left() + slotWidth * i, slotArea.top(),
-                          slotWidth, slotArea.height());
-        paintBottle(p, slot, i);
+    // 第 1 行：S1 清洗液居中
+    const QRectF s1Slot(slotArea.left(), slotArea.top(),
+                        slotArea.width(), rowHeight);
+    paintBottle(p, s1Slot, 0);
+
+    for (int row = 0; row < 5; ++row) {
+        const qreal rowTop = slotArea.top() + rowHeight * (row + 1);
+        for (int half = 0; half < 2; ++half) {
+            const int bottleIndex = 1 + row * 2 + half;
+            if (bottleIndex >= m_specs.size()) {
+                break;
+            }
+            const QRectF slot(slotArea.left() + slotArea.width() / 2.0 * half,
+                              rowTop,
+                              slotArea.width() / 2.0, rowHeight);
+            paintBottle(p, slot, bottleIndex);
+        }
     }
 }
 

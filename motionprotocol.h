@@ -30,7 +30,7 @@ namespace platelet {
  * 电机轴（axis 字段，十进制）：
  *   0 = Z1 抓手（X 电机）
  *   1 = Z2 试剂针（Y 电机）
- *   2 = Z3 样本针；命令发到主控板时同一轴号表示 1000ul 血样泵
+ *   2 = Z3 样本针；命令发到主控板时同一轴号表示 2500ul 血样泵
  *   3 = 100ul 试剂泵
  *   4 = XY 联动
  *
@@ -56,7 +56,7 @@ public:
         Gripper = 0,        // Z1：抓手
         ReagentNeedle = 1,  // Z2：试剂针
         SampleNeedle = 2,   // Z3：样本针
-        BloodPump = 2,      // 1000ul 血样泵（主控板，与样本针共用轴号）
+        BloodPump = 2,      // 2500ul 血样泵（主控板，与样本针共用轴号）
         ReagentPump = 3,    // 100ul 试剂泵
         Xy = 4              // XY 联动
     };
@@ -98,7 +98,7 @@ public:
     enum Limits : int {
         FrameSize = 15,
         FuncCode = 0x17,
-        PumpFullScale = 7200,
+        PumpFullScale = 7200,   // 柱塞泵满行程：样本泵 2500 µL / 试剂泵 100 µL
         DefaultXyResetSpeed = 720,
         DefaultZResetSpeed = 100,
         DefaultPumpResetSpeed = 2160
@@ -124,13 +124,18 @@ public:
         bool isReport() const;
         bool isError() const;
         QString faultDescription() const;
+
+        /** 抓手报告帧 distance2 中的负压原始值；非抓手报告返回 0 */
+        quint32 gripperVacuum() const;
+        /** 抓手报告帧 axisByte bit4：1=吸/抓杯，0=吐/松杯 */
+        bool gripperSuctionBit() const;
     };
 
     MotionProtocol();
 
     quint8 lastCommandNumber() const;
     /** 重置命令编号；0 视为 1 */
-    void resetCommandNumber(quint8 next = 1);
+    void resetCommandNumber(quint8 next = 0);
 
     /** 命令缓存容量字段，默认 0（与旧上位机一致） */
     void setCmdSize(quint8 cmdSize);
@@ -146,10 +151,22 @@ public:
                       XyReference reference = XyReference::BloodNeedle,
                       Area area = Area::Test);
 
-    /** 抓手下降到 height（位置模式），可选抓杯/液面探测 */
+    /**
+     * 抓手下降到 height（位置模式）。
+     * grabCup 对应 Z 轴字节 gripper_status（bit4），也就是抓手空气阀开关：
+     * true=开阀抓杯，false=关阀弃杯/松杯。只控制抓手时有效。
+     */
     QByteArray moveGripperTo(int height, Area area = Area::Test,
                              bool grabCup = false,
                              bool liquidLevel = false);
+    /**
+     * 抓手正速度（速度模式）下压吸杯：以 speed 匀速下降，
+     * limitHeight 为行程上限（用试管位 z 值），到位后返回完成报告，
+     * 报告帧 distance2 携带负压值。
+     */
+    QByteArray moveGripperDownSpeed(int speed, int limitHeight,
+                                    Area area = Area::Test,
+                                    bool grabCup = true);
     /** 试剂针下降到 height；liquidLevel=true 时 height 为探测失败后的下探高度 */
     QByteArray moveReagentNeedleTo(int height, Area area = Area::Test,
                                    bool liquidLevel = false);
@@ -159,16 +176,20 @@ public:
 
     /** XY 负速度复位，speed 默认 720 */
     QByteArray resetXy(int speed = DefaultXyResetSpeed);
-    /** 三个 Z 轴负速度复位，speed 默认 100 */
+    /**
+     * 三个 Z 轴负速度复位，speed 默认 100。
+     * 抓手复位可带 grabCup=true，保持空气阀开启把杯子带到顶部再横移。
+     */
     QByteArray resetGripper(int speed = DefaultZResetSpeed,
-                            Area area = Area::Test);
+                            Area area = Area::Test,
+                            bool grabCup = false);
     QByteArray resetReagentNeedle(int speed = DefaultZResetSpeed,
                                   Area area = Area::Test);
     QByteArray resetSampleNeedle(int speed = DefaultZResetSpeed,
                                  Area area = Area::Test);
 
     /**
-     * 血样泵（1000ul）/试剂泵（100ul）位置模式移动。
+     * 血样泵（2500ul）/试剂泵（100ul）位置模式移动。
      * units 为 0~7200 的行程单位；aspirate=true 表示吸样等待标志；
      * clean=true 会同时打开隔膜泵和开关阀，cleaningTimeMs 写入 distance2
      * （协议规定为清洗时间，常用 6000ms）。
@@ -201,7 +222,10 @@ private:
                             qint32 distance1, qint32 distance2);
     QByteArray buildZMove(Axis axis, qint32 height, Area area,
                           bool grabCup, bool liquidLevel);
-    QByteArray buildZReset(Axis axis, int speed, Area area);
+    QByteArray buildZSpeedMove(Axis axis, int speed, int limitHeight,
+                               Area area, bool grabCup);
+    QByteArray buildZReset(Axis axis, int speed, Area area,
+                           bool grabCup = false);
     QByteArray buildPumpAction(Axis axis, OperationMode mode, int units,
                                bool aspirate, bool clean,
                                int cleaningTimeMs);
@@ -209,7 +233,7 @@ private:
     quint8 takeCommandNumber();
     static quint8 zReference(Axis axis);
 
-    quint8 m_nextCmdNum = 1;
+    quint8 m_nextCmdNum = 0;
     quint8 m_lastCmdNum = 0;
     quint8 m_cmdSize = 0;
     QString m_lastError;

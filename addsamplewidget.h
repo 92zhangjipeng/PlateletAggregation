@@ -4,6 +4,7 @@
 #include "MachineModel.h"
 #include "testsamplequeue.h"
 
+#include <QSet>
 #include <QStringList>
 #include <QWidget>
 
@@ -46,10 +47,34 @@ public:
     /** 重新读取样本质量，刷新采血管液体颜色和高度列标题 */
     void refreshMode();
 
-    /** 测试流程调用：按样本号把状态改成“测试中”或“待测” */
+    /**
+     * 测试流程调用：标记样本进入/退出测试。
+     * 加样页表格状态保持“加样完成”不变，测试状态只更新到结果信息表。
+     */
     void setSampleTesting(const QString &sampleNumber, bool testing);
+    /** 测试流程调用：加样完成 → 表格状态固定为“加样完成”，血样孔释放，
+     *  同时通知结果信息表把该样本记为“测试中” */
+    void setSampleAdded(const QString &sampleNumber);
+    /** 测试流程调用：样本所有试剂完成；加样页状态不变，结果表记“测试结束” */
+    void setSampleCompleted(const QString &sampleNumber);
 
-    /** 待测 + 测试中样本数；用于锁住会影响孔位的设置 */
+    /** 测试流程调用：样本中止/异常；加样页状态不变，结果表记“异常结果” */
+    void setSampleAbnormal(const QString &sampleNumber);
+
+    /** 测试复位/中止时清除“正在测试”标记（加样页状态不变） */
+    void clearTestingSamples();
+
+signals:
+    /** 样本确认进入待测队列后发出（样本号、样本类型），
+     *  供结果信息表插入一条“待测”占位记录 */
+    void sampleQueued(const QString &sampleNumber, const QString &sampleType);
+
+    /** 样本测试状态变化：待测 / 测试中 / 测试结束 / 异常结果 */
+    void sampleStatusChanged(const QString &sampleNumber,
+                             const QString &status);
+
+public:
+    /** 待测 + 已加样 + 测试中 + 完成样本数；用于锁住会影响孔位的设置 */
     int activeSampleCount() const;
 
     /** 全血模式主板测高上升沿触发：每次触发自动添加一个样本 */
@@ -82,6 +107,9 @@ private:
     void updateQuickSampleNumber();
     void updatePositionEditability();
     void updateRowEditability(int row);
+    bool setSampleStatus(const QString &sampleNumber, const QString &status);
+    /** 已加样/测试中/完成的样本，其血样孔已释放，可被后续样本复用 */
+    bool isRowPositionReleased(int row) const;
     void reallocatePositionsForMode();
     bool queuedSampleFromRow(int row, QueuedSample *sample) const;
     void rebuildTestQueueFromConfirmedRows();
@@ -128,6 +156,7 @@ private:
     QPushButton *m_modifySampleButton = nullptr;
     BloodSampleAreaWidget *m_bloodArea = nullptr;
     TestQueue m_testQueue;
+    QSet<QString> m_testingSamples;   // 正在测试的样本号（不改变表格状态文字）
     bool m_updatingTable = false;
     int m_movingRow = -1;
     bool m_lastPppPrpMode = false;

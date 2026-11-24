@@ -8,15 +8,18 @@
 
 #include <QByteArray>
 #include <QString>
+#include <QStringList>
 
 #include <functional>
 
 class CommunicationWorker;
 class CoordinateMaintenanceWidget;
 class QLineEdit;
+class QPushButton;
 class QStackedWidget;
 class QLabel;
 class QTableWidget;
+class QVBoxLayout;
 class ModuleControlWidget;
 
 class SettingsDialog : public FramelessDialog
@@ -31,6 +34,20 @@ public:
 
     /** 加样页提供待测/测试中样本数；大于 0 时禁止改样本质量和测试模式 */
     void setActiveSampleCountProvider(std::function<int()> provider);
+
+    /**
+     * 校验登录用户名/密码。成功返回 true，role 返回 admin/operator。
+     * 用户记录保存在 QSettings security/users，密码为加盐 SHA-256。
+     */
+    static bool validateUserCredentials(const QString &name,
+                                        const QString &password,
+                                        QString *role = nullptr);
+    /** 已保存的用户名，供登录页下拉显示。 */
+    static QStringList existingUserNames();
+    /** 确保内置测试账号 test（空密码、维护人员）存在；程序启动时调用一次。 */
+    static void ensureTestUser();
+    /** 当前登录用户。用户管理按此权限限制增删改。 */
+    void setCurrentUser(const QString &name, const QString &role);
 
 public slots:
     /** 串口/主控收到模组应答帧后调用，转发到模组控制页显示 */
@@ -59,6 +76,24 @@ private:
     QWidget *createModuleControlPage();
     QWidget *createCoordinatePage();
     QWidget *createInstrumentParamsPage();
+    QWidget *createSampleNeedlePage();
+    QWidget *createReagentNeedlePage();
+    QWidget *createGripperPage();
+    QWidget *createReferenceRangePage();
+    QWidget *createInformationEntryPage();
+
+    QVBoxLayout *createMaintenancePageLayout(QWidget *page,
+                                             const QString &title,
+                                             const QString &subtitle);
+    QWidget *createIntParamField(QWidget *parent, const QString &label,
+                                 int minimum, int maximum, int value,
+                                 const QString &suffix,
+                                 const std::function<void(int)> &setter);
+    QWidget *createDoubleParamField(QWidget *parent, const QString &label,
+                                    double minimum, double maximum,
+                                    int decimals, double value,
+                                    const QString &suffix,
+                                    const std::function<void(double)> &setter);
 
     void promptMaintenanceLogin();
     void showBasicPage();
@@ -73,6 +108,7 @@ private:
     void updateUserFromForm();
     void deleteSelectedUser();
     QString selectedUserName() const;
+    void applyUserManagementAccess();
 
     CommunicationWorker *m_commWorker = nullptr;
     QStackedWidget *m_stack = nullptr;
@@ -83,6 +119,11 @@ private:
     int m_modulePageIndex = 2;
     int m_coordinatePageIndex = -1;
     int m_instrumentParamsPageIndex = -1;
+    int m_sampleNeedlePageIndex = -1;
+    int m_reagentNeedlePageIndex = -1;
+    int m_gripperPageIndex = -1;
+    int m_referenceRangePageIndex = -1;
+    int m_informationEntryPageIndex = -1;
     bool m_serialConnected = false;
     MachineModel m_machineModel = defaultMachineModel();
     std::function<int()> m_activeSampleCountProvider;
@@ -101,6 +142,11 @@ private:
     QLineEdit *m_userNameEdit = nullptr;
     QLineEdit *m_userPasswordEdit = nullptr;
     MedicalComboBox *m_userRoleCombo = nullptr;
+    QPushButton *m_userAddButton = nullptr;
+    QPushButton *m_userEditButton = nullptr;
+    QPushButton *m_userDeleteButton = nullptr;
+    QString m_currentUserName;
+    QString m_currentUserRole;
 };
 
 #endif // SETTINGSDIALOG_H

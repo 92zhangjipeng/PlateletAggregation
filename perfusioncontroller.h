@@ -16,7 +16,7 @@ class QTimer;
  *
  * 动作顺序：
  *   1. 三根 Z 轴依次复位（样本针 → 试剂针 → 抓手）；
- *   2. XY 负速度复位 → 到 (0,0) → 到样本针原点 XY；
+ *   2. XY 负速度复位 → 直接到样本针原点 XY；
  *   3. 样本针下到清洗高度，血样泵排空 → 复位 → 吸 60% 满量程 →
  *      下针 → 排空并清洗 → 复位 → 回吸空气；
  *   4. XY 到试剂针原点 XY，试剂针重复同样的排空/吸满/清洗/回吸空气流程；
@@ -41,14 +41,30 @@ public:
     /** 与 MotionController 共用命令编号，避免两条序列重号 */
     void setProtocol(platelet::MotionProtocol *protocol);
 
-    /** 泵清洗时间，默认 6000ms（老软件 Config.ini 的 WashesTime） */
+    /**
+     * 泵清洗时间，默认 6000ms（老软件 Config.ini 的 WashesTime）。
+     * 实际值由基础设置「泵清洗时间」在每次灌注启动时读取。
+     */
     void setCleaningTimeMs(int ms);
 
-    /** 各阶段超时，默认 Z 复位 20s、XY 30s、Z 30s、泵 30s、带清洗泵 45s */
+    /**
+     * 各阶段超时。默认统一 45s，与老软件 USB_InitConnect::armAckWatch()
+     * 的动作应答超时一致（XY 行程大时 30s 容易误判超时）。
+     * 带清洗泵步骤实际使用 max(45s, 清洗时间 + 20s)，避免清洗时间设长后误判超时。
+     */
     void setStageTimeouts(int zResetMs, int xyMs, int zMoveMs,
                           int pumpMs, int pumpCleanMs);
 
     bool isBusy() const;
+
+    /**
+     * test 账号跳过开机灌注时使用：只把样本泵/试剂泵排空到 0，
+     * 建立泵的已知零位，供后续测试/清洗计算绝对位置。
+     * 不涉及 Z/XY 和液路，成功后两泵位置视为 0。
+     */
+    void startPumpEmpty();
+    /** 最近一次 startPumpEmpty() 是否仍在生效/已完成（供界面提示用）。 */
+    bool lastRunWasPumpEmpty() const;
 
 public slots:
     void start();
@@ -68,14 +84,21 @@ private:
         quint8 slaveAddress = 0;
         platelet::MotionProtocol::Axis axis =
                 platelet::MotionProtocol::Axis::Xy;
-        int timeoutMs = 30000;
+        int timeoutMs = 45000;
+        /**
+         * true：该步超时只记警告并继续下一步，不中止灌注。
+         * 目前只用于 XY 负速度复位——现场反馈复位完成后可能收不到
+         * 完成报告，不能因此卡死后续“移动到样本针原点”。
+         */
+        bool reportOptional = false;
     };
 
     bool buildSequence(QString *error);
     bool appendStep(const QByteArray &frame, const QString &description,
                     quint8 slaveAddress,
                     platelet::MotionProtocol::Axis axis,
-                    int timeoutMs, QString *error);
+                    int timeoutMs, QString *error,
+                    bool reportOptional = false);
     void sendNextStep();
     void finish(bool ok, const QString &message);
     bool isReportFor(const platelet::MotionProtocol::Frame &frame,
@@ -91,11 +114,13 @@ private:
     bool m_busy = false;
 
     int m_cleaningTimeMs = 6000;
-    int m_zResetTimeoutMs = 20000;
-    int m_xyTimeoutMs = 30000;
-    int m_zMoveTimeoutMs = 30000;
-    int m_pumpTimeoutMs = 30000;
+    int m_zResetTimeoutMs = 45000;
+    int m_xyTimeoutMs = 45000;
+    int m_zMoveTimeoutMs = 45000;
+    int m_pumpTimeoutMs = 45000;
     int m_pumpCleanTimeoutMs = 45000;
+    /** true 表示本次动作是 startPumpEmpty() 的两泵排空流程 */
+    bool m_pumpEmptyMode = false;
 };
 
 #endif // PERFUSIONCONTROLLER_H

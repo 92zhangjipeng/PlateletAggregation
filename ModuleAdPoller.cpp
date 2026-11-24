@@ -4,6 +4,7 @@
 
 #include "ModuleAdPoller.h"
 #include "SerialPortManager.h"
+#include "appconfig.h"
 
 #include <algorithm>
 
@@ -94,6 +95,11 @@ bool ModuleAdPoller::isRunning() const
     return m_running;
 }
 
+void ModuleAdPoller::setBusQuiet(bool quiet)
+{
+    m_busQuiet = quiet;
+}
+
 bool ModuleAdPoller::isPeriodicReply(const QByteArray &frame) const
 {
     if (!m_running || frame.size() < SerialPortManager::kFrameLength) {
@@ -138,8 +144,12 @@ void ModuleAdPoller::onPollTick()
         emitSecondValues();
     }
 
-    for (int i = 0; i < activeModuleCount(); ++i) {
-        pollModule(i);
+    // 0x17 动作交换期间不发 0x16 读命令；滤波状态和每秒输出保持运行，
+    // 保证动作结束后 AD 采集立即接上。
+    if (!m_busQuiet) {
+        for (int i = 0; i < activeModuleCount(); ++i) {
+            pollModule(i);
+        }
     }
     ++m_tickCounter;
 }
@@ -203,6 +213,10 @@ void ModuleAdPoller::pollModule(int moduleIndex)
         return;
     }
 
+    // 读命令的温度字段也要填当前目标温度。模组控制页保存后，
+    // 这里每次轮询重新取一次设置，读回不会把目标写成旧值。
+    m_readers[moduleIndex]->setTargetTemperature(
+                moduleTargetTemperatureFromSettings(moduleIndex + 1));
     const QByteArray frame = m_readers[moduleIndex]->readTemperatureAndChannels();
     if (frame.size() != SerialPortManager::kFrameLength) {
         return;

@@ -31,8 +31,8 @@ namespace platelet {
  *             00100 设置 LED 电流值（可写）
  *
  * 通道值含义随 cmd_func 变化：
- *   - 00000 读回：2000~3300
- *   - 00001 type=0 写调光：调光值 2000~3300
+ *   - 00000 读回：0~4095
+ *   - 00001 type=0 写调光：调光值 0~4095
  *   - 00001 type=1 读回：LED 电流值 0~600
  *   - 00010 电机转速：700~1028，数值越大越慢，936 正常，1028 停止
  *   - 00100 写 LED 电流：0~600
@@ -97,8 +97,8 @@ public:
         SpeedMax        = 1028,
         SpeedNormal     = 936,
         SpeedStop       = 1028,
-        DimmingMin      = 2000,
-        DimmingMax      = 3300,
+        DimmingMin      = 0,
+        DimmingMax      = 4095,
         LedCurrentMin   = 0,
         LedCurrentMax   = 600
     };
@@ -106,7 +106,7 @@ public:
     /** 温度分辨率：实际温度 = 原始值 × 0.0625 */
     static double temperatureResolution();
 
-    /** 默认目标温度（37 ℃），与仪器常用培养温度一致 */
+    /** 默认目标温度（35 ℃），可在模组控制页按模组设置 */
     static double defaultTargetTemperature();
 
     /** 解析后的一帧数据 */
@@ -167,7 +167,7 @@ public:
      *  0 表示不改该路参数，仅携带目标温度。 */
     QByteArray setTemperature(double celsius);
 
-    /** 4 路写同一个调光值（2000~3300），越界钳位 */
+    /** 4 路写同一个调光值（0~4095），越界钳位 */
     QByteArray setDimming(quint16 dimming);
     /** 只写某一路调光值（1~4），其余通道 0 = 不修改 */
     QByteArray setChannelDimming(int channel, quint16 dimming);

@@ -42,7 +42,10 @@ public:
 
     bool isBusy() const;
 
-    /** 调整各阶段超时（毫秒），默认 Z 复位 20s、XY 30s、Z 下降 30s */
+    /**
+     * 调整各阶段超时（毫秒）。默认统一 45s，与老软件动作应答超时一致；
+     * XY 复位行程较大时 30s 容易误判超时。
+     */
     void setStageTimeouts(int zResetMs, int xyMs, int zMoveMs);
 
 public slots:
@@ -100,9 +103,9 @@ private:
     quint8 m_xyCommandNumber = 0;
     quint8 m_zCommandNumber = 0;
 
-    int m_zResetTimeoutMs = 20000;
-    int m_xyTimeoutMs = 30000;
-    int m_zMoveTimeoutMs = 30000;
+    int m_zResetTimeoutMs = 45000;
+    int m_xyTimeoutMs = 45000;
+    int m_zMoveTimeoutMs = 45000;
 };
 
 #endif // COORDINATEVERIFICATIONCONTROLLER_H
