@@ -133,6 +133,12 @@ void TestActionController::appendMotion(
     step.pumpUpdate = pumpUpdate;
     step.pumpPosition = pumpPosition;
     step.onMotionComplete = onComplete;
+    // Z 轴命令字节 bit5 = 液面探测；记录该步骤便于收集回包里的探测高度。
+    step.liquidDetection =
+            (axis == platelet::MotionProtocol::Axis::SampleNeedle
+             || axis == platelet::MotionProtocol::Axis::ReagentNeedle)
+            && frame.size() > 5
+            && (static_cast<quint8>(frame.at(5)) & 0x20) != 0;
     appendStep(step);
 }
 
@@ -241,6 +247,31 @@ void TestActionController::handleReport(
     }
 
     using platelet::MotionProtocol;
+
+    // 液面探测回包诊断与缓存：协议 Z 轴回包 axisByte bit7=1 表示探测到液面，
+    // 探测高度在 distance2。部分固件在“运行中”报告里先给出高度，完成帧
+    // 反而为 0；这里缓存任一报告里的有效结果，完成时再补回。
+    if (step.liquidDetection) {
+        const bool ok = (frame.axisByte & 0x80) != 0;
+        if (ok) {
+            m_steps[m_currentStep].detected = true;
+            if (frame.distance2 > 0) {
+                m_steps[m_currentStep].detectedHeightMm = frame.distance2;
+            }
+        } else if (frame.distance2 > 0
+                   && !m_steps.at(m_currentStep).detected
+                   && m_steps.at(m_currentStep).detectedHeightMm <= 0) {
+            m_steps[m_currentStep].detectedHeightMm = frame.distance2;
+        }
+        qInfo().nospace()
+                << "液面探测回包 " << step.description
+                << " 状态=" << MotionProtocol::statusText(frame.status)
+                << " 成功位=" << (ok ? 1 : 0)
+                << " axisByte=0x" << QString::number(frame.axisByte, 16)
+                << " distance1=" << frame.distance1
+                << " distance2=" << frame.distance2;
+    }
+
     if (frame.status == MotionProtocol::Status::Error || frame.fault != 0) {
         const QString reason = frame.fault != 0
                 ? frame.faultDescription()
@@ -262,8 +293,22 @@ void TestActionController::handleReport(
         PumpPositionTracker::instance().setReagentPosition(
                     step.pumpPosition);
     }
+    MotionProtocol::Frame effective = frame;
+    if (step.liquidDetection) {
+        const Step &stored = m_steps.at(m_currentStep);
+        if ((effective.axisByte & 0x80) == 0 && stored.detected) {
+            effective.axisByte =
+                    static_cast<quint8>(effective.axisByte | 0x80);
+        }
+        if (effective.distance2 <= 0 && stored.detectedHeightMm > 0) {
+            effective.distance2 = stored.detectedHeightMm;
+            qInfo() << "液面探测完成帧未带高度，采用此前回包高度"
+                    << stored.detectedHeightMm << "mm:"
+                    << step.description;
+        }
+    }
     if (step.onMotionComplete) {
-        step.onMotionComplete(frame);
+        step.onMotionComplete(effective);
     }
     if (!m_busy) {
         return;
@@ -908,14 +953,33 @@ bool TestActionController::buildAddSample(const QueuedSample &sample,
                  kZMoveTimeout, PumpUpdate::None, -1,
                  [this, mouth, failHeight](
                  const platelet::MotionProtocol::Frame &frame) {
+        // 协议：Z 轴回包 axisByte bit7 = 1 表示液面探测成功；
+        // 回包高度取 distance2（字节 10~13，小端），与老软件一致。
+        const bool detectedOk = (frame.axisByte & 0x80) != 0;
         const int detected = frame.distance2;
-        if (detected <= 0 || liquidLevelIsHangingDrop(detected, mouth)) {
+        const bool hanging = detectedOk
+                && liquidLevelIsHangingDrop(detected, mouth);
+        qInfo().nospace()
+                << "样本针液面探测(PPP)：探测"
+                << (detectedOk ? "成功" : "失败")
+                << " 回包高度=" << detected << "mm"
+                << " 试管口=" << mouth << "mm"
+                << " 失败高度=" << failHeight << "mm"
+                << " axisByte=0x" << QString::number(frame.axisByte, 16)
+                << " distance1=" << frame.distance1
+                << " 决策="
+                << (hanging ? "挂珠，下到失败高度吸样"
+                    : (!detectedOk ? "未探到，下到失败高度吸样"
+                                   : "在回包高度吸样"));
+        if (!detectedOk || hanging) {
             Step fallback;
             fallback.kind = StepKind::Motion;
             fallback.frame = m_protocol->moveSampleNeedleTo(
                         failHeight, platelet::MotionProtocol::Area::Test,
                         false);
-            fallback.description = tr("加样：PPP 挂珠，下到失败高度");
+            fallback.description = detectedOk
+                    ? tr("加样：PPP 挂珠，下到失败高度")
+                    : tr("加样：PPP 未探到液面，下到失败高度");
             fallback.slaveAddress = kZAxis;
             fallback.axis =
                     platelet::MotionProtocol::Axis::SampleNeedle;
@@ -1293,16 +1357,35 @@ bool TestActionController::buildSetupReagent(int globalChannel, int prpTube,
                  prefix + tr("试剂针液面探测"),
                  kZAxis, platelet::MotionProtocol::Axis::ReagentNeedle,
                  kZMoveTimeout, PumpUpdate::None, -1,
-                 [this, mouth, failHeight](
+                 [this, mouth, failHeight, reagent](
                  const platelet::MotionProtocol::Frame &frame) {
+        // 协议：Z 轴回包 axisByte bit7 = 1 表示液面探测成功；
+        // 回包高度取 distance2（字节 10~13，小端），与老软件一致。
+        const bool detectedOk = (frame.axisByte & 0x80) != 0;
         const int detected = frame.distance2;
-        if (detected <= 0 || liquidLevelIsHangingDrop(detected, mouth)) {
+        const bool hanging = detectedOk
+                && liquidLevelIsHangingDrop(detected, mouth);
+        qInfo().nospace()
+                << "试剂针液面探测(" << reagent << ")：探测"
+                << (detectedOk ? "成功" : "失败")
+                << " 回包高度=" << detected << "mm"
+                << " 瓶口=" << mouth << "mm"
+                << " 失败高度=" << failHeight << "mm"
+                << " axisByte=0x" << QString::number(frame.axisByte, 16)
+                << " distance1=" << frame.distance1
+                << " 决策="
+                << (hanging ? "挂珠，下到失败高度吸样"
+                    : (!detectedOk ? "未探到，下到失败高度吸样"
+                                   : "在回包高度吸样"));
+        if (!detectedOk || hanging) {
             Step fallback;
             fallback.kind = StepKind::Motion;
             fallback.frame = m_protocol->moveReagentNeedleTo(
                         failHeight, platelet::MotionProtocol::Area::Test,
                         false);
-            fallback.description = tr("试剂挂珠，下到失败高度");
+            fallback.description = detectedOk
+                    ? tr("试剂挂珠，下到失败高度")
+                    : tr("试剂未探到液面，下到失败高度");
             fallback.slaveAddress = kZAxis;
             fallback.axis =
                     platelet::MotionProtocol::Axis::ReagentNeedle;

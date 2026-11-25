@@ -6,6 +6,7 @@
 #include "resultstablewidget.h"
 #include "testdatastore.h"
 
+#include <QDate>
 #include <QDebug>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -104,6 +105,8 @@ ResultsInfoWidget::ResultsInfoWidget(TestDataStore *store, QWidget *parent)
             }
         }
     });
+    connect(m_table, &ResultsTableWidget::rowActivated, this,
+            &ResultsInfoWidget::sampleSelected);
     root->addWidget(scroll, 1);
 
     refresh();
@@ -113,7 +116,10 @@ void ResultsInfoWidget::refresh()
 {
     QVector<SampleSummary> rows;
     if (m_store && m_store->isOpen()) {
-        rows = m_store->recentSamples(500);
+        // 结果信息表只显示当天样本。
+        rows = m_store->samplesOnDay(
+                    QDate::currentDate().toString(QStringLiteral("yyyy-MM-dd")),
+                    500);
     }
     if (m_table) {
         m_table->setRows(rows);

@@ -112,7 +112,8 @@ protected:
             xMax = std::ceil(xMax / 60.0) * 60.0;
         }
 
-        double yMin = 0.0;
+        // 集聚曲线 Y 固定 [-20,100]；测试曲线按 AD 数据自适应。
+        double yMin = -20.0;
         double yMax = 100.0;
         if (!m_aggregationMode) {
             if (data.isEmpty()) {

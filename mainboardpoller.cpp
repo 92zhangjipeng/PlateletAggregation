@@ -217,26 +217,50 @@ void MainBoardPoller::expectCardRechargeResult(int cardType)
     m_pendingCardResult = true;
 }
 
-QByteArray MainBoardPoller::consumableWriteFrame(int position, int count,
-                                                 quint16 ratio, bool cache)
+QByteArray MainBoardPoller::consumableTotalWriteFrame(int position,
+                                                      int totalBottles)
 {
     if (position < 0 || position >= MainBoardConsumable::kPositionCount
-            || count < 0 || count > 0xFF) {
+            || totalBottles < 0 || totalBottles > 0xFF) {
         return QByteArray();
     }
 
+    // 主板信息 V1.0.1：更新耗材总量（充值/换瓶后登记总瓶数）。
+    // byte7 低4位 mfc_status=01 更新耗材总量，高4位 reg_type=种类；
+    // byte9  reg_remain 总量瓶数；余量字段 byte11~12 保持0不动。
     QByteArray frame(SerialPortManager::kFrameLength, '\0');
     frame[0] = static_cast<char>(kMainBoardAddress);
     frame[1] = static_cast<char>(kMainBoardFuncCode);
-    frame[2] = static_cast<char>(position);   // 老协议：命令号=耗材位置
-    frame[3] = '\0';                          // cmd_size
-    frame[4] = '\0';                          // 写
-    // 老上位机：bit0=1 表示缓存写入；bit0=7 表示直接写入。
-    const quint8 positionByte = static_cast<quint8>(
-                (position << 4) | (cache ? 0x01 : 0x07));
-    frame[8] = static_cast<char>(positionByte);
-    frame[9] = static_cast<char>(count & 0xFF);
-    frame[10] = static_cast<char>(cache ? positionByte : 0x00);
+    frame[2] = '\0';                          // cmd_size
+    frame[3] = '\0';
+    frame[4] = '\0';                          // type=0 写
+    frame[7] = static_cast<char>(
+                (position << 4) | 0x01);      // reg_type | mfc 更新耗材总量
+    frame[9] = static_cast<char>(totalBottles & 0xFF);
+    return frame;
+}
+
+QByteArray MainBoardPoller::consumableRatioWriteFrame(int position,
+                                                      quint16 ratio)
+{
+    if (position < 0 || position >= MainBoardConsumable::kPositionCount
+            || ratio > MainBoardConsumable::kRatioMax) {
+        return QByteArray();
+    }
+
+    // 主板信息 V1.0.1：更新耗材余量（每次扣减写单瓶剩余比例 0~512）。
+    // byte9  低4位 cons_status=0001 更新耗材余量，
+    //        高4位 Types_of_cons=种类（右侧瓶位映射请看 header）；
+    // byte11~12 consumable 余量 0~512（低位在前）。
+    QByteArray frame(SerialPortManager::kFrameLength, '\0');
+    frame[0] = static_cast<char>(kMainBoardAddress);
+    frame[1] = static_cast<char>(kMainBoardFuncCode);
+    frame[2] = '\0';                          // cmd_size
+    frame[3] = '\0';
+    frame[4] = '\0';                          // type=0 写
+    frame[9] = static_cast<char>(
+                (MainBoardConsumable::ratioTypeForPosition(position) << 4)
+                | 0x01);                      // Types_of_cons | cons 更新余量
     frame[11] = static_cast<char>(ratio & 0xFF);
     frame[12] = static_cast<char>((ratio >> 8) & 0xFF);
     return frame;

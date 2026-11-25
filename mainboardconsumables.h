@@ -119,6 +119,34 @@ inline int positionForCardType(int cardType)
     }
 }
 
+/**
+ * 耗材位置 -> 写余量帧 byte9 高 4 位 Types_of_cons。
+ *
+ * Types_of_cons 是另一套编号（应答帧/写余量共用）：
+ * 0 AA、1 EPI、2 ADP、3 COL、4 RIS、5 内部清洗剂、6 试管、
+ * 7 AA1、8 EPI1、9 ADP1、10 COL1、11 RIS1、12 NONE。
+ * 右侧瓶位 8~12 映射到 7~11（= position-1）；
+ * 外部清洗液 S2（position 7）在该字段未定义，失败返回 -1。
+ */
+inline int ratioTypeForPosition(int position)
+{
+    switch (position) {
+    case AA:              return 0;
+    case EPI:             return 1;
+    case ADP:             return 2;
+    case COL:             return 3;
+    case RIS:             return 4;
+    case InternalCleanS1: return 5;
+    case TestTube:        return 6;
+    case AA_Second:       return 7;
+    case EPI_Second:      return 8;
+    case ADP_Second:      return 9;
+    case COL_Second:      return 10;
+    case RIS_Second:      return 11;
+    default:              return -1;
+    }
+}
+
 } // namespace MainBoardConsumable
 
 #endif // MAINBOARDCONSUMABLES_H

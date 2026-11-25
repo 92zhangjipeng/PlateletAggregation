@@ -680,9 +680,11 @@ inline void setReagentDetectionFailHeightMm(int index, int mm)
 inline bool liquidLevelIsHangingDrop(int detectedHeightMm,
                                      int mouthHeightMm)
 {
-    return detectedHeightMm > 0
+    // 与老软件一致：回包高度 <= 瓶口/管口偏移即判为针尖挂珠。
+    // 调用方应先确认“液面探测成功”（Z 轴回包 axisByte bit7 = 1）。
+    return detectedHeightMm >= 0
             && mouthHeightMm > 0
-            && detectedHeightMm < mouthHeightMm;
+            && detectedHeightMm <= mouthHeightMm;
 }
 
 inline int liquidLevelAspirateHeightMm(int detectedHeightMm,

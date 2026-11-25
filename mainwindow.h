@@ -16,6 +16,7 @@
 #include <functional>
 
 class AddSampleWidget;
+class QToolButton;
 class CommunicationWorker;
 class ConsumablesDialog;
 class CleaningController;
@@ -32,6 +33,7 @@ class QPlainTextEdit;
 class QProgressBar;
 class QueryWidget;
 class ResultsInfoWidget;
+class SampleDetailPanel;
 class SampleTrayModel;
 class SettingsDialog;
 class TestDataStore;
@@ -172,7 +174,7 @@ private:
     void updateStartButtonAppearance();
     double consumableRemainingUl(int position) const;
     bool consumeConsumableUl(int position, double usedUl, QString *error);
-    void writeConsumableRatio(int position, int bottles, int ratio);
+    void writeConsumableRatio(int position, int ratio);
     void connectAddSampleStatusToResults();
     void savePppBaseline(const QString &sampleNumber, int pppValue);
     void saveTestResult(const QString &sampleNumber,
@@ -211,6 +213,10 @@ private:
     void openLogs();
     void refreshLogView();
     void showPendingFunction(const QString &name);
+    /** 顶栏功能按钮互斥高亮：仅保留当前激活页对应的按钮为选中态 */
+    void setActiveTabButton(QToolButton *button);
+    /** 登录/切回主界面时，按当前标签页同步按钮选中态 */
+    void syncActiveTopButtonToTab();
     void showActionHint(const QString &text);
     void applyChannelSettings();
     void applyMainboardStatus(const MainBoardStatus &status);
@@ -246,6 +252,17 @@ private:
     QTimer *m_actionHintTimer = nullptr;
     QToolButton *m_startButton = nullptr;
     QToolButton *m_pauseButton = nullptr;
+    // 顶栏功能按钮：记录当前激活页对应的按钮，用于保持高亮。
+    QToolButton *m_homeButton = nullptr;
+    QToolButton *m_resultsButton = nullptr;
+    QToolButton *m_queryButton = nullptr;
+    QToolButton *m_qualityButton = nullptr;
+    QToolButton *m_trayButton = nullptr;
+    QToolButton *m_consumablesButton = nullptr;
+    QToolButton *m_addSampleButton = nullptr;
+    QToolButton *m_logButton = nullptr;
+    QToolButton *m_settingsButton = nullptr;
+    QToolButton *m_activeTopButton = nullptr;
     ModuleOverviewWidget *m_moduleOverview = nullptr;
     ReagentBottlePanel *m_reagentPanel = nullptr;
     MainBoardStatusIconBar *m_boardIndicators = nullptr;
@@ -254,6 +271,7 @@ private:
     ResultsInfoWidget *m_resultsInfoWidget = nullptr;
     QueryWidget *m_queryWidget = nullptr;
     TestDataStore *m_testDataStore = nullptr;
+    SampleDetailPanel *m_detailPanel = nullptr;
     // 当前测试会话：样本号 → 本次 tests 所属 samples.id（区分不同天的同号样本）
     QHash<QString, qint64> m_sampleTestIds;
     TestScheduler *m_testScheduler = nullptr;

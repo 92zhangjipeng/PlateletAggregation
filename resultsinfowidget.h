@@ -22,6 +22,10 @@ public:
 public slots:
     void refresh();
 
+signals:
+    /** 用户点击某行样本，请求展示详情；sampleId 为该行样本 id */
+    void sampleSelected(qint64 sampleId);
+
 protected:
     void showEvent(QShowEvent *event) override;
 

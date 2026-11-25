@@ -720,8 +720,73 @@ bool TestDataStore::appendTest(qint64 sampleId, const TestCurveData &test,
     while (existingQuery.next()) {
         const QString existing = existingQuery.value(0).toString();
         if (existing == reagent) {
-            return rollback(error, tr("%1 已保存过，不能重复写入")
-                            .arg(reagent));
+            // 该试剂已存在：更新状态（“测试中”占位 → 终态“完成/异常”），
+            // 并覆盖/补齐曲线（pointQuery 用 UNIQUE(test_id, second) 覆盖）。
+            QSqlQuery updateStatus(m_db);
+            updateStatus.prepare(QStringLiteral(
+                "UPDATE sample_tests SET status = :status,"
+                "  prp0 = :prp0, points_count = :points_count,"
+                "  module_no = :module_no, local_channel = :local_channel,"
+                "  global_channel = :global_channel, reaction_seconds = 300"
+                " WHERE sample_id = :sample_id AND reagent = :reagent"));
+            updateStatus.bindValue(":status", test.status);
+            updateStatus.bindValue(":prp0", test.prp0 >= 0
+                                   ? QVariant(test.prp0) : QVariant());
+            updateStatus.bindValue(":points_count", test.prpPoints.size());
+            updateStatus.bindValue(":module_no", test.moduleNumber > 0
+                                   ? QVariant(test.moduleNumber) : QVariant());
+            updateStatus.bindValue(":local_channel", test.localChannel > 0
+                                   ? QVariant(test.localChannel) : QVariant());
+            updateStatus.bindValue(":global_channel", test.globalChannel > 0
+                                   ? QVariant(test.globalChannel) : QVariant());
+            updateStatus.bindValue(":sample_id", sampleId);
+            updateStatus.bindValue(":reagent", reagent);
+            if (!updateStatus.exec()) {
+                return rollback(error, tr("更新 %1 测试记录失败：%2")
+                                .arg(reagent, updateStatus.lastError().text()));
+            }
+            // 覆盖旧曲线点（先清空该试剂已有 test_points 再重写），
+            // 使“测试中”占位行的空曲线被完整曲线替换。
+            QSqlQuery flush(m_db);
+            flush.prepare(QStringLiteral(
+                "DELETE FROM test_points WHERE test_id IN ("
+                "  SELECT id FROM sample_tests"
+                "   WHERE sample_id = :sample_id AND reagent = :reagent)"));
+            flush.bindValue(":sample_id", sampleId);
+            flush.bindValue(":reagent", reagent);
+            if (!flush.exec()) {
+                return rollback(error, tr("清空 %1 旧曲线失败：%2")
+                                .arg(reagent, flush.lastError().text()));
+            }
+
+            QSqlQuery pointQuery(m_db);
+            pointQuery.prepare(QStringLiteral(
+                "INSERT INTO test_points("
+                "  test_id, second, prp_value, aggregation_percent"
+                ") SELECT id, :second, :prp_value, :aggregation_percent"
+                "  FROM sample_tests"
+                " WHERE sample_id = :sample_id AND reagent = :reagent"));
+            for (int i = 0; i < test.prpPoints.size(); ++i) {
+                pointQuery.bindValue(":second", i + 1);
+                pointQuery.bindValue(":prp_value", test.prpPoints.at(i));
+                pointQuery.bindValue(":aggregation_percent",
+                                     i < test.aggregationPoints.size()
+                                     ? QVariant(test.aggregationPoints.at(i))
+                                     : QVariant());
+                pointQuery.bindValue(":sample_id", sampleId);
+                pointQuery.bindValue(":reagent", reagent);
+                if (!pointQuery.exec()) {
+                    return rollback(error, tr("写入 %1 第 %2 个 PRP 点失败：%3")
+                                    .arg(reagent)
+                                    .arg(i + 1)
+                                    .arg(pointQuery.lastError().text()));
+                }
+            }
+            if (!m_db.commit()) {
+                return rollback(error, tr("提交 %1 测试数据失败：%2")
+                                .arg(reagent, m_db.lastError().text()));
+            }
+            return true;
         }
         ++reagentCount;
     }
@@ -860,7 +925,7 @@ bool TestDataStore::loadSample(qint64 sampleId, SampleTestData *sample,
     sampleQuery.prepare(QStringLiteral(
         "SELECT sample_no, patient_name, patient_id, gender, age,"
         "       sample_type, machine_model, operator_name, remark, test_time,"
-        "       ppp_value"
+        "       ppp_value, gender_entry"
         " FROM samples WHERE id = :id"));
     sampleQuery.bindValue(":id", sampleId);
     if (!sampleQuery.exec() || !sampleQuery.next()) {
@@ -887,6 +952,11 @@ bool TestDataStore::loadSample(qint64 sampleId, SampleTestData *sample,
                                             Qt::ISODate);
     result.pppValue = sampleQuery.value(10).isNull()
             ? -1 : sampleQuery.value(10).toInt();
+    // 性别统一：优先权威列 gender，界面录入/结果表写的是 gender_entry，
+    // 界面录入时 gender 常为空，回退到 gender_entry 保证详情与结果表一致。
+    if (result.gender.isEmpty()) {
+        result.gender = sampleQuery.value(11).toString();
+    }
 
     QSqlQuery testQuery(m_db);
     testQuery.prepare(QStringLiteral(
@@ -943,6 +1013,180 @@ bool TestDataStore::loadSample(qint64 sampleId, SampleTestData *sample,
     return true;
 }
 
+QVector<SampleSummary> TestDataStore::querySamples(const QString &keyword,
+                                                   const QString &fromIso,
+                                                   const QString &toIso,
+                                                   int limit,
+                                                   QString *error) const
+{
+    if (error) {
+        error->clear();
+    }
+    QVector<SampleSummary> result;
+    if (!isOpen()) {
+        if (error) {
+            *error = tr("测试数据库尚未打开。");
+        }
+        return result;
+    }
+
+    QStringList conditions;
+    QVariantList binds;
+    if (!keyword.isEmpty()) {
+        conditions << QStringLiteral("(s.sample_no LIKE ? OR s.patient_name LIKE ?)");
+        const QString pattern = QStringLiteral("%%%1%%").arg(keyword);
+        binds << pattern << pattern;
+    }
+    if (!fromIso.isEmpty()) {
+        conditions << QStringLiteral("s.test_time >= ?");
+        binds << fromIso;
+    }
+    if (!toIso.isEmpty()) {
+        conditions << QStringLiteral("s.test_time <= ?");
+        binds << toIso;
+    }
+    QString where;
+    if (!conditions.isEmpty()) {
+        where = QStringLiteral(" WHERE ") + conditions.join(QStringLiteral(" AND "));
+    }
+
+    const int boundedLimit = qBound(1, limit, 5000);
+    const QString sql =
+            QStringLiteral("SELECT s.id, s.sample_no, s.patient_name, s.age,"
+                           " s.sample_type, s.machine_model, s.test_time,"
+                           " s.ppp_value, s.category, s.gender_entry, s.ward,"
+                           " s.bed, s.sending_doctor, s.testing_doctor,"
+                           " s.reviewing_doctor, s.diagnosis, s.test_status,"
+                           " s.remark,"
+                           " (SELECT COUNT(*) FROM sample_tests t"
+                           "  WHERE t.sample_id = s.id AND t.reagent <> 'PPP')"
+                           " AS test_count"
+                           " FROM samples s")
+            + where
+            + QStringLiteral(" ORDER BY s.test_time DESC, s.id DESC"
+                             " LIMIT ?");
+    QSqlQuery query(m_db);
+    query.prepare(sql);
+    for (const QVariant &bind : binds) {
+        query.addBindValue(bind);
+    }
+    query.addBindValue(boundedLimit);
+    if (!query.exec()) {
+        if (error) {
+            *error = tr("查询样本失败：%1").arg(query.lastError().text());
+        }
+        return result;
+    }
+
+    while (query.next()) {
+        SampleSummary summary;
+        summary.id = query.value(0).toLongLong();
+        summary.sampleNumber = query.value(1).toString();
+        summary.patientName = query.value(2).toString();
+        summary.age = query.value(3).isNull()
+                ? -1 : query.value(3).toInt();
+        summary.sampleType = query.value(4).toString();
+        summary.machineModel = query.value(5).toString();
+        summary.testTime = QDateTime::fromString(query.value(6).toString(),
+                                                 Qt::ISODate);
+        summary.pppValue = query.value(7).isNull()
+                ? -1 : query.value(7).toInt();
+        summary.department = query.value(8).toString();
+        summary.gender = query.value(9).toString();
+        summary.ward = query.value(10).toString();
+        summary.bed = query.value(11).toString();
+        summary.sendingDoctor = query.value(12).toString();
+        summary.testingDoctor = query.value(13).toString();
+        summary.reviewingDoctor = query.value(14).toString();
+        summary.diagnosis = query.value(15).toString();
+        summary.testStatus = query.value(16).toString();
+        summary.remark = query.value(17).toString();
+        summary.testCount = query.value(18).toInt();
+        result.append(summary);
+    }
+    return result;
+}
+
+QVector<SampleSummary> TestDataStore::samplesOnDay(const QString &dayKey,
+                                                   int limit,
+                                                   QString *error) const
+{
+    if (error) {
+        error->clear();
+    }
+    QVector<SampleSummary> result;
+    if (!isOpen()) {
+        if (error) {
+            *error = tr("测试数据库尚未打开。");
+        }
+        return result;
+    }
+    const QDate day = QDate::fromString(dayKey, QStringLiteral("yyyy-MM-dd"));
+    if (!day.isValid()) {
+        if (error) {
+            *error = tr("无效日期：%1").arg(dayKey);
+        }
+        return result;
+    }
+    const QString fromIso = QDateTime(day, QTime(0, 0, 0)).toString(Qt::ISODate);
+    const QString toIso = QDateTime(day, QTime(23, 59, 59)).toString(Qt::ISODate);
+
+    const int boundedLimit = qBound(1, limit, 5000);
+    const QString sql =
+            QStringLiteral("SELECT s.id, s.sample_no, s.patient_name, s.age,"
+                           " s.sample_type, s.machine_model, s.test_time,"
+                           " s.ppp_value, s.category, s.gender_entry, s.ward,"
+                           " s.bed, s.sending_doctor, s.testing_doctor,"
+                           " s.reviewing_doctor, s.diagnosis, s.test_status,"
+                           " s.remark,"
+                           " (SELECT COUNT(*) FROM sample_tests t"
+                           "  WHERE t.sample_id = s.id AND t.reagent <> 'PPP')"
+                           " AS test_count"
+                           " FROM samples s"
+                           " WHERE s.test_time >= ? AND s.test_time <= ?"
+                           " ORDER BY s.test_time DESC, s.id DESC"
+                           " LIMIT ?");
+    QSqlQuery query(m_db);
+    query.prepare(sql);
+    query.addBindValue(fromIso);
+    query.addBindValue(toIso);
+    query.addBindValue(boundedLimit);
+    if (!query.exec()) {
+        if (error) {
+            *error = tr("读取当天样本失败：%1").arg(query.lastError().text());
+        }
+        return result;
+    }
+
+    while (query.next()) {
+        SampleSummary summary;
+        summary.id = query.value(0).toLongLong();
+        summary.sampleNumber = query.value(1).toString();
+        summary.patientName = query.value(2).toString();
+        summary.age = query.value(3).isNull()
+                ? -1 : query.value(3).toInt();
+        summary.sampleType = query.value(4).toString();
+        summary.machineModel = query.value(5).toString();
+        summary.testTime = QDateTime::fromString(query.value(6).toString(),
+                                                 Qt::ISODate);
+        summary.pppValue = query.value(7).isNull()
+                ? -1 : query.value(7).toInt();
+        summary.department = query.value(8).toString();
+        summary.gender = query.value(9).toString();
+        summary.ward = query.value(10).toString();
+        summary.bed = query.value(11).toString();
+        summary.sendingDoctor = query.value(12).toString();
+        summary.testingDoctor = query.value(13).toString();
+        summary.reviewingDoctor = query.value(14).toString();
+        summary.diagnosis = query.value(15).toString();
+        summary.testStatus = query.value(16).toString();
+        summary.remark = query.value(17).toString();
+        summary.testCount = query.value(18).toInt();
+        result.append(summary);
+    }
+    return result;
+}
+
 QVector<SampleSummary> TestDataStore::recentSamples(int limit,
                                                     QString *error) const
 {
@@ -958,19 +1202,21 @@ QVector<SampleSummary> TestDataStore::recentSamples(int limit,
     }
 
     const int boundedLimit = qBound(1, limit, 5000);
+    const QString sql =
+            QStringLiteral("SELECT s.id, s.sample_no, s.patient_name, s.age,"
+                           " s.sample_type, s.machine_model, s.test_time,"
+                           " s.ppp_value, s.category, s.gender_entry, s.ward,"
+                           " s.bed, s.sending_doctor, s.testing_doctor,"
+                           " s.reviewing_doctor, s.diagnosis, s.test_status,"
+                           " s.remark,"
+                           " (SELECT COUNT(*) FROM sample_tests t"
+                           "  WHERE t.sample_id = s.id AND t.reagent <> 'PPP')"
+                           " AS test_count"
+                           " FROM samples s"
+                           " ORDER BY s.test_time DESC, s.id DESC"
+                           " LIMIT :limit");
     QSqlQuery query(m_db);
-    query.prepare(QStringLiteral(
-        "SELECT s.id, s.sample_no, s.patient_name, s.age, s.sample_type,"
-        "       s.machine_model, s.test_time, s.ppp_value, s.category,"
-        "       s.gender_entry, s.ward, s.bed, s.sending_doctor,"
-        "       s.testing_doctor, s.reviewing_doctor, s.diagnosis,"
-        "       s.test_status, s.remark,"
-        "       (SELECT COUNT(*) FROM sample_tests t"
-        "        WHERE t.sample_id = s.id AND t.reagent <> 'PPP')"
-        "        AS test_count"
-        " FROM samples s"
-        " ORDER BY s.test_time DESC, s.id DESC"
-        " LIMIT :limit"));
+    query.prepare(sql);
     query.bindValue(":limit", boundedLimit);
     if (!query.exec()) {
         if (error) {
@@ -1193,3 +1439,4 @@ bool TestDataStore::updateSampleTestStatusById(qint64 sampleId,
     }
     return true;
 }
+

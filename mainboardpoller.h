@@ -39,14 +39,20 @@ public:
     static QByteArray consumableRequestFrame(int position);
 
     /**
-     * 写入指定位置耗材余量（更换试管盘/试剂瓶用）。
-     * position 0~12；count 为板/瓶数；ratio 为单瓶 0~512；
-     * cache=true 为缓存写入（老上位机更换耗材的写法），
-     * cache=false 为直接写入。
+     * 写耗材总量（充值/换瓶登记总瓶数）。
+     * position 0~12；totalBottles 为瓶/板数（≤255）。
+     * 按主板信息 V1.0.1：byte7 高4位 reg_type、低4位 mfc_status=01 更新耗材总量，
+     * byte9 写总量。余量字段保持不动。
      */
-    static QByteArray consumableWriteFrame(int position, int count,
-                                           quint16 ratio = 521,
-                                           bool cache = true);
+    static QByteArray consumableTotalWriteFrame(int position, int totalBottles);
+
+    /**
+     * 写耗材余量（每次扣减写单瓶 0~100% 比例）。
+     * position 0~12；ratio 为 0~512。
+     * 按主板信息 V1.0.1：byte9 高4位 Types_of_cons、低4位 cons_status=0001 更新余量，
+     * byte11~12 写余量（低位在前）。
+     */
+    static QByteArray consumableRatioWriteFrame(int position, quint16 ratio);
 
     /** 按主板信息 V1.0.1 解析 15 字节状态帧 */
     static MainBoardStatus parseStatusFrame(const QByteArray &frame,

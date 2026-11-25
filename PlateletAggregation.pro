@@ -38,6 +38,7 @@ SOURCES += \
     testcurvewidget.cpp \
     testcurvedialog.cpp \
     testsession.cpp \
+    sampledetailpanel.cpp \
     resultstablewidget.cpp \
     resultsinfowidget.cpp \
     querywidget.cpp \
@@ -78,6 +79,7 @@ HEADERS += \
     testcurvewidget.h \
     testcurvedialog.h \
     testsession.h \
+    sampledetailpanel.h \
     resultstablewidget.h \
     resultsinfowidget.h \
     querywidget.h \

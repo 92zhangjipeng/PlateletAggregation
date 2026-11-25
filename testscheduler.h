@@ -101,6 +101,14 @@ signals:
     void errorOccurred(const QString &message);
     void finished();
 
+    /** 单个试剂被放弃/异常：结果详情需把它标记为独立状态 */
+    void reagentAbandoned(const QString &sampleNumber,
+                          const QString &reagent);
+
+    /** 某个试剂开始测试（吐试剂前）：结果详情可先落一条“测试中”占位行 */
+    void reagentTestStarted(const QString &sampleNumber,
+                            const QString &reagent);
+
     /** 机械动作请求：动作层实现后连接这些信号 */
     void addSampleRequested(const QueuedSample &sample, int pppTube,
                             const QVector<int> &prpTubes);

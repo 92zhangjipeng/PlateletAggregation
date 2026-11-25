@@ -124,6 +124,25 @@ public:
     QVector<SampleSummary> recentSamples(int limit = 200,
                                          QString *error = nullptr) const;
 
+    /**
+     * 等价 recentSamples 但仅限某一天（结果信息表只显示当天样本）。
+     * dayKey 形如 "yyyy-MM-dd"；取该天 00:00:00 ~ 23:59:59。
+     */
+    QVector<SampleSummary> samplesOnDay(const QString &dayKey,
+                                        int limit = 200,
+                                        QString *error = nullptr) const;
+
+    /**
+     * 定条件查询样本（查询页用）。
+     * keyword 匹配样本号或患者姓名（模糊）；fromIso/toIso 为 ISO 起始/截止时间
+     * （含边界，任一为空表示不限这一端）。空库/无匹配返回空列表。
+     */
+    QVector<SampleSummary> querySamples(const QString &keyword,
+                                        const QString &fromIso,
+                                        const QString &toIso,
+                                        int limit = 500,
+                                        QString *error = nullptr) const;
+
     /** 更新样本信息录入各类别子项（结果表格下拉修改） */
     bool updateSampleEntryValue(qint64 sampleId, const QString &entryKey,
                                 const QString &value, QString *error = nullptr);

@@ -26,6 +26,7 @@
 #include "mainboardpoller.h"
 #include "querywidget.h"
 #include "resultsinfowidget.h"
+#include "sampledetailpanel.h"
 #include "sampletraymodel.h"
 #include "testdatastore.h"
 #include "testsession.h"
@@ -56,7 +57,6 @@
 #include <QMetaObject>
 #include <QPainter>
 #include <QPainterPath>
-#include <QRadialGradient>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QProgressBar>
@@ -306,108 +306,54 @@ QIcon makeToolbarIcon(ToolbarIconType type, const QColor &color,
     return icon;
 }
 
-/**
- * 紧挨圆形开始按钮的功能按钮：在内侧边缘叠加一条凹弧阴影，
- * 让圆形按钮看起来“镶嵌”在左右按钮中间。
- * shadowOnRight=true 表示阴影画在按钮右缘（用于左侧按钮）。
- */
-class ConcaveEdgeButton : public QToolButton {
-public:
-    ConcaveEdgeButton(bool shadowOnRight, QWidget *parent)
-        : QToolButton(parent), m_shadowOnRight(shadowOnRight) {}
-
-protected:
-    void paintEvent(QPaintEvent *event) override {
-        QToolButton::paintEvent(event);
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-        const QRectF area = QRectF(rect());
-        const qreal h = area.height();
-        // 圆形开始按钮几何：直径90 + 3px 白边 => 外缘半径约 48；
-        // 顶栏布局中开始按钮与左右按钮组之间的间距为 6px。
-        const qreal circleRadius = 48.0;
-        const qreal gap = 6.0;
-        // 圆心在本按钮内侧边缘外 gap 处，与按钮垂直居中对齐，
-        // 与真实开始按钮的圆心严格重合。
-        const QPointF circleCenter = m_shadowOnRight
-                ? QPointF(area.right() + gap, h / 2.0)
-                : QPointF(area.left() - gap, h / 2.0);
-
-        // 只在按钮内侧一条窄带内绘制，避免盖住按钮外侧
-        const qreal band = 24.0;
-        const QRectF clip = m_shadowOnRight
-                ? QRectF(area.right() - band, area.top(), band, h)
-                : QRectF(area.left(), area.top(), band, h);
-
-        p.save();
-        p.setClipRect(clip);
-
-        // 凹槽阴影：径向渐变以圆心为中心，沿圆周方向衰减，
-        // 最深的一环正好落在圆的外缘上，随圆弧弯曲。
-        const qreal fade = 20.0;
-        QRadialGradient shade(circleCenter, circleRadius + fade);
-        shade.setColorAt(0.00, QColor(23, 74, 109, 0));
-        shade.setColorAt((circleRadius - 4.0) / (circleRadius + fade),
-                         QColor(23, 74, 109, 0));
-        shade.setColorAt(circleRadius / (circleRadius + fade),
-                         QColor(23, 74, 109, 105));
-        shade.setColorAt((circleRadius + 6.0) / (circleRadius + fade),
-                         QColor(23, 74, 109, 45));
-        shade.setColorAt(1.00, QColor(23, 74, 109, 0));
-        p.setPen(Qt::NoPen);
-        p.setBrush(shade);
-        p.drawRect(area);
-
-        // 凹槽最深处：沿圆形按钮外缘画一条 2px 深色弧线（真正的圆弧）
-        QPen rimPen(QColor(23, 74, 109, 80), 2.0);
-        p.setPen(rimPen);
-        p.setBrush(Qt::NoBrush);
-        QRectF circle(circleCenter.x() - circleRadius,
-                      circleCenter.y() - circleRadius,
-                      circleRadius * 2.0, circleRadius * 2.0);
-        if (m_shadowOnRight) {
-            p.drawArc(circle, 90 * 16, 180 * 16);   // 圆的左半弧
-        } else {
-            p.drawArc(circle, 270 * 16, 180 * 16);  // 圆的右半弧
-        }
-
-        // 凹槽外侧的白色高光弧线：像被圆压出的唇边，同样沿圆弧弯曲
-        const qreal hlRadius = circleRadius + 3.5;
-        QRectF hlCircle(circleCenter.x() - hlRadius,
-                        circleCenter.y() - hlRadius,
-                        hlRadius * 2.0, hlRadius * 2.0);
-        p.setPen(QPen(QColor(255, 255, 255, 190), 1.2));
-        if (m_shadowOnRight) {
-            p.drawArc(hlCircle, 96 * 16, 168 * 16);
-        } else {
-            p.drawArc(hlCircle, 276 * 16, 168 * 16);
-        }
-        p.restore();
-    }
-private:
-    bool m_shadowOnRight;
-};
-
-QToolButton *createTopFunctionButton(const QString &text, const QIcon &icon,
-                                     QWidget *parent, int width,
-                                     bool concaveRight = false,
-                                     bool concaveLeft = false)
+/** 左侧竖向导航项：图标在上、文字在下，选中态由 QSS 左侧高亮条标识。 */
+QToolButton *createNavButton(const QString &text, const QIcon &icon,
+                             QWidget *parent)
 {
-    QToolButton *button;
-    if (concaveRight || concaveLeft) {
-        // 紧挨圆形开始按钮的按钮：内侧边缘叠加凹弧阴影
-        button = new ConcaveEdgeButton(concaveRight, parent);
-    } else {
-        button = new QToolButton(parent);
-    }
-    button->setObjectName(QStringLiteral("topFunctionButton"));
+    auto *button = new QToolButton(parent);
+    button->setObjectName(QStringLiteral("navButton"));
     button->setCursor(Qt::PointingHandCursor);
     button->setFocusPolicy(Qt::NoFocus);
-    button->setMinimumWidth(width);
-    button->setFixedHeight(72);
+    button->setFixedHeight(68);
     button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-    button->setIconSize(QSize(28, 28));
+    button->setIconSize(QSize(26, 26));
+    button->setText(text);
+    button->setIcon(icon);
+    return button;
+}
+
+/** 底部操作条按钮：图标在左、文字在右的胶囊形按钮。 */
+QToolButton *createBottomActionButton(const QString &text, const QIcon &icon,
+                                      QWidget *parent)
+{
+    auto *button = new QToolButton(parent);
+    button->setObjectName(QStringLiteral("bottomActionButton"));
+    button->setCursor(Qt::PointingHandCursor);
+    button->setFocusPolicy(Qt::NoFocus);
+    button->setFixedHeight(60);
+    button->setMinimumWidth(104);
+    button->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    button->setIconSize(QSize(22, 22));
+    button->setText(text);
+    button->setIcon(icon);
+    return button;
+}
+
+/** 靠近开始按钮的样本操作入口（加样/试管盘）。 */
+QToolButton *createSampleActionButton(const QString &text, const QIcon &icon,
+                                      QWidget *parent)
+{
+    auto *button = new QToolButton(parent);
+    button->setObjectName(QStringLiteral("sampleActionButton"));
+    button->setCursor(Qt::PointingHandCursor);
+    button->setFocusPolicy(Qt::NoFocus);
+    button->setFixedHeight(64);
+    button->setMinimumWidth(124);
+    button->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    button->setIconSize(QSize(24, 24));
     button->setText(text);
     button->setIcon(icon);
     return button;
@@ -641,10 +587,33 @@ MainWindow::MainWindow(QWidget *parent)
         "  font-size: 11px;"
         "}"
         "QWidget#mainPage { background: #F4F8FC; }"
-        "QWidget#topBar {"
-        "  background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
-        "      stop:0 #F9FDFF, stop:0.42 #E7F5FD, stop:1 #D6EAF8);"
-        "  border-bottom: 1px solid #B7D4E7;"
+        "QWidget#mainNavBar {"
+        "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+        "      stop:0 #FBFDFF, stop:1 #EEF6FC);"
+        "  border-right: 1px solid #D8E5EF;"
+        "}"
+        "QScrollArea#mainNavScroll { background: transparent; border: none; }"
+        "QScrollArea#mainNavScroll > QWidget#qt_scrollarea_viewport {"
+        "  background: transparent;"
+        "}"
+        "QWidget#mainNavContent { background: transparent; }"
+        "QScrollArea#mainNavScroll QScrollBar:vertical {"
+        "  background: transparent; width: 6px; margin: 0px;"
+        "}"
+        "QScrollArea#mainNavScroll QScrollBar::handle:vertical {"
+        "  background: rgba(31,78,121,80); border-radius: 3px;"
+        "  min-height: 30px;"
+        "}"
+        "QScrollArea#mainNavScroll QScrollBar::add-line:vertical,"
+        "QScrollArea#mainNavScroll QScrollBar::sub-line:vertical { height: 0px; }"
+        "QScrollArea#mainNavScroll QScrollBar::add-page:vertical,"
+        "QScrollArea#mainNavScroll QScrollBar::sub-page:vertical {"
+        "  background: transparent;"
+        "}"
+        "QWidget#bottomActionBar {"
+        "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+        "      stop:0 #FFFFFF, stop:1 #EAF5FC);"
+        "  border-top: 1px solid #C9DDEB;"
         "}"
         "QLabel#mainPageTitle {"
         "  color: #1F4E79;"
@@ -662,34 +631,73 @@ MainWindow::MainWindow(QWidget *parent)
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 11px;"
         "}"
-        "QToolButton#topFunctionButton {"
-        "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-        "      stop:0 rgba(255,255,255,245),"
-        "      stop:0.45 rgba(226,245,255,230),"
-        "      stop:1 rgba(183,220,243,235));"
-        "  color: #174A6D;"
-        "  border: 1px solid rgba(255,255,255,235);"
-        "  border-top: 2px solid rgba(255,255,255,245);"
-        "  border-bottom: 1px solid rgba(116,166,201,170);"
-        "  border-radius: 12px;"
-        "  padding: 0px 3px;"
+        "QToolButton#navButton {"
+        "  background: transparent;"
+        "  color: #33556F;"
+        "  border: none;"
+        "  border-left: 4px solid transparent;"
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 13px;"
         "  font-weight: 600;"
+        "  padding: 0px;"
         "}"
-        "QToolButton#topFunctionButton:hover {"
-        "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-        "      stop:0 rgba(255,255,255,255),"
-        "      stop:0.42 rgba(240,251,255,250),"
-        "      stop:1 rgba(201,235,255,250));"
-        "  border: 1px solid #FFFFFF;"
-        "  border-bottom: 1px solid #7EB3D3;"
+        "QToolButton#navButton:hover {"
+        "  background: #EBF5FC;"
+        "  color: #12466B;"
         "}"
-        "QToolButton#topFunctionButton:pressed {"
-        "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-        "      stop:0 rgba(220,241,253,245),"
-        "      stop:1 rgba(170,211,238,245));"
-        "  border: 1px solid #A8D2E9;"
+        // 选中态：当前页面的导航项常亮，左侧高亮条 + 浅蓝底。
+        "QToolButton#navButton:checked {"
+        "  background: #E1EFFA;"
+        "  color: #12466B;"
+        "  border-left: 4px solid #2C7BBF;"
+        "  font-weight: 700;"
+        "}"
+        "QToolButton#navButton:disabled { color: #A7B7C5; }"
+        "QToolButton#bottomActionButton {"
+        "  background: #FFFFFF;"
+        "  color: #174A6D;"
+        "  border: 1px solid #B9D5E8;"
+        "  border-radius: 10px;"
+        "  padding: 0px 14px;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 14px;"
+        "  font-weight: 600;"
+        "}"
+        "QToolButton#bottomActionButton:hover {"
+        "  background: #EDF6FD;"
+        "  border-color: #7FB6D8;"
+        "}"
+        "QToolButton#bottomActionButton:pressed { background: #DCEBF7; }"
+        "QToolButton#bottomActionButton:disabled {"
+        "  background: #F4F8FC;"
+        "  color: #9FB3C4;"
+        "  border-color: #DCE7F1;"
+        "}"
+        // 加样/试管盘：靠近开始按钮的醒目入口，选中时保持蓝底提示。
+        "QToolButton#sampleActionButton {"
+        "  background: #E6F3FC;"
+        "  color: #12466B;"
+        "  border: 1px solid #7FB6D8;"
+        "  border-radius: 10px;"
+        "  padding: 0px 16px;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 14px;"
+        "  font-weight: 700;"
+        "}"
+        "QToolButton#sampleActionButton:hover {"
+        "  background: #D6EBFA;"
+        "  border-color: #4E97C8;"
+        "}"
+        "QToolButton#sampleActionButton:pressed { background: #C4E2F7; }"
+        "QToolButton#sampleActionButton:checked {"
+        "  background: #D2EAFB;"
+        "  color: #0B3A59;"
+        "  border: 2px solid #2C7BBF;"
+        "}"
+        "QToolButton#sampleActionButton:disabled {"
+        "  background: #F4F8FC;"
+        "  color: #9FB3C4;"
+        "  border-color: #DCE7F1;"
         "}"
         "QToolButton#startButton {"
         "  background: qradialgradient(cx:0.34, cy:0.24, radius:1.0,"
@@ -700,9 +708,9 @@ MainWindow::MainWindow(QWidget *parent)
         "      stop:1 rgba(17,62,98,252));"
         "  color: #FFFFFF;"
         "  border: 3px solid rgba(255,255,255,240);"
-        "  border-radius: 45px;"
+        "  border-radius: 40px;"
         "  font-family: 'Microsoft YaHei';"
-        "  font-size: 17px;"
+        "  font-size: 16px;"
         "  font-weight: 700;"
         "}"
         "QToolButton#startButton:hover {"
@@ -1230,149 +1238,98 @@ QWidget *MainWindow::createMainPage()
     rootLayout->setContentsMargins(0, 0, 0, 0);
     rootLayout->setSpacing(0);
 
-    auto *topBar = new QWidget(page);
-    topBar->setObjectName(QStringLiteral("topBar"));
-    topBar->setFixedHeight(112);
-    auto *topLayout = new QHBoxLayout(topBar);
-    topLayout->setContentsMargins(12, 11, 12, 11);
-    topLayout->setSpacing(6);
+    // 左侧竖向导航：页面切换常驻左侧，顶部空间全部留给内容区。
+    auto *body = new QWidget(page);
+    body->setObjectName(QStringLiteral("mainBody"));
+    auto *bodyLayout = new QHBoxLayout(body);
+    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setSpacing(0);
+
+    auto *navBar = new QWidget(body);
+    navBar->setObjectName(QStringLiteral("mainNavBar"));
+    navBar->setFixedWidth(108);
+    auto *navBarLayout = new QVBoxLayout(navBar);
+    navBarLayout->setContentsMargins(0, 0, 0, 0);
+    navBarLayout->setSpacing(0);
+
+    // 窗口较矮时导航可滚动，避免导航项被裁掉。
+    auto *navScroll = new QScrollArea(navBar);
+    navScroll->setObjectName(QStringLiteral("mainNavScroll"));
+    navScroll->setWidgetResizable(true);
+    navScroll->setFrameShape(QFrame::NoFrame);
+    navScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    navScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    navScroll->viewport()->setAutoFillBackground(false);
+
+    auto *navContent = new QWidget(navScroll);
+    navContent->setObjectName(QStringLiteral("mainNavContent"));
+    navContent->setAutoFillBackground(false);
+    auto *navLayout = new QVBoxLayout(navContent);
+    navLayout->setContentsMargins(0, 10, 0, 10);
+    navLayout->setSpacing(6);
 
     const QColor topIconColor(QStringLiteral("#1F4E79"));
 
-    // 左侧功能按钮：主页 / 结果信息 / 耗材管理 / 试管盘 / 查询 / 质控
-    auto *leftGroup = new QWidget(topBar);
-    leftGroup->setFixedHeight(72);
-    leftGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    auto *leftLayout = new QHBoxLayout(leftGroup);
-    leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(4);
-
-    struct TopFunctionSpec {
+    struct NavSpec {
         QString text;
         ToolbarIconType icon;
     };
-    const TopFunctionSpec leftSpecs[] = {
+    const NavSpec navSpecs[] = {
         { tr("主页"), ToolbarIconType::Home },
         { tr("结果信息"), ToolbarIconType::Results },
         { tr("查询"), ToolbarIconType::Search },
         { tr("质控"), ToolbarIconType::Quality },
-        { tr("试管盘"), ToolbarIconType::Tray },
-        { tr("耗材管理"), ToolbarIconType::Consumables }
+        { tr("耗材管理"), ToolbarIconType::Consumables },
+        { tr("日志"), ToolbarIconType::Log },
+        { tr("设置"), ToolbarIconType::Settings }
     };
-    // 左侧最后一个按钮（耗材管理）右缘画凹弧；右侧第一个按钮（加样）
-    // 左缘画凹弧，把圆形开始按钮“镶嵌”在中间。
-    const int leftSpecCount = int(sizeof(leftSpecs) / sizeof(leftSpecs[0]));
-    for (int specIndex = 0; specIndex < leftSpecCount; ++specIndex) {
-        const TopFunctionSpec &spec = leftSpecs[specIndex];
-        const bool concaveRight = specIndex == leftSpecCount - 1;
-        auto *button = createTopFunctionButton(
+    const int navSpecCount = int(sizeof(navSpecs) / sizeof(navSpecs[0]));
+    for (int specIndex = 0; specIndex < navSpecCount; ++specIndex) {
+        const NavSpec &spec = navSpecs[specIndex];
+        auto *button = createNavButton(
                     spec.text, makeToolbarIcon(spec.icon, topIconColor),
-                    leftGroup, 64, concaveRight, false);
+                    navContent);
+        button->setCheckable(true);   // 选中态识别：当前页面导航项常亮
         if (spec.icon == ToolbarIconType::Home) {
             connect(button, &QToolButton::clicked,
                     this, &MainWindow::showHomeTab);
+            m_homeButton = button;
         } else if (spec.icon == ToolbarIconType::Results) {
             connect(button, &QToolButton::clicked,
                     this, &MainWindow::openResults);
-        } else if (spec.icon == ToolbarIconType::Consumables) {
-            connect(button, &QToolButton::clicked,
-                    this, &MainWindow::openConsumables);
-        } else if (spec.icon == ToolbarIconType::Tray) {
-            connect(button, &QToolButton::clicked,
-                    this, &MainWindow::openTubeTrays);
+            m_resultsButton = button;
         } else if (spec.icon == ToolbarIconType::Search) {
             connect(button, &QToolButton::clicked,
                     this, &MainWindow::openQuery);
+            m_queryButton = button;
         } else if (spec.icon == ToolbarIconType::Quality) {
             connect(button, &QToolButton::clicked,
                     this, &MainWindow::openQuality);
-        } else {
-            const QString text = spec.text;
-            connect(button, &QToolButton::clicked, this,
-                    [this, text]() { showPendingFunction(text); });
+            m_qualityButton = button;
+        } else if (spec.icon == ToolbarIconType::Consumables) {
+            connect(button, &QToolButton::clicked,
+                    this, &MainWindow::openConsumables);
+            m_consumablesButton = button;
+        } else if (spec.icon == ToolbarIconType::Log) {
+            connect(button, &QToolButton::clicked,
+                    this, &MainWindow::openLogs);
+            m_logButton = button;
+        } else if (spec.icon == ToolbarIconType::Settings) {
+            connect(button, &QToolButton::clicked,
+                    this, &MainWindow::openSettings);
+            m_settingsButton = button;
         }
-        leftLayout->addWidget(button);
+        navLayout->addWidget(button);
+        // 导航 / 管理 / 系统三组之间留白。
+        if (spec.icon == ToolbarIconType::Quality
+                || spec.icon == ToolbarIconType::Consumables) {
+            navLayout->addSpacing(10);
+        }
     }
-
-    m_startButton = new QToolButton(topBar);
-    m_startButton->setObjectName(QStringLiteral("startButton"));
-    m_startButton->setCursor(Qt::PointingHandCursor);
-    m_startButton->setFocusPolicy(Qt::NoFocus);
-    m_startButton->setFixedSize(90, 90);
-    m_startButton->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-    m_startButton->setIconSize(QSize(30, 30));
-    m_startButton->setText(tr("开始"));
-    m_startButton->setIcon(makeToolbarIcon(ToolbarIconType::Play, Qt::white,
-                                           QColor("#5F7A8F")));
-    m_startButton->setToolTip(tr("开始测试"));
-    connect(m_startButton, &QToolButton::clicked,
-            this, &MainWindow::handleStartTest);
-
-    // 右侧操作按钮：日志 / 暂停继续 / 复位 / 清洗 / 加样 / 设置
-    auto *rightGroup = new QWidget(topBar);
-    rightGroup->setFixedHeight(72);
-    rightGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    auto *rightLayout = new QHBoxLayout(rightGroup);
-    rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(4);
-
-    auto *addSampleButton = createTopFunctionButton(
-                tr("加样"), makeToolbarIcon(ToolbarIconType::AddSample,
-                                             topIconColor),
-                rightGroup, 64, false, true);
-    connect(addSampleButton, &QToolButton::clicked,
-            this, &MainWindow::openAddSample);
-    rightLayout->addWidget(addSampleButton);
-
-    auto *cleanButton = createTopFunctionButton(
-                tr("清洗"), makeToolbarIcon(ToolbarIconType::Clean,
-                                             topIconColor),
-                rightGroup, 64);
-    connect(cleanButton, &QToolButton::clicked,
-            this, &MainWindow::handleCleaning);
-    rightLayout->addWidget(cleanButton);
-
-    auto *resetButton = createTopFunctionButton(
-                tr("复位"), makeToolbarIcon(ToolbarIconType::Reset,
-                                             topIconColor),
-                rightGroup, 64);
-    connect(resetButton, &QToolButton::clicked,
-            this, &MainWindow::handleResetTest);
-    rightLayout->addWidget(resetButton);
-
-    m_pauseButton = createTopFunctionButton(
-                tr("暂停"), makeToolbarIcon(ToolbarIconType::Pause,
-                                             topIconColor),
-                rightGroup, 64);
-    connect(m_pauseButton, &QToolButton::clicked,
-            this, &MainWindow::handlePauseResume);
-    rightLayout->addWidget(m_pauseButton);
-
-    auto *logButton = createTopFunctionButton(
-                tr("日志"), makeToolbarIcon(ToolbarIconType::Log,
-                                             topIconColor),
-                rightGroup, 64);
-    connect(logButton, &QToolButton::clicked,
-            this, &MainWindow::openLogs);
-    rightLayout->addWidget(logButton);
-
-    auto *settingsButton = createTopFunctionButton(
-                tr("设置"), makeToolbarIcon(ToolbarIconType::Settings,
-                                             topIconColor),
-                rightGroup, 64);
-    connect(settingsButton, &QToolButton::clicked,
-            this, &MainWindow::openSettings);
-    rightLayout->addWidget(settingsButton);
-
-    // 左右各 6 个按钮，按 1:1 分配横向空间；每个按钮 Expanding，
-    // 按钮宽度一致并铺满整条顶栏。
-    // 紧挨圆形按钮的两侧按钮带凹弧阴影：左按钮右缘凹、右按钮左缘凹，
-    // 形成圆形开始按钮“镶嵌”在中间的效果。
-    topLayout->addWidget(leftGroup, 1, Qt::AlignVCenter);
-    topLayout->addWidget(m_startButton, 0, Qt::AlignCenter);
-    topLayout->addWidget(rightGroup, 1, Qt::AlignVCenter);
-
-    rootLayout->addWidget(topBar);
+    navLayout->addStretch(1);
+    navScroll->setWidget(navContent);
+    navBarLayout->addWidget(navScroll);
+    bodyLayout->addWidget(navBar);
 
     auto *content = new QWidget(page);
     content->setObjectName(QStringLiteral("contentArea"));
@@ -1404,7 +1361,7 @@ QWidget *MainWindow::createMainPage()
     m_mainTabs->setDocumentMode(true);
     m_mainTabs->setMovable(false);
     m_mainTabs->tabBar()->setObjectName(QStringLiteral("mainTabBar"));
-    // 顶部按钮负责切换页面，标签头不显示。
+    // 左侧导航负责切换页面，标签头不显示。
     m_mainTabs->tabBar()->hide();
     m_mainTabs->setStyleSheet(QStringLiteral(
         "QTabWidget#mainTabs::pane {"
@@ -1431,16 +1388,94 @@ QWidget *MainWindow::createMainPage()
         "QTabBar#mainTabBar::tab:hover { background: #EDF5FC; }"));
 
     m_homeTabIndex = m_mainTabs->addTab(contentScroll, tr("主页"));
-    rootLayout->addWidget(m_mainTabs, 1);
+    bodyLayout->addWidget(m_mainTabs, 1);
+    rootLayout->addWidget(body, 1);
 
     connect(m_mainTabs, &QTabWidget::currentChanged,
             this, [this](int index) {
         if (index == m_consumablesTabIndex) {
             refreshConsumablesTab();
         }
+        // 切到结果/查询时把详情面板保持在最上层（仍在屏上则继续显示）。
+        if (m_detailPanel
+                && (index == m_resultsTabIndex || index == m_queryTabIndex)) {
+            m_detailPanel->raise();
+        }
     });
 
     createConsumablesTab();
+
+    // 底部主操作条：动作按钮在左，圆形开始按钮在右下角，符合触屏操作习惯。
+    auto *actionBar = new QWidget(page);
+    actionBar->setObjectName(QStringLiteral("bottomActionBar"));
+    actionBar->setFixedHeight(96);
+    auto *actionLayout = new QHBoxLayout(actionBar);
+    actionLayout->setContentsMargins(24, 8, 24, 8);
+    actionLayout->setSpacing(10);
+
+    auto *cleanButton = createBottomActionButton(
+                tr("清洗"), makeToolbarIcon(ToolbarIconType::Clean,
+                                             topIconColor),
+                actionBar);
+    connect(cleanButton, &QToolButton::clicked,
+            this, &MainWindow::handleCleaning);
+    actionLayout->addWidget(cleanButton);
+
+    auto *resetButton = createBottomActionButton(
+                tr("复位"), makeToolbarIcon(ToolbarIconType::Reset,
+                                             topIconColor),
+                actionBar);
+    connect(resetButton, &QToolButton::clicked,
+            this, &MainWindow::handleResetTest);
+    actionLayout->addWidget(resetButton);
+
+    m_pauseButton = createBottomActionButton(
+                tr("暂停"), makeToolbarIcon(ToolbarIconType::Pause,
+                                             topIconColor),
+                actionBar);
+    connect(m_pauseButton, &QToolButton::clicked,
+            this, &MainWindow::handlePauseResume);
+    actionLayout->addWidget(m_pauseButton);
+
+    actionLayout->addStretch(1);
+
+    // 加样 / 试管盘是测试前的高频入口，放在开始按钮左侧。
+    auto *addSampleButton = createSampleActionButton(
+                tr("加样"),
+                makeToolbarIcon(ToolbarIconType::AddSample, topIconColor),
+                actionBar);
+    addSampleButton->setCheckable(true);
+    connect(addSampleButton, &QToolButton::clicked,
+            this, &MainWindow::openAddSample);
+    m_addSampleButton = addSampleButton;
+    actionLayout->addWidget(addSampleButton);
+
+    auto *trayButton = createSampleActionButton(
+                tr("试管盘"),
+                makeToolbarIcon(ToolbarIconType::Tray, topIconColor),
+                actionBar);
+    trayButton->setCheckable(true);
+    connect(trayButton, &QToolButton::clicked,
+            this, &MainWindow::openTubeTrays);
+    m_trayButton = trayButton;
+    actionLayout->addWidget(trayButton);
+
+    m_startButton = new QToolButton(actionBar);
+    m_startButton->setObjectName(QStringLiteral("startButton"));
+    m_startButton->setCursor(Qt::PointingHandCursor);
+    m_startButton->setFocusPolicy(Qt::NoFocus);
+    m_startButton->setFixedSize(80, 80);
+    m_startButton->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    m_startButton->setIconSize(QSize(26, 26));
+    m_startButton->setText(tr("开始"));
+    m_startButton->setIcon(makeToolbarIcon(ToolbarIconType::Play, Qt::white,
+                                           QColor("#5F7A8F")));
+    m_startButton->setToolTip(tr("开始测试"));
+    connect(m_startButton, &QToolButton::clicked,
+            this, &MainWindow::handleStartTest);
+    actionLayout->addWidget(m_startButton, 0, Qt::AlignVCenter);
+
+    rootLayout->addWidget(actionBar);
 
     auto *bottomBar = new QWidget(page);
     bottomBar->setObjectName(QStringLiteral("bottomBar"));
@@ -1538,6 +1573,8 @@ void MainWindow::handleLogin()
         m_actionHint->clear();
     }
     m_stack->setCurrentWidget(m_mainPage);
+    // 顶栏按钮的选中态与登录后停留的标签页保持一致（默认主页）。
+    syncActiveTopButtonToTab();
     // 坐标在登录前已从 JSON 读入内存；登录后若已联机，立即开始
     // “开机灌注 → 升温 → 调光”。test 账号跳过整套启动校准，
     // 但同样要进入 test 模式准备（恢复主板/模组周期轮询、建立泵零位）。
@@ -1624,6 +1661,60 @@ void MainWindow::handleStartTest()
                 this, [this](const QString &sampleNumber,
                              const TestCurveData &test) {
             saveTestResult(sampleNumber, test);
+        });
+        // 单个试剂被放弃/异常：把它独立落库标记为“异常结果”，
+        // 让结果详情能显示「AA 完成 / ADP 异常 / …」而非空白曲线。
+        // 复用 appendTest 的覆盖分支（状态型占位，无曲线），与完成态写库统一。
+        connect(m_testScheduler, &TestScheduler::reagentAbandoned,
+                this, [this](const QString &sampleNumber,
+                             const QString &reagent) {
+            if (!m_testDataStore || !m_testDataStore->isOpen()
+                    || reagent.isEmpty()) {
+                return;
+            }
+            const qint64 sampleId = m_sampleTestIds.value(sampleNumber, 0);
+            if (sampleId <= 0) {
+                return;
+            }
+            TestCurveData abnormal;
+            abnormal.reagent = reagent;
+            abnormal.status = tr("异常结果");
+            QString error;
+            if (!m_testDataStore->appendTest(sampleId, abnormal, &error)) {
+                // 若该试剂行不存在（放弃发生在落库前）则无需新建；预约等重试。
+                qWarning() << "(忽略) 异常标记写入失败:"
+                           << sampleNumber << reagent << error;
+            }
+            if (m_resultsInfoWidget) {
+                m_resultsInfoWidget->refresh();
+            }
+        });
+        // 某个试剂开始测试：先在 sample_tests 落一条“测试中”占位行，
+        // 让结果详情/查询树实时显示进行中的试剂（自主窗口 saveTestResult
+        // 会在 300s 结束时以同一 UNIQUE(sample_id,reagent) 覆盖补齐曲线）。
+        connect(m_testScheduler, &TestScheduler::reagentTestStarted,
+                this, [this](const QString &sampleNumber,
+                             const QString &reagent) {
+            if (!m_testDataStore || !m_testDataStore->isOpen()
+                    || reagent.isEmpty()) {
+                return;
+            }
+            const qint64 sampleId = m_sampleTestIds.value(sampleNumber, 0);
+            if (sampleId <= 0) {
+                return;   // 样本尚未登记，等候 saveSample 建立
+            }
+            TestCurveData placeholder;
+            placeholder.reagent = reagent;
+            placeholder.status = tr("测试中");
+            QString error;
+            if (!m_testDataStore->appendTest(sampleId, placeholder, &error)) {
+                // 该试剂行已存在（重复开始/已完成过）则无需新建占位。
+                qWarning() << "(忽略) 占位写入失败:"
+                           << sampleNumber << reagent << error;
+            }
+            if (m_resultsInfoWidget) {
+                m_resultsInfoWidget->refresh();
+            }
         });
         // PPP 基准值 < 1000：把样本标记为“异常结果”
         connect(m_testScheduler, &TestScheduler::sampleMarkedAbnormal,
@@ -1994,7 +2085,7 @@ bool MainWindow::consumeConsumableUl(int position, double usedUl,
     }
     const int ratio = mainboardUlToRatio(remain, capacity);
     const int bottles = m_consumableBottles[position];
-    writeConsumableRatio(position, bottles, ratio);
+    writeConsumableRatio(position, ratio);
 
     m_consumableRemainingUl[position] = remain;
     m_consumableRemainingValid[position] = true;
@@ -2007,13 +2098,13 @@ bool MainWindow::consumeConsumableUl(int position, double usedUl,
     return true;
 }
 
-void MainWindow::writeConsumableRatio(int position, int bottles, int ratio)
+void MainWindow::writeConsumableRatio(int position, int ratio)
 {
     if (!m_commWorker) {
         return;
     }
-    const QByteArray frame = MainBoardPoller::consumableWriteFrame(
-                position, bottles, ratio, true);
+    const QByteArray frame = MainBoardPoller::consumableRatioWriteFrame(
+                position, quint16(ratio));
     if (frame.isEmpty()) {
         qWarning() << "耗材比例写帧失败" << position << ratio;
         return;
@@ -2101,6 +2192,7 @@ void MainWindow::showHomeTab()
     if (m_mainTabs && m_homeTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_homeTabIndex);
     }
+    setActiveTabButton(m_homeButton);
 }
 
 void MainWindow::createConsumablesTab()
@@ -2145,6 +2237,16 @@ void MainWindow::createResultTabs()
     if (!m_queryWidget) {
         m_queryWidget = new QueryWidget(m_testDataStore, m_mainTabs);
         m_queryTabIndex = m_mainTabs->addTab(m_queryWidget, tr("查询"));
+    }
+    // 结果详情侧边面板：点击任意结果/查询行时从右缘滑出样本详情。
+    if (!m_detailPanel) {
+        m_detailPanel = new SampleDetailPanel(m_mainPage);
+        m_detailPanel->setStore(m_testDataStore);
+        connect(m_resultsInfoWidget, &ResultsInfoWidget::sampleSelected,
+                m_detailPanel, &SampleDetailPanel::showSample);
+        connect(m_queryWidget, &QueryWidget::sampleSelected,
+                m_detailPanel, &SampleDetailPanel::showSample);
+        m_detailPanel->raise();
     }
 }
 
@@ -2281,6 +2383,7 @@ void MainWindow::openResults()
     if (m_mainTabs && m_resultsTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_resultsTabIndex);
     }
+    setActiveTabButton(m_resultsButton);
 }
 
 void MainWindow::openQuery()
@@ -2292,6 +2395,7 @@ void MainWindow::openQuery()
     if (m_mainTabs && m_queryTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_queryTabIndex);
     }
+    setActiveTabButton(m_queryButton);
 }
 
 void MainWindow::openQuality()
@@ -2300,6 +2404,7 @@ void MainWindow::openQuality()
     if (m_mainTabs && m_qualityTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_qualityTabIndex);
     }
+    setActiveTabButton(m_qualityButton);
 }
 
 void MainWindow::openAddSample()
@@ -2312,6 +2417,7 @@ void MainWindow::openAddSample()
     if (m_mainTabs && m_addSampleTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_addSampleTabIndex);
     }
+    setActiveTabButton(m_addSampleButton);
 }
 
 void MainWindow::createLogTab()
@@ -2416,6 +2522,7 @@ void MainWindow::openLogs()
     if (m_mainTabs && m_logTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_logTabIndex);
     }
+    setActiveTabButton(m_logButton);
 }
 
 void MainWindow::refreshLogView()
@@ -2559,6 +2666,7 @@ void MainWindow::openConsumables()
     if (m_mainTabs && m_consumablesTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_consumablesTabIndex);
     }
+    setActiveTabButton(m_consumablesButton);
 }
 
 void MainWindow::openTubeTrays()
@@ -2567,6 +2675,7 @@ void MainWindow::openTubeTrays()
     if (m_mainTabs && m_tubeTrayTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_tubeTrayTabIndex);
     }
+    setActiveTabButton(m_trayButton);
 }
 
 void MainWindow::handleTrayReplaceRequested(int trayIndex)
@@ -2663,8 +2772,8 @@ void MainWindow::handleTrayReplaceRequested(int trayIndex)
         return;
     }
 
-    const QByteArray frame = MainBoardPoller::consumableWriteFrame(
-                position, newTrayCount, 521, true);
+    const QByteArray frame = MainBoardPoller::consumableTotalWriteFrame(
+                position, newTrayCount);
     if (frame.isEmpty()) {
         MedicalMessageBox::warning(
                     this, tr("更换试管盘"),
@@ -2820,15 +2929,15 @@ void MainWindow::handleReagentReplaceRequested(int position)
     };
     QVector<WriteRequest> requests;
 
-    const QByteArray primary = MainBoardPoller::consumableWriteFrame(
-                position, newTotal, MainBoardConsumable::kRatioMax, true);
+    const QByteArray primary = MainBoardPoller::consumableTotalWriteFrame(
+                position, newTotal);
     if (primary.isEmpty()) {
         MedicalMessageBox::warning(this, tr("更换试剂"),
                              tr("生成主板写入命令失败，请重试。"));
         return;
     }
     requests.append({ primary,
-                      tr("更换%1：写入总瓶数%2、单瓶512")
+                      tr("更换%1：写入总瓶数%2")
                       .arg(name).arg(newTotal) });
 
     // AA~RIS 左右瓶共享总瓶数：同步另一侧的总瓶数，保留该侧单瓶比例。
@@ -2843,9 +2952,8 @@ void MainWindow::handleReagentReplaceRequested(int position)
             && otherPosition < MainBoardConsumable::kPositionCount
             && m_consumableValid[otherPosition]
             && m_consumableRatios[otherPosition] >= 0) {
-        const QByteArray secondary = MainBoardPoller::consumableWriteFrame(
-                    otherPosition, newTotal,
-                    m_consumableRatios[otherPosition], true);
+        const QByteArray secondary = MainBoardPoller::consumableTotalWriteFrame(
+                    otherPosition, newTotal);
         if (!secondary.isEmpty()) {
             requests.append(
             { secondary,
@@ -3148,9 +3256,8 @@ void MainWindow::finishCardRecharge(bool ok, const QString &message)
             if (m_commWorker
                     && m_consumableRatios[otherPosition] >= 0) {
                 const QByteArray sync =
-                        MainBoardPoller::consumableWriteFrame(
-                            otherPosition, newTotal,
-                            m_consumableRatios[otherPosition], true);
+                        MainBoardPoller::consumableTotalWriteFrame(
+                            otherPosition, newTotal);
                 if (!sync.isEmpty()) {
                     QMetaObject::invokeMethod(
                                 m_commWorker, "sendFrameRequested",
@@ -3255,6 +3362,57 @@ void MainWindow::appendConsumableRechargeHistory(const QString &entry)
 void MainWindow::showPendingFunction(const QString &name)
 {
     showActionHint(tr("%1：功能待接入").arg(name));
+    setActiveTabButton(nullptr);
+}
+
+
+/// 让左侧导航按钮高亮反映当前页：仅保持当前页面对应的按钮为选中态。
+void MainWindow::setActiveTabButton(QToolButton *button)
+{
+    if (m_activeTopButton == button) {
+        if (button) {
+            button->setChecked(true);
+        }
+        return;
+    }
+    if (m_activeTopButton) {
+        QSignalBlocker blocker(m_activeTopButton);
+        m_activeTopButton->setChecked(false);
+    }
+    m_activeTopButton = button;
+    if (button) {
+        QSignalBlocker blocker(button);
+        button->setChecked(true);
+    }
+}
+
+void MainWindow::syncActiveTopButtonToTab()
+{
+    if (!m_mainTabs) {
+        return;
+    }
+    const int index = m_mainTabs->currentIndex();
+    if (index >= 0 && index == m_homeTabIndex) {
+        setActiveTabButton(m_homeButton);
+    } else if (index >= 0 && index == m_resultsTabIndex) {
+        setActiveTabButton(m_resultsButton);
+    } else if (index >= 0 && index == m_queryTabIndex) {
+        setActiveTabButton(m_queryButton);
+    } else if (index >= 0 && index == m_qualityTabIndex) {
+        setActiveTabButton(m_qualityButton);
+    } else if (index >= 0 && index == m_addSampleTabIndex) {
+        setActiveTabButton(m_addSampleButton);
+    } else if (index >= 0 && index == m_tubeTrayTabIndex) {
+        setActiveTabButton(m_trayButton);
+    } else if (index >= 0 && index == m_consumablesTabIndex) {
+        setActiveTabButton(m_consumablesButton);
+    } else if (index >= 0 && index == m_logTabIndex) {
+        setActiveTabButton(m_logButton);
+    } else if (index >= 0 && index == m_settingsTabIndex) {
+        setActiveTabButton(m_settingsButton);
+    } else {
+        setActiveTabButton(nullptr);
+    }
 }
 
 void MainWindow::showActionHint(const QString &text)
@@ -3424,9 +3582,13 @@ void MainWindow::setMainPageInteractionEnabled(bool enabled)
     if (!m_mainPage) {
         return;
     }
-    if (QWidget *topBar = m_mainPage->findChild<QWidget *>(
-                QStringLiteral("topBar"))) {
-        topBar->setEnabled(enabled);
+    if (QWidget *navBar = m_mainPage->findChild<QWidget *>(
+                QStringLiteral("mainNavBar"))) {
+        navBar->setEnabled(enabled);
+    }
+    if (QWidget *actionBar = m_mainPage->findChild<QWidget *>(
+                QStringLiteral("bottomActionBar"))) {
+        actionBar->setEnabled(enabled);
     }
     if (m_mainTabs) {
         m_mainTabs->setEnabled(enabled);
@@ -4894,4 +5056,5 @@ void MainWindow::openSettings()
     if (m_mainTabs && m_settingsTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_settingsTabIndex);
     }
+    setActiveTabButton(m_settingsButton);
 }

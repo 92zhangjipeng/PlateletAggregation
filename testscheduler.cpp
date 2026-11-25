@@ -294,6 +294,10 @@ void TestScheduler::abandonCurrentReagent(const QString &reason)
     qWarning() << "放弃试剂:" << sampleNumber << reagent << reason;
     run->abandoned = true;
 
+    // 该试剂动作失败/被放弃：发出信号，让主窗口把它落库标记为“异常结果”，
+    // 结果详情便能独立显示「AA 完成 / ADP 异常 / …」而不再只是空曲线。
+    emit reagentAbandoned(sampleNumber, reagent);
+
     // 当前 PRP 杯作废；试剂针里已经吸的试剂标记为需要清洗。
     if (index < run->prpTubes.size()) {
         discardTrayTube(run->prpTubes.at(index));
@@ -608,6 +612,10 @@ bool TestScheduler::startSetupReagent()
         run.currentTest.localChannel = globalToLocal(run.globalChannel);
         run.currentTest.globalChannel = run.globalChannel;
         run.currentTest.status = tr("测试中");
+
+        // 吐试剂前先把该试剂落一条“测试中”占位：主窗口据此在
+        // sample_tests 插入一行，使结果详情/查询树能实时看到进行中的试剂。
+        emit reagentTestStarted(run.sample.sampleNumber, reagent);
 
         m_action = ActionType::SetupReagent;
         m_actionSample = run.sample.sampleNumber;

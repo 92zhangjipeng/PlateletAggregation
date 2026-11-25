@@ -101,6 +101,11 @@ private:
                 onMotionComplete;
         PumpUpdate pumpUpdate = PumpUpdate::None;
         int pumpPosition = -1;
+        // 液面探测步骤：中间回包可能先带回探测高度，完成帧可能丢失，
+        // 因此把任一报告里的成功标志/高度缓存下来。
+        bool liquidDetection = false;
+        bool detected = false;
+        int detectedHeightMm = -1;
     };
 
     bool beginAction(const QString &name);

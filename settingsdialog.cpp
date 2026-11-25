@@ -1926,6 +1926,43 @@ QWidget *SettingsDialog::createInstrumentParamsPage()
     testLayout->addWidget(prp);
     testLayout->addWidget(example);
 
+    // —— 通道测试模式并入测试模式组 ——
+    auto *channelCaption = new QLabel(
+                tr("样本在通道上的分布方式"), testGroup);
+    channelCaption->setObjectName(QStringLiteral("paramCaption"));
+    channelCaption->setWordWrap(true);
+    testLayout->addWidget(channelCaption);
+
+    auto *sameChannel = new QRadioButton(tr("同通道测试（每个样本同一通道）"),
+                                         testGroup);
+    auto *differentChannel = new QRadioButton(
+                tr("不同通道测试（每个试剂一个通道）"), testGroup);
+    auto *channelModeGroup = new QButtonGroup(testGroup);
+    channelModeGroup->setExclusive(true);
+    channelModeGroup->addButton(sameChannel);
+    channelModeGroup->addButton(differentChannel);
+
+    // 默认随测试模式联动：PPP+PRP → 同通道；PRP → 不同通道。
+    // 用户也可在组里手动改（仍会保存），切换测试模式时重置为该模式的默认。
+    auto refreshChannelSelection = [sameChannel, differentChannel]() {
+        if (testModeIsPppPrp()) {
+            sameChannel->setChecked(true);
+        } else {
+            differentChannel->setChecked(true);
+        }
+    };
+    refreshChannelSelection();
+
+    auto *channelHint = new QLabel(
+                tr("这两个选项先保存到仪器参数，具体测试逻辑后续接入。"),
+                testGroup);
+    channelHint->setObjectName(QStringLiteral("paramHint"));
+    channelHint->setWordWrap(true);
+
+    testLayout->addWidget(sameChannel);
+    testLayout->addWidget(differentChannel);
+    testLayout->addWidget(channelHint);
+
     auto *testModeLockHint = new QLabel(
                 tr("存在待测/测试中样本时，测试模式不可修改；"
                    "请先完成测试或删除待测样本。"),
@@ -1940,7 +1977,7 @@ QWidget *SettingsDialog::createInstrumentParamsPage()
         (testModeIsPppPrp() ? pppPrp : prp)->setChecked(true);
     };
     connect(pppPrp, &QRadioButton::toggled, this,
-            [this, restoreTestModeSelection](bool checked) {
+            [this, restoreTestModeSelection, refreshChannelSelection](bool checked) {
         if (!checked) {
             return;
         }
@@ -1949,9 +1986,10 @@ QWidget *SettingsDialog::createInstrumentParamsPage()
             return;
         }
         setTestModePppPrp(true);
+        refreshChannelSelection();   // 切到 PPP+PRP：通道默认同通道
     });
     connect(prp, &QRadioButton::toggled, this,
-            [this, restoreTestModeSelection](bool checked) {
+            [this, restoreTestModeSelection, refreshChannelSelection](bool checked) {
         if (!checked) {
             return;
         }
@@ -1960,33 +1998,8 @@ QWidget *SettingsDialog::createInstrumentParamsPage()
             return;
         }
         setTestModePppPrp(false);
+        refreshChannelSelection();   // 切到 PRP：通道默认不同通道
     });
-
-    auto *channelGroup = new QGroupBox(tr("通道测试模式"), page);
-    channelGroup->setObjectName(QStringLiteral("basicParamGroup"));
-    auto *channelLayout = new QVBoxLayout(channelGroup);
-    channelLayout->setContentsMargins(18, 22, 18, 18);
-    channelLayout->setSpacing(12);
-
-    auto *sameChannel = new QRadioButton(tr("同通道测试"), channelGroup);
-    auto *differentChannel = new QRadioButton(tr("不同通道测试"),
-                                              channelGroup);
-    auto *channelModeGroup = new QButtonGroup(channelGroup);
-    channelModeGroup->setExclusive(true);
-    channelModeGroup->addButton(sameChannel);
-    channelModeGroup->addButton(differentChannel);
-    (channelTestModeIsSameChannel() ? sameChannel : differentChannel)
-            ->setChecked(true);
-
-    auto *channelHint = new QLabel(
-                tr("这两个选项先保存到仪器参数，具体测试逻辑后续接入。"),
-                channelGroup);
-    channelHint->setObjectName(QStringLiteral("paramHint"));
-    channelHint->setWordWrap(true);
-
-    channelLayout->addWidget(sameChannel);
-    channelLayout->addWidget(differentChannel);
-    channelLayout->addWidget(channelHint);
 
     connect(sameChannel, &QRadioButton::toggled, this, [](bool checked) {
         if (checked) {
@@ -2002,7 +2015,6 @@ QWidget *SettingsDialog::createInstrumentParamsPage()
 
     layout->addWidget(instrumentGroup);
     layout->addWidget(testGroup);
-    layout->addWidget(channelGroup);
     layout->addStretch(1);
     return page;
 }
