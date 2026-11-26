@@ -666,7 +666,7 @@ MainWindow::MainWindow(QWidget *parent)
         "QToolButton#runStart, QToolButton#runPause {"
         "  border: none; border-radius: 22px; background: transparent;"
         "  color: #7E9BB2; font-family: 'Microsoft YaHei';"
-        "  font-size: 14px; font-weight: 700; letter-spacing: 1px; padding: 0 4px;"
+        "  font-size: 14px; font-weight: 700; padding: 0 4px;"
         "}"
         "QToolButton#runStart:enabled {"
         "  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
