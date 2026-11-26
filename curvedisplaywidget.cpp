@@ -12,6 +12,7 @@
 #include <cmath>
 #include <QCheckBox>
 #include <QDebug>
+#include <QFocusEvent>
 #include <QFont>
 #include <QFontMetrics>
 #include <QFrame>
@@ -19,10 +20,13 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLineF>
 #include <QLinearGradient>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+#include <QPolygonF>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QTableWidget>
@@ -96,15 +100,89 @@ public:
     {
         setMinimumHeight(300);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setMouseTracking(true);
     }
 
     void setSeries(const QVector<Series> &series)
     {
         m_series = series;
+        m_hoverSeries = -1;
+        m_hoverIndex = -1;
         update();
     }
 
 protected:
+    static constexpr double kXMax = 300.0;
+    static constexpr double kYMin = -20.0;
+    static constexpr double kYMax = 100.0;
+
+    QRectF plotAreaRect() const
+    {
+        const QRectF card = QRectF(rect()).adjusted(1.0, 1.0, -1.0, -1.0);
+        return card.adjusted(54.0, 34.0, -18.0, -36.0);
+    }
+
+    QPointF mapPoint(const QRectF &plotArea, const QPointF &pt) const
+    {
+        const double x = qBound(0.0, pt.x(), kXMax);
+        const double y = qBound(kYMin, pt.y(), kYMax);
+        return QPointF(plotArea.left() + (x / kXMax) * plotArea.width(),
+                       plotArea.bottom()
+                       - ((y - kYMin) / (kYMax - kYMin)) * plotArea.height());
+    }
+
+    /** AUC：0~60s 梯形积分（%·s），点数不足返回 -1。 */
+    double areaUnderCurve(const QVector<QPointF> &pts) const
+    {
+        if (pts.size() < 61) {
+            return -1.0;
+        }
+        double area = 0.0;
+        for (int k = 1; k <= 60; ++k) {
+            area += (pts.at(k - 1).y() + pts.at(k).y()) * 0.5;
+        }
+        return area;
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const QRectF plotArea = plotAreaRect();
+        int bestSeries = -1;
+        int bestIndex = -1;
+        qreal bestDist = 12.0;   // 命中半径
+        for (int i = 0; i < m_series.size(); ++i) {
+            const Series &s = m_series.at(i);
+            if (!s.visible) {
+                continue;
+            }
+            for (int k = 0; k < s.points.size(); ++k) {
+                const QPointF m = mapPoint(plotArea, s.points.at(k));
+                const qreal d = QLineF(event->localPos(), m).length();
+                if (d < bestDist) {
+                    bestDist = d;
+                    bestSeries = i;
+                    bestIndex = k;
+                }
+            }
+        }
+        if (bestSeries != m_hoverSeries || bestIndex != m_hoverIndex) {
+            m_hoverSeries = bestSeries;
+            m_hoverIndex = bestIndex;
+            update();
+        }
+        QWidget::mouseMoveEvent(event);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        if (m_hoverSeries >= 0 || m_hoverIndex >= 0) {
+            m_hoverSeries = -1;
+            m_hoverIndex = -1;
+            update();
+        }
+        QWidget::leaveEvent(event);
+    }
+
     void paintEvent(QPaintEvent *event) override
     {
         Q_UNUSED(event);
@@ -133,17 +211,12 @@ protected:
         p.drawText(QRectF(card.left() + 150.0, card.top() + 8.0,
                           card.width() - 160.0, 22.0),
                    Qt::AlignLeft | Qt::AlignVCenter,
-                   tr("聚集率 % · 同时显示多条试剂曲线"));
+                   tr("聚集率 % · 同时显示多条试剂曲线 · 悬停查看数值"));
 
-        const QRectF plotArea = card.adjusted(54.0, 34.0, -18.0, -36.0);
+        const QRectF plotArea = plotAreaRect();
         if (plotArea.width() < 60.0 || plotArea.height() < 60.0) {
             return;
         }
-
-        // X：0~300 固定；Y：聚集率范围 [-20,100]，留负区间观察过冲。
-        const double xMax = 300.0;
-        const double yMin = -20.0;
-        const double yMax = 100.0;
 
         // 网格
         p.setPen(QPen(QColor("#E7F0F7"), 1.0, Qt::DashLine));
@@ -170,20 +243,27 @@ protected:
             const qreal y = plotArea.top() + plotArea.height() * ratio;
             p.drawText(QRectF(plotArea.left() - 46.0, y - 7.0, 40.0, 14.0),
                        Qt::AlignRight | Qt::AlignVCenter,
-                       QString::number(qRound(yMax - (yMax - yMin) * ratio)));
+                       QString::number(qRound(kYMax - (kYMax - kYMin) * ratio)));
             const qreal x = plotArea.left() + plotArea.width() * ratio;
             p.drawText(QRectF(x - 20.0, plotArea.bottom() + 4.0, 40.0, 14.0),
                        Qt::AlignHCenter | Qt::AlignTop,
-                       QString::number(qRound(xMax * ratio)));
+                       QString::number(qRound(kXMax * ratio)));
         }
 
-        const auto mapPoint = [&plotArea, xMax, yMin, yMax](const QPointF &pt) {
-            const double x = qBound(0.0, pt.x(), xMax);
-            const double y = qBound(yMin, pt.y(), yMax);
-            return QPointF(plotArea.left() + (x / xMax) * plotArea.width(),
-                           plotArea.bottom()
-                           - ((y - yMin) / (yMax - yMin)) * plotArea.height());
-        };
+        // 特殊点刻度
+        QFont specialFont(QStringLiteral("Microsoft YaHei"));
+        specialFont.setPixelSize(9);
+        p.setFont(specialFont);
+        p.setPen(QColor(kMutedColor));
+        for (int sec : { 60, 180, 300 }) {
+            const qreal x = plotArea.left()
+                    + (qreal(sec) / kXMax) * plotArea.width();
+            p.drawLine(QPointF(x, plotArea.bottom() - 3.0),
+                       QPointF(x, plotArea.bottom() + 1.0));
+            p.drawText(QRectF(x - 20.0, plotArea.bottom() + 4.0, 40.0, 14.0),
+                       Qt::AlignHCenter | Qt::AlignTop,
+                       QStringLiteral("%1S").arg(sec));
+        }
 
         bool anyVisible = false;
         for (const Series &s : m_series) {
@@ -191,14 +271,15 @@ protected:
                 continue;
             }
             anyVisible = true;
-            p.save();
-            p.setPen(QPen(s.color, 2.0, Qt::SolidLine, Qt::RoundCap,
-                          Qt::RoundJoin));
-            p.setBrush(Qt::NoBrush);
+
             QPainterPath path;
             bool first = true;
+            int firstMapped = -1;
             for (const QPointF &pt : s.points) {
-                const QPointF m = mapPoint(pt);
+                const QPointF m = mapPoint(plotArea, pt);
+                if (firstMapped < 0) {
+                    firstMapped = (pt.x() >= 1.0) ? qRound(pt.x() - 1.0) : 0;
+                }
                 if (first) {
                     path.moveTo(m);
                     first = false;
@@ -207,16 +288,121 @@ protected:
                 }
             }
             if (path.isEmpty()) {
-                p.restore();
                 continue;
             }
+
+            // —— AUC 面积填充（0~60s 梯形区域）——
+            const double auc = areaUnderCurve(s.points);
+            if (auc > 0.0) {
+                QPolygonF fill;
+                const int upto = qMin(60, s.points.size() - 1);
+                for (int k = 0; k <= upto; ++k) {
+                    fill << mapPoint(plotArea, s.points.at(k));
+                }
+                const qreal x0 = mapPoint(plotArea, s.points.first()).x();
+                const qreal x1 = mapPoint(plotArea, s.points.at(upto)).x();
+                fill << QPointF(x1, plotArea.bottom());
+                fill << QPointF(x0, plotArea.bottom());
+                p.save();
+                p.setPen(Qt::NoPen);
+                QColor fillColor = s.color;
+                fillColor.setAlpha(34);
+                p.setBrush(fillColor);
+                p.drawPolygon(fill);
+                // AUC 标注
+                QFont aucFont(QStringLiteral("Microsoft YaHei"));
+                aucFont.setPixelSize(10);
+                aucFont.setBold(true);
+                p.setFont(aucFont);
+                p.setPen(s.color);
+                const QPointF labelPos = mapPoint(
+                            plotArea, s.points.at(qMin(30, s.points.size() - 1)));
+                p.drawText(QRectF(labelPos.x() - 70.0, labelPos.y() - 34.0,
+                                  140.0, 16.0),
+                           Qt::AlignHCenter | Qt::AlignVCenter,
+                           tr("AUC %1").arg(QString::number(auc, 'f', 1)));
+                p.restore();
+            }
+
+            // —— 曲线 ——
+            p.save();
+            p.setPen(QPen(s.color, 2.0, Qt::SolidLine, Qt::RoundCap,
+                          Qt::RoundJoin));
+            p.setBrush(Qt::NoBrush);
             p.drawPath(path);
 
-            // 终点圆点（突出 Max 位置）
-            const QPointF last = mapPoint(s.points.last());
-            p.setPen(Qt::NoPen);
+            // —— 最大斜率：相邻点最大上升段，两端延伸成切线 ——
+            double maxSlope = 0.0;
+            int slopeAt = -1;
+            for (int k = 0; k + 1 < s.points.size(); ++k) {
+                const double dx = s.points.at(k + 1).x() - s.points.at(k).x();
+                const double dy = s.points.at(k + 1).y() - s.points.at(k).y();
+                if (dx <= 0.0) {
+                    continue;
+                }
+                const double sl = dy / dx;
+                if (sl > maxSlope) {
+                    maxSlope = sl;
+                    slopeAt = k;
+                }
+            }
+            if (slopeAt >= 0) {
+                const QPointF a = mapPoint(plotArea, s.points.at(slopeAt));
+                const QPointF b = mapPoint(plotArea, s.points.at(slopeAt + 1));
+                QLineF seg(a, b);
+                if (seg.length() > 0.01) {
+                    const QPointF dir = (b - a) / seg.length();
+                    const qreal ext = 26.0;
+                    const QPointF p0 = a - dir * ext;
+                    const QPointF p1 = b + dir * ext;
+                    QPen slopePen(s.color, 1.6, Qt::SolidLine,
+                                  Qt::RoundCap, Qt::RoundJoin);
+                    slopePen.setColor(s.color);
+                    p.setPen(slopePen);
+                    p.drawLine(p0, p1);
+                    // 切线两端小圆
+                    p.setBrush(s.color);
+                    p.setPen(Qt::NoPen);
+                    p.drawEllipse(p0, 2.2, 2.2);
+                    QFont slopeFont(QStringLiteral("Microsoft YaHei"));
+                    slopeFont.setPixelSize(10);
+                    slopeFont.setBold(true);
+                    p.setFont(slopeFont);
+                    p.setPen(s.color);
+                    const QPointF mid = QPointF((a.x() + b.x()) * 0.5,
+                                                (a.y() + b.y()) * 0.5);
+                    p.drawText(QRectF(mid.x() + 8.0, mid.y() - 40.0, 150.0, 16.0),
+                               Qt::AlignLeft | Qt::AlignVCenter,
+                               tr("最大斜率 %1%/s")
+                               .arg(QString::number(maxSlope, 'f', 2)));
+                }
+            }
+            p.setPen(QPen(s.color, 2.0, Qt::SolidLine, Qt::RoundCap,
+                          Qt::RoundJoin));
+            p.setBrush(Qt::NoBrush);
+            p.drawPath(path);
+
+            // —— 特殊点 60/180/300/Max 原点标记 ——
+            for (int sec : { 60, 180, 300 }) {
+                const int idx = sec - 1;
+                if (idx >= 0 && idx < s.points.size()) {
+                    const QPointF m = mapPoint(plotArea, s.points.at(idx));
+                    p.setPen(QPen(s.color, 1.6));
+                    p.setBrush(Qt::white);
+                    p.drawEllipse(m, 4.5, 4.5);
+                    p.setBrush(s.color);
+                    p.setPen(Qt::NoPen);
+                    p.drawEllipse(m, 1.8, 1.8);
+                }
+            }
+            // Max = 最后一点
+            const QPointF mLast = mapPoint(plotArea, s.points.last());
+            p.setPen(QPen(s.color, 1.6));
+            p.setBrush(Qt::white);
+            p.drawEllipse(mLast, 4.5, 4.5);
             p.setBrush(s.color);
-            p.drawEllipse(last, 4.0, 4.0);
+            p.setPen(Qt::NoPen);
+            p.drawEllipse(mLast, 1.8, 1.8);
             p.restore();
         }
 
@@ -227,11 +413,64 @@ protected:
             p.setPen(QColor("#A5B6C4"));
             p.drawText(plotArea, Qt::AlignCenter, tr("该样本暂无曲线数据"));
         }
+
+        // —— 悬停数值工具提示 ——
+        if (m_hoverSeries >= 0 && m_hoverSeries < m_series.size()
+                && m_hoverIndex >= 0) {
+            const Series &s = m_series.at(m_hoverSeries);
+            if (s.visible && m_hoverIndex < s.points.size()) {
+                const QPointF pt = s.points.at(m_hoverIndex);
+                const QPointF m = mapPoint(plotArea, pt);
+                const QString text = tr("%1\n%2 s: %3%")
+                        .arg(s.name)
+                        .arg(QString::number(pt.x(), 'f', 0))
+                        .arg(QString::number(pt.y(), 'f', 1));
+                QFont tipFont(QStringLiteral("Microsoft YaHei"));
+                tipFont.setPixelSize(11);
+                const QFontMetrics fm(tipFont);
+                const QStringList lines = text.split(QLatin1Char('\n'));
+                int w = 0;
+                for (const QString &line : lines) {
+                    w = qMax(w, fm.width(line));
+                }
+                const int lh = 16;
+                const int h = lines.size() * lh;
+                const int padX = 8;
+                const int padY = 5;
+                const QRectF box(m.x() + 12.0, m.y() - h - 22.0,
+                                 w + padX * 2, h + padY * 2);
+                QRectF clamped = box;
+                clamped.moveLeft(qBound(plotArea.left(), clamped.left(),
+                                        plotArea.right() - clamped.width()));
+                clamped.moveTop(qBound(plotArea.top(), clamped.top(),
+                                       plotArea.bottom() - clamped.height()));
+                p.save();
+                p.setPen(Qt::NoPen);
+                p.setBrush(QColor(24, 36, 48, 225));
+                p.drawRoundedRect(clamped, 6.0, 6.0);
+                p.setFont(tipFont);
+                p.setPen(Qt::white);
+                for (int i = 0; i < lines.size(); ++i) {
+                    p.drawText(QRectF(clamped.left() + padX,
+                                      clamped.top() + padY + i * lh,
+                                      w, lh),
+                               Qt::AlignLeft | Qt::AlignVCenter,
+                               lines.at(i));
+                }
+                p.restore();
+            }
+        }
     }
 
 private:
     QVector<Series> m_series;
+    int m_hoverSeries = -1;
+    int m_hoverIndex = -1;
 };
+
+constexpr double CurveDisplayWidget::CurvePlotPanel::kXMax;
+constexpr double CurveDisplayWidget::CurvePlotPanel::kYMin;
+constexpr double CurveDisplayWidget::CurvePlotPanel::kYMax;
 
 // =================== 页面 ===================
 CurveDisplayWidget::CurveDisplayWidget(TestDataStore *store, QWidget *parent)
@@ -262,8 +501,17 @@ CurveDisplayWidget::CurveDisplayWidget(TestDataStore *store, QWidget *parent)
         "QHeaderView::section {"
         "  background: #EDF4FB; color: #33556F;"
         "  border: none; border-bottom: 1px solid #C9DDEB;"
-        "  padding: 6px; font-family: 'Microsoft YaHei'; font-size: 12px;"
+        "  padding: 8px 6px; min-height: 20px;"
+        "  font-family: 'Microsoft YaHei'; font-size: 13px; font-weight: 600;"
         "}"
+        "QPushButton#curveRefreshButton {"
+        "  background: #FFFFFF; color: #1F4E79;"
+        "  border: 1px solid #A9C8DF; border-radius: 6px;"
+        "  padding: 6px 16px;"
+        "  font-family: 'Microsoft YaHei'; font-size: 12px;"
+        "}"
+        "QPushButton#curveRefreshButton:hover { background: #E8F1FA; }"
+        "QPushButton#curveRefreshButton:pressed { background: #D3E6F5; }"
         "QCheckBox { color: #30475C; font-family: 'Microsoft YaHei';"
         "  font-size: 12px; spacing: 6px; }"
         "QTableWidget {"
@@ -282,6 +530,7 @@ CurveDisplayWidget::CurveDisplayWidget(TestDataStore *store, QWidget *parent)
     auto *title = new QLabel(tr("曲线分析"), this);
     title->setObjectName(QStringLiteral("curvePageTitle"));
     auto *refreshBtn = new QPushButton(tr("刷新"), this);
+    refreshBtn->setObjectName(QStringLiteral("curveRefreshButton"));
     refreshBtn->setCursor(Qt::PointingHandCursor);
     m_statusLabel = new QLabel(this);
     m_statusLabel->setObjectName(QStringLiteral("curveStatus"));
@@ -338,12 +587,19 @@ CurveDisplayWidget::CurveDisplayWidget(TestDataStore *store, QWidget *parent)
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setAlternatingRowColors(true);
     m_table->setFixedHeight(210);
-    m_table->horizontalHeader()->setStretchLastSection(true);
+    auto *hheader = m_table->horizontalHeader();
+    hheader->setStretchLastSection(true);
+    hheader->setMinimumHeight(34);
+    hheader->setDefaultSectionSize(96);
     for (int c = 0; c < 12; ++c) {
-        m_table->horizontalHeader()->setSectionResizeMode(
-                    c, c == 1 || c == 2 || c == 3 || c == 4
-                       ? QHeaderView::ResizeToContents
-                       : QHeaderView::Interactive);
+        if (c >= 1 && c <= 4) {
+            // 60S/180S/300S/Max 数值列加宽，确保聚集率读数舒展。
+            hheader->setSectionResizeMode(c, QHeaderView::Fixed);
+            m_table->setColumnWidth(c, 110);
+        } else {
+            hheader->setSectionResizeMode(c, QHeaderView::Interactive);
+            m_table->setColumnWidth(c, 84);
+        }
     }
     right->addWidget(m_table);
 
