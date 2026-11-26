@@ -194,6 +194,13 @@ QString CoordinateFileIo::defaultFilePath(MachineModel model)
                       .arg(QLatin1String(machineModelName(model))));
 }
 
+QString CoordinateFileIo::defaultFilePathForModel(const QString &modelName)
+{
+    return QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("platelet_coordinates_%1.json")
+                      .arg(modelName));
+}
+
 QString CoordinateFileIo::legacyFilePath()
 {
     return QDir(QCoreApplication::applicationDirPath())

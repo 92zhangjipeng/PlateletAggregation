@@ -85,6 +85,9 @@ public:
      */
     static QString defaultFilePath(MachineModel model);
 
+    /** 按机型名称（如 "KS1200"）的默认坐标文件，用于旧文件按自身机型迁移。 */
+    static QString defaultFilePathForModel(const QString &modelName);
+
     /** 兼容旧版单文件：<程序目录>/platelet_coordinates.json */
     static QString legacyFilePath();
 

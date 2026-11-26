@@ -5180,8 +5180,11 @@ void MainWindow::reloadInstrumentCoordinates()
     const QString path = CoordinateFileIo::defaultFilePath(m_machineModel);
     QString loadPath = path;
 
-    // 旧版本只有一份 platelet_coordinates.json（在 AppData 或程序目录）。
-    // 首次按机型读写时，把它迁移到当前机型的坐标文件，避免已有坐标丢失。
+    // 当前机型的坐标文件不存在时，尝试从旧版单文件
+    // platelet_coordinates.json（AppData 或程序目录）迁移。
+    // 只有被迁移的旧文件自身标注的机型.EQ 当前机型时才会复制；
+    // 旧文件是其它机型（或未标注、无目标）时，本机型从空坐标开始，
+    // 绝不会把别家机型的坐标写进本机型文件。
     if (!QFileInfo::exists(loadPath)) {
         QString legacySource;
         const QString appDirLegacy = CoordinateFileIo::legacyFilePath();
@@ -5194,21 +5197,40 @@ void MainWindow::reloadInstrumentCoordinates()
                    && QFileInfo::exists(appDataLegacy)) {
             legacySource = appDataLegacy;
         }
+
+        bool legacyBelongsToThisModel = false;
         if (!legacySource.isEmpty()) {
+            CoordinateDocument legacyDoc;
+            QString legacyError;
+            if (CoordinateFileIo::load(legacySource, &legacyDoc,
+                                       &legacyError)) {
+                legacyBelongsToThisModel =
+                        !legacyDoc.machineModel.isEmpty()
+                        && legacyDoc.machineModel
+                           == QLatin1String(machineModelName(m_machineModel))
+                        && !legacyDoc.entries.isEmpty();
+            }
+        }
+
+        if (legacyBelongsToThisModel) {
             if (QFile::copy(legacySource, loadPath)) {
                 qInfo() << "已按机型迁移旧坐标文件:" << legacySource
                         << "→" << loadPath;
             } else {
-                // 迁移失败则读取旧文件（作为回退），并把 loadPath 指回它。
-                qWarning() << "旧坐标文件迁移失败，继续读取旧文件:"
-                           << legacySource << "→" << loadPath;
+                // 迁移失败则直接读旧文件。
+                qWarning() << "旧坐标文件迁移失败，直接读取旧文件:"
+                           << legacySource;
                 loadPath = legacySource;
             }
         }
     }
 
     if (!QFileInfo::exists(loadPath)) {
-        qInfo() << "Instrument coordinates file not found:" << loadPath;
+        qInfo() << "Instrument coordinates file not found:" << loadPath
+                << "- starting with empty coordinates for"
+                << machineModelName(m_machineModel);
+        // 本机型尚无坐标文件：清空内存坐标表，确保从空坐标开始。
+        m_instrumentCoordinates.clear();
         return;
     }
 
