@@ -1,7 +1,7 @@
 # Qt / qmake 构建产物
 Makefile
-Makefile.Debug
-Makefile.Release
+Makefile.*
+makefile
 object_script.*
 .qmake.stash
 *.pro.user
@@ -25,6 +25,13 @@ ui_*.h
 build_*.log
 qmake_*.log
 *.log
+
+# UI 设计稿临时目录
+ui_mockup/
+
+# 本地测试可执行文件
+mode_test.exe
+wash_test.exe
 
 # IDE / 编辑器
 .vs/
