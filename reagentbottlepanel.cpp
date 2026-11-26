@@ -159,6 +159,17 @@ void ReagentBottlePanel::clearLevels()
     update();
 }
 
+void ReagentBottlePanel::setConnected(bool connected)
+{
+    if (m_connected == connected) {
+        return;
+    }
+    m_connected = connected;
+    m_blinkOn = false;
+    updateAlarmTimer();
+    update();
+}
+
 QSize ReagentBottlePanel::sizeHint() const
 {
     return QSize(230, 620);
@@ -313,7 +324,10 @@ void ReagentBottlePanel::paintBottle(QPainter &p, const QRectF &slot,
                Qt::AlignHCenter | Qt::AlignVCenter, spec.label);
 
     // 液位百分比：改为居中显示在瓶内（横向+纵向居中）。
-    paintBottlePercent(p, body, percent, isAlarmActive(bottleIndex));
+    // 未连接仪器时不显示百分比徽章，只保留空瓶图形。
+    if (m_connected) {
+        paintBottlePercent(p, body, percent, isAlarmActive(bottleIndex));
+    }
 }
 
 /** 在瓶身正中绘制百分比，白字 + 半透明深色底板保证各种液色下可读。

@@ -4643,6 +4643,9 @@ void MainWindow::updateSerialStatus(bool connected, const QString &portName,
         if (m_reagentPanel) {
             m_reagentPanel->clearLevels();
         }
+        if (m_reagentPanel) {
+            m_reagentPanel->setConnected(false);
+        }
         if (m_consumablesDialog) {
             m_consumablesDialog->clearConsumableAmounts();
         }
@@ -4710,6 +4713,9 @@ void MainWindow::updateSerialStatus(bool connected, const QString &portName,
                             tr("仪器串口：%1\nVID 0x0483 / PID 0x5740\n波特率：%2")
                             .arg(port)
                             .arg(baudRate));
+        if (m_reagentPanel) {
+            m_reagentPanel->setConnected(true);
+        }
         qInfo() << "仪器串口已连接:" << port
                 << "波特率:" << baudRate;
         if (m_consumablesDialog) {

@@ -49,6 +49,8 @@ public:
     void setLevels(const QVector<double> &levels);
     /** 清除全部液位并复位报警闪烁状态 */
     void clearLevels();
+    /** 设置连接状态：未连接时只画空瓶图形，不显示百分比徽章。 */
+    void setConnected(bool connected);
 
     /**
      * 设置单个瓶子的报警阈值（%）。
@@ -100,6 +102,8 @@ private:
     QVector<double> m_alarmPercents;
     QBasicTimer m_blinkTimer;
     bool m_blinkOn = false;
+    /** 连接状态：false（未连接）时隐藏百分比徽章。 */
+    bool m_connected = false;
 };
 
 #endif // REAGENTBOTTLEPANEL_H
