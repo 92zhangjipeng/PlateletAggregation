@@ -371,9 +371,12 @@ void CoordinateMaintenanceWidget::buildUi()
     m_saveButton->setObjectName(QStringLiteral("coordPrimary"));
     m_saveButton->setCursor(Qt::PointingHandCursor);
     m_saveButton->setToolTip(
-                tr("写入内存并保存到默认坐标文件：\n%1")
+                tr("写入内存并保存到当前机型坐标文件：\n%1")
                 .arg(QDir::toNativeSeparators(
-                         CoordinateFileIo::defaultFilePath())));
+                         CoordinateFileIo::defaultFilePath(
+                             m_coordinates
+                             ? m_coordinates->machineModel()
+                             : defaultMachineModel()))));
 
     m_reloadButton = new QPushButton(tr("重新读取"), m_editorPanel);
     m_reloadButton->setObjectName(QStringLiteral("coordSecondary"));
@@ -743,7 +746,9 @@ void CoordinateMaintenanceWidget::saveCurrent()
         setFeedback(tr("保存失败：位置索引超出当前机型范围"), true);
     } else if (persisted) {
         qInfo() << "坐标已保存:" << name
-                << "→" << CoordinateFileIo::defaultFilePath();
+                << "→" << CoordinateFileIo::defaultFilePath(
+                    m_coordinates ? m_coordinates->machineModel()
+                                  : defaultMachineModel());
         setFeedback(tr("已保存：%1（已写入坐标文件）").arg(name), false);
     } else {
         qWarning() << "坐标写入文件失败:" << persistError;
@@ -968,7 +973,8 @@ bool CoordinateMaintenanceWidget::saveToDefaultFile(QString *error)
     }
     return CoordinateFileIo::save(
                 *m_coordinates,
-                CoordinateFileIo::defaultFilePath(),
+                CoordinateFileIo::defaultFilePath(
+                    m_coordinates->machineModel()),
                 error);
 }
 

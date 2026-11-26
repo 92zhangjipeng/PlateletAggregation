@@ -214,6 +214,15 @@ private:
     void openLogs();
     void refreshLogView();
     void showPendingFunction(const QString &name);
+    /**
+     * 日志内关键字查找：过滤日志到只显示包含关键字的行。
+     * @param backwards  未使用，保留接口（历史语义）。
+     */
+    void searchLog(bool backwards);
+    /** 清除关键字查找，恢复完整日志。 */
+    void clearLogSearch();
+    /** 按当前关键字把 m_logView 过滤为只含匹配行；无匹配则清空显示。 */
+    void applyLogFilter();
     /** 顶栏功能按钮互斥高亮：仅保留当前激活页对应的按钮为选中态 */
     void setActiveTabButton(QToolButton *button);
     /** 登录/切回主界面时，按当前标签页同步按钮选中态 */
@@ -223,8 +232,10 @@ private:
     void applyMainboardStatus(const MainBoardStatus &status);
     void setMainboardStatusText(const QString &summary, const char *state,
                                 const QString &toolTip = QString());
-    /** 启动时从默认坐标文件恢复仪器坐标 */
+    /** 启动时从当前机型的坐标文件恢复仪器坐标 */
     void loadInstrumentCoordinates();
+    /** 按当前机型重载对应坐标文件到内存坐标表（切换机型时调用） */
+    void reloadInstrumentCoordinates();
 
     CommunicationWorker *m_commWorker = nullptr;
     QThread *m_commThread = nullptr;
@@ -245,6 +256,11 @@ private:
     int m_logTabIndex = -1;
     QPlainTextEdit *m_logView = nullptr;
     QLabel *m_logPathLabel = nullptr;
+    QLineEdit *m_logSearchInput = nullptr;
+    /** 最近一次加载的完整日志文本，用于清除查找后恢复原样。 */
+    QString m_logFullText;
+    /** 是否正处于关键字过滤显示模式（仅显示含关键字的行）。 */
+    bool m_logFilterActive = false;
     QComboBox *m_usernameEdit = nullptr;
     QLineEdit *m_passwordEdit = nullptr;
     QLabel *m_connectionStatus = nullptr;

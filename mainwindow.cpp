@@ -72,7 +72,10 @@
 #include <QTabWidget>
 #include <QThread>
 #include <QTimer>
+#include <QTextBlock>
 #include <QTextCursor>
+#include <QTextDocument>
+#include <QTextEdit>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -2491,8 +2494,15 @@ void MainWindow::createLogTab()
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 12px;"
         "}"
-        "QPushButton#logAction:hover { background: #EAF4FC; }"
-        "QPushButton#logAction:pressed { background: #DCEBFA; }"));
+        "QLineEdit#logSearchInput {"
+        "  background: #FFFFFF;"
+        "  color: #1F2D3D;"
+        "  border: 1px solid #C5D4E4;"
+        "  border-radius: 6px;"
+        "  padding: 2px 8px;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
+        "}"));
 
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(24, 20, 24, 20);
@@ -2509,6 +2519,28 @@ void MainWindow::createLogTab()
     openDirButton->setObjectName(QStringLiteral("logAction"));
     openDirButton->setCursor(Qt::PointingHandCursor);
     headerRow->addWidget(title);
+    headerRow->addSpacing(20);
+
+    // 日志内关键字查找：输入框 + 上一个/下一个/清除高亮。
+    m_logSearchInput = new QLineEdit(page);
+    m_logSearchInput->setObjectName(QStringLiteral("logSearchInput"));
+    m_logSearchInput->setPlaceholderText(tr("查找关键字…"));
+    m_logSearchInput->setClearButtonEnabled(true);
+    m_logSearchInput->setFixedHeight(28);
+    headerRow->addWidget(m_logSearchInput, 0);
+
+    auto *searchPrevButton = new QPushButton(tr("上一处"), page);
+    searchPrevButton->setObjectName(QStringLiteral("logAction"));
+    searchPrevButton->setCursor(Qt::PointingHandCursor);
+    auto *searchNextButton = new QPushButton(tr("下一处"), page);
+    searchNextButton->setObjectName(QStringLiteral("logAction"));
+    searchNextButton->setCursor(Qt::PointingHandCursor);
+    auto *clearSearchButton = new QPushButton(tr("清除"), page);
+    clearSearchButton->setObjectName(QStringLiteral("logAction"));
+    clearSearchButton->setCursor(Qt::PointingHandCursor);
+    headerRow->addWidget(searchPrevButton);
+    headerRow->addWidget(searchNextButton);
+    headerRow->addWidget(clearSearchButton);
     headerRow->addStretch(1);
     headerRow->addWidget(refreshButton);
     headerRow->addWidget(openDirButton);
@@ -2526,7 +2558,7 @@ void MainWindow::createLogTab()
     m_logView->setMaximumBlockCount(10000);
     QFont logFont(QStringLiteral("Consolas"));
     logFont.setStyleHint(QFont::Monospace);
-    logFont.setPixelSize(12);
+    logFont.setPixelSize(16);
     m_logView->setFont(logFont);
     m_logView->setStyleSheet(QStringLiteral(
         "QPlainTextEdit {"
@@ -2550,6 +2582,23 @@ void MainWindow::createLogTab()
         }
         QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
     });
+
+    connect(m_logSearchInput, &QLineEdit::returnPressed,
+            this, [this]() { searchLog(false); });
+    connect(m_logSearchInput, &QLineEdit::textChanged,
+            this, [this](const QString &text) {
+        if (text.isEmpty()) {
+            clearLogSearch();
+        } else {
+            searchLog(true);
+        }
+    });
+    connect(searchPrevButton, &QPushButton::clicked,
+            this, [this]() { searchLog(true); });
+    connect(searchNextButton, &QPushButton::clicked,
+            this, [this]() { searchLog(false); });
+    connect(clearSearchButton, &QPushButton::clicked,
+            this, &MainWindow::clearLogSearch);
 
     m_logTabIndex = m_mainTabs->addTab(page, tr("日志"));
 }
@@ -2614,6 +2663,7 @@ void MainWindow::refreshLogView()
             text = text.mid(newline + 1);
         }
     }
+    m_logFullText = text;
     m_logView->setPlainText(text);
     QTextCursor cursor = m_logView->textCursor();
     cursor.movePosition(QTextCursor::End);
@@ -2623,6 +2673,70 @@ void MainWindow::refreshLogView()
                 ? tr("日志文件：%1（仅显示最近 512 KB）").arg(path)
                 : tr("日志文件：%1").arg(path));
     m_logPathLabel->setToolTip(path);
+}
+
+void MainWindow::clearLogSearch()
+{
+    if (!m_logView) {
+        return;
+    }
+    if (m_logSearchInput) {
+        m_logSearchInput->blockSignals(true);
+        m_logSearchInput->clear();
+        m_logSearchInput->blockSignals(false);
+    }
+    // 退出过滤模式：恢复完整日志，并清除残留高亮。
+    m_logFilterActive = false;
+    m_logView->setPlainText(m_logFullText);
+    m_logView->setExtraSelections(QList<QTextEdit::ExtraSelection>());
+}
+
+void MainWindow::applyLogFilter()
+{
+    if (!m_logView || !m_logSearchInput) {
+        return;
+    }
+    const QString keyword = m_logSearchInput->text();
+    if (keyword.isEmpty()) {
+        clearLogSearch();
+        return;
+    }
+
+    // 在完整日志文本上按行过滤，仅保留含关键字的行。
+    QStringList kept;
+    const QStringList lines = m_logFullText.split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        if (line.contains(keyword)) {
+            kept.append(line);
+        }
+    }
+
+    m_logView->setPlainText(kept.join(QLatin1Char('\n')));
+    m_logView->setExtraSelections(QList<QTextEdit::ExtraSelection>());
+    m_logFilterActive = true;
+
+    if (kept.isEmpty()) {
+        showActionHint(tr("日志中未找到「%1」").arg(keyword));
+        return;
+    }
+    QTextCursor cursor = m_logView->textCursor();
+    cursor.movePosition(QTextCursor::StartOfBlock);
+    m_logView->setTextCursor(cursor);
+    showActionHint(tr("共 %1 行包含「%2」").arg(kept.size()).arg(keyword));
+}
+
+void MainWindow::searchLog(bool backwards)
+{
+    Q_UNUSED(backwards);
+    if (!m_logView || !m_logSearchInput) {
+        return;
+    }
+    const QString keyword = m_logSearchInput->text();
+    if (keyword.isEmpty()) {
+        clearLogSearch();
+        return;
+    }
+    applyLogFilter();
 }
 
 void MainWindow::createSettingsTab()
@@ -4996,6 +5110,11 @@ void MainWindow::setMachineModel(MachineModel model)
         m_addSampleWidget->setMachineModel(model);
     }
     applyChannelSettings();
+    // 切换机型：立即重载该机型的坐标文件到内存坐标表。
+    reloadInstrumentCoordinates();
+    if (m_settingsDialog) {
+        m_settingsDialog->refreshCoordinates();
+    }
     if (m_commWorker) {
         QMetaObject::invokeMethod(m_commWorker, "setMachineModel",
                                   Qt::QueuedConnection,
@@ -5050,20 +5169,40 @@ platelet::MotionController *MainWindow::motionController() const
 
 void MainWindow::loadInstrumentCoordinates()
 {
-    const QString path = CoordinateFileIo::defaultFilePath();
+    // 启动时：若存在旧版单文件坐标，先迁移到当前机型的坐标文件。
+    // （注：idempotent——每次 setMachineModel 已经会原子重载对应文件。）
+    reloadInstrumentCoordinates();
+}
+
+void MainWindow::reloadInstrumentCoordinates()
+{
+    // 按当前机型读写各自的坐标文件，切换机型后互不干扰。
+    const QString path = CoordinateFileIo::defaultFilePath(m_machineModel);
     QString loadPath = path;
 
-    // 旧版本把坐标文件放在 AppData；首次升级时搬到程序目录。
+    // 旧版本只有一份 platelet_coordinates.json（在 AppData 或程序目录）。
+    // 首次按机型读写时，把它迁移到当前机型的坐标文件，避免已有坐标丢失。
     if (!QFileInfo::exists(loadPath)) {
-        const QString legacyPath = CoordinateFileIo::legacyDefaultFilePath();
-        if (!legacyPath.isEmpty() && QFileInfo::exists(legacyPath)) {
-            if (QFile::copy(legacyPath, loadPath)) {
-                qInfo() << "已迁移旧坐标文件:" << legacyPath
+        QString legacySource;
+        const QString appDirLegacy = CoordinateFileIo::legacyFilePath();
+        const QString appDataLegacy =
+                CoordinateFileIo::legacyDefaultFilePath();
+
+        if (QFileInfo::exists(appDirLegacy)) {
+            legacySource = appDirLegacy;
+        } else if (!appDataLegacy.isEmpty()
+                   && QFileInfo::exists(appDataLegacy)) {
+            legacySource = appDataLegacy;
+        }
+        if (!legacySource.isEmpty()) {
+            if (QFile::copy(legacySource, loadPath)) {
+                qInfo() << "已按机型迁移旧坐标文件:" << legacySource
                         << "→" << loadPath;
             } else {
+                // 迁移失败则读取旧文件（作为回退），并把 loadPath 指回它。
                 qWarning() << "旧坐标文件迁移失败，继续读取旧文件:"
-                           << legacyPath << "→" << loadPath;
-                loadPath = legacyPath;
+                           << legacySource << "→" << loadPath;
+                loadPath = legacySource;
             }
         }
     }

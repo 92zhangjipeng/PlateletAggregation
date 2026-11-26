@@ -402,6 +402,13 @@ void SettingsDialog::setCurrentUser(const QString &name, const QString &role)
     applyUserManagementAccess();
 }
 
+void SettingsDialog::refreshCoordinates()
+{
+    if (m_coordinateWidget) {
+        m_coordinateWidget->refreshAll();
+    }
+}
+
 void SettingsDialog::applyUserManagementAccess()
 {
     const bool maintenance =

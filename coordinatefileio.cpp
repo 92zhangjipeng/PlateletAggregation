@@ -187,7 +187,14 @@ bool readTool(const QJsonValue &value, const QString &context,
 
 } // namespace
 
-QString CoordinateFileIo::defaultFilePath()
+QString CoordinateFileIo::defaultFilePath(MachineModel model)
+{
+    return QDir(QCoreApplication::applicationDirPath())
+            .filePath(QStringLiteral("platelet_coordinates_%1.json")
+                      .arg(QLatin1String(machineModelName(model))));
+}
+
+QString CoordinateFileIo::legacyFilePath()
 {
     return QDir(QCoreApplication::applicationDirPath())
             .filePath(QStringLiteral("platelet_coordinates.json"));

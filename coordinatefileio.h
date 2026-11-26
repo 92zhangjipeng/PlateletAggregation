@@ -1,6 +1,7 @@
 #ifndef COORDINATEFILEIO_H
 #define COORDINATEFILEIO_H
 
+#include "MachineModel.h"
 #include "instrumentcoordinates.h"
 
 #include <QString>
@@ -78,8 +79,14 @@ public:
         int ignoredTools = 0;  // 数值越界而忽略的工具坐标组数
     };
 
-    /** 默认坐标文件：<程序目录>/platelet_coordinates.json */
-    static QString defaultFilePath();
+    /**
+     * 指定机型的默认坐标文件：<程序目录>/platelet_coordinates_<机型>.json，
+     * 如 KS1200 → platelet_coordinates_KS1200.json。不同机型读写各自文件。
+     */
+    static QString defaultFilePath(MachineModel model);
+
+    /** 兼容旧版单文件：<程序目录>/platelet_coordinates.json */
+    static QString legacyFilePath();
 
     /**
      * 旧版本默认坐标文件（AppDataLocation/platelet_coordinates.json）。

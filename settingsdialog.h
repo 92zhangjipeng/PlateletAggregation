@@ -48,6 +48,8 @@ public:
     static void ensureTestUser();
     /** 当前登录用户。用户管理按此权限限制增删改。 */
     void setCurrentUser(const QString &name, const QString &role);
+    /** 机型切换后刷新坐标维护页（重建树以匹配新机型范围）。 */
+    void refreshCoordinates();
 
 public slots:
     /** 串口/主控收到模组应答帧后调用，转发到模组控制页显示 */
