@@ -1,7 +1,6 @@
 ﻿#ifndef REAGENTBOTTLEPANEL_H
 #define REAGENTBOTTLEPANEL_H
 
-#include <QBasicTimer>
 #include <QColor>
 #include <QString>
 #include <QVector>
@@ -47,19 +46,19 @@ public:
     double level(int bottleIndex) const;
     void setLevel(int bottleIndex, double percent);
     void setLevels(const QVector<double> &levels);
-    /** 清除全部液位并复位报警闪烁状态 */
+    /** 清除全部液位并复位报警状态 */
     void clearLevels();
     /** 设置连接状态：未连接时只画空瓶图形，不显示百分比徽章。 */
     void setConnected(bool connected);
 
     /**
      * 设置单个瓶子的报警阈值（%）。
-     * 未设置时默认 0：表示关闭该瓶的报警闪烁。
+     * 未设置时默认 0：表示关闭该瓶的报警。
      */
     void setAlarmPercent(int bottleIndex, double percent);
     /**
      * 设置单个瓶子的报警阈值（%）。
-     * 未设置时默认 0：表示关闭该瓶的报警闪烁。
+     * 未设置时默认 0：表示关闭该瓶的报警。
      */
     void setAlarmPercents(const QVector<double> &percents);
     /** 获取单个瓶子当前报警阈值（默认 0 = 关闭）。 */
@@ -72,7 +71,6 @@ public:
 
 protected:
     void paintEvent(QPaintEvent *event) override;
-    void timerEvent(QTimerEvent *event) override;
 
 private:
     struct BottleSpec {
@@ -81,9 +79,8 @@ private:
         bool squareBody = false;
     };
 
-    void updateAlarmTimer();
     void paintBottle(QPainter &p, const QRectF &slot, int bottleIndex);
-    /** 在瓶身正中绘制液位百分比，含报警红闪。 */
+    /** 在瓶身正中绘制液位百分比，报警时红色稳态显示。 */
     void paintBottlePercent(QPainter &p, const QRectF &body,
                             double percent, bool alarm);
     /** S1 白色方形清洗液瓶（切角瓶身 + 螺纹短颈） */
@@ -100,8 +97,6 @@ private:
     QVector<BottleSpec> m_specs;
     QVector<double> m_levels;
     QVector<double> m_alarmPercents;
-    QBasicTimer m_blinkTimer;
-    bool m_blinkOn = false;
     /** 连接状态：false（未连接）时隐藏百分比徽章。 */
     bool m_connected = false;
 };

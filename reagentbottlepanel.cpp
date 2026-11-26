@@ -14,7 +14,6 @@
 #include <QPainterPath>
 #include <QPen>
 #include <QRadialGradient>
-#include <QTimerEvent>
 
 namespace {
 
@@ -131,13 +130,7 @@ void ReagentBottlePanel::setLevel(int bottleIndex, double percent)
     if (qFuzzyCompare(m_levels.at(bottleIndex) + 1.0, value + 1.0)) {
         return;
     }
-    const bool wasAlarm = isAlarmActive(bottleIndex);
     m_levels[bottleIndex] = value;
-    const bool nowAlarm = isAlarmActive(bottleIndex);
-    if (!wasAlarm && nowAlarm) {
-        m_blinkOn = false; // 触发报警时从可见相位开始
-    }
-    updateAlarmTimer();
     update();
 }
 
@@ -147,15 +140,12 @@ void ReagentBottlePanel::setLevels(const QVector<double> &levels)
     for (int i = 0; i < count; ++i) {
         m_levels[i] = qBound(0.0, levels.at(i), 100.0);
     }
-    updateAlarmTimer();
     update();
 }
 
 void ReagentBottlePanel::clearLevels()
 {
     m_levels.fill(0.0, m_specs.size());
-    m_blinkOn = false;
-    updateAlarmTimer();
     update();
 }
 
@@ -165,8 +155,6 @@ void ReagentBottlePanel::setConnected(bool connected)
         return;
     }
     m_connected = connected;
-    m_blinkOn = false;
-    updateAlarmTimer();
     update();
 }
 
@@ -178,34 +166,6 @@ QSize ReagentBottlePanel::sizeHint() const
 QSize ReagentBottlePanel::minimumSizeHint() const
 {
     return QSize(200, 480);
-}
-
-void ReagentBottlePanel::updateAlarmTimer()
-{
-    bool anyAlarm = false;
-    for (int i = 0; i < m_levels.size(); ++i) {
-        if (isAlarmActive(i)) {
-            anyAlarm = true;
-            break;
-        }
-    }
-    if (anyAlarm) {
-        if (!m_blinkTimer.isActive()) {
-            m_blinkTimer.start(500, this);
-        }
-    } else if (m_blinkTimer.isActive()) {
-        m_blinkTimer.stop();
-    }
-}
-
-void ReagentBottlePanel::timerEvent(QTimerEvent *event)
-{
-    if (event && event->timerId() == m_blinkTimer.timerId()) {
-        m_blinkOn = !m_blinkOn;
-        update();
-        return;
-    }
-    QWidget::timerEvent(event);
 }
 
 void ReagentBottlePanel::paintEvent(QPaintEvent *event)
@@ -331,7 +291,7 @@ void ReagentBottlePanel::paintBottle(QPainter &p, const QRectF &slot,
 }
 
 /** 在瓶身正中绘制百分比，白字 + 半透明深色底板保证各种液色下可读。
- *  低于报警限时底板变红并随报警闪烁。 */
+ *  低于报警限时底板变红（稳态，不闪烁）。 */
 void ReagentBottlePanel::paintBottlePercent(QPainter &p, const QRectF &body,
                                             double percent, bool alarm)
 {
@@ -348,16 +308,12 @@ void ReagentBottlePanel::paintBottlePercent(QPainter &p, const QRectF &body,
     }
     badge.moveCenter(body.center());
 
-    // 报警态闪烁：m_blinkOn 为关时整个 badge 弱化到不可见。
     QColor badgeColor(20, 40, 58, 150);
     if (alarm) {
         badgeColor = QColor(185, 28, 28, 205);
     }
     p.save();
     p.setRenderHint(QPainter::TextAntialiasing, true);
-    if (alarm && !m_blinkOn) {
-        badgeColor.setAlpha(0);
-    }
 
     p.setPen(Qt::NoPen);
     p.setBrush(badgeColor);
