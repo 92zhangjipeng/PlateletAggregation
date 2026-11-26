@@ -128,6 +128,7 @@ enum class ToolbarIconType {
     Consumables,
     Search,
     Quality,
+    Curve,
     Play,
     Pause,
     Reset,
@@ -199,6 +200,17 @@ QPixmap renderToolbarIcon(ToolbarIconType type, const QColor &color)
         p.drawPath(shield);
         p.drawLine(QPointF(11.3, 16.0), QPointF(14.8, 19.5));
         p.drawLine(QPointF(14.8, 19.5), QPointF(21.5, 12.0));
+        break;
+    }
+    case ToolbarIconType::Curve: {
+        // 简单折线图：表示曲线/聚合测试
+        QPainterPath curve;
+        curve.moveTo(8.0, 20.0);
+        curve.lineTo(13.0, 14.0);
+        curve.lineTo(18.0, 17.0);
+        curve.lineTo(24.0, 8.0);
+        p.drawPath(curve);
+        p.drawLine(QPointF(7.0, 24.0), QPointF(25.0, 24.0));
         break;
     }
     case ToolbarIconType::Play: {
@@ -336,24 +348,6 @@ QToolButton *createBottomActionButton(const QString &text, const QIcon &icon,
     button->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
     button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     button->setIconSize(QSize(22, 22));
-    button->setText(text);
-    button->setIcon(icon);
-    return button;
-}
-
-/** 靠近开始按钮的样本操作入口（加样/试管盘）。 */
-QToolButton *createSampleActionButton(const QString &text, const QIcon &icon,
-                                      QWidget *parent)
-{
-    auto *button = new QToolButton(parent);
-    button->setObjectName(QStringLiteral("sampleActionButton"));
-    button->setCursor(Qt::PointingHandCursor);
-    button->setFocusPolicy(Qt::NoFocus);
-    button->setFixedHeight(64);
-    button->setMinimumWidth(124);
-    button->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
-    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    button->setIconSize(QSize(24, 24));
     button->setText(text);
     button->setIcon(icon);
     return button;
@@ -610,21 +604,16 @@ MainWindow::MainWindow(QWidget *parent)
         "QScrollArea#mainNavScroll QScrollBar::sub-page:vertical {"
         "  background: transparent;"
         "}"
-        "QWidget#bottomActionBar {"
-        "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-        "      stop:0 #FFFFFF, stop:1 #EAF5FC);"
-        "  border-top: 1px solid #C9DDEB;"
-        "}"
-        "QLabel#mainPageTitle {"
-        "  color: #1F4E79;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 16px;"
-        "  font-weight: 700;"
-        "}"
         "QWidget#bottomBar {"
         "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
         "      stop:0 #FFFFFF, stop:1 #F0F9FE);"
         "  border-top: 1px solid #D6E6F2;"
+        "}"
+        "QWidget#runControlRow {"
+        "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+        "      stop:0 #FFFFFF, stop:1 #EAF5FC);"
+        "  border: 1px solid #C9DDEB;"
+        "  border-radius: 12px;"
         "}"
         "QLabel#footerHint {"
         "  color: #A0AAB5;"
@@ -673,31 +662,32 @@ MainWindow::MainWindow(QWidget *parent)
         "  color: #9FB3C4;"
         "  border-color: #DCE7F1;"
         "}"
-        // 加样/试管盘：靠近开始按钮的醒目入口，选中时保持蓝底提示。
-        "QToolButton#sampleActionButton {"
-        "  background: #E6F3FC;"
-        "  color: #12466B;"
-        "  border: 1px solid #7FB6D8;"
-        "  border-radius: 10px;"
-        "  padding: 0px 16px;"
-        "  font-family: 'Microsoft YaHei';"
-        "  font-size: 14px;"
-        "  font-weight: 700;"
+        // E1 柔光胶囊：连体「开始+暂停」运行控制模块。
+        "QToolButton#runStart, QToolButton#runPause {"
+        "  border: none; border-radius: 22px; background: transparent;"
+        "  color: #7E9BB2; font-family: 'Microsoft YaHei';"
+        "  font-size: 14px; font-weight: 700; letter-spacing: 1px; padding: 0 4px;"
         "}"
-        "QToolButton#sampleActionButton:hover {"
-        "  background: #D6EBFA;"
-        "  border-color: #4E97C8;"
+        "QToolButton#runStart:enabled {"
+        "  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+        "      stop:0 #6EB6E8, stop:0.55 #3A8ECB, stop:1 #2E7BB8);"
+        "  color: #FFFFFF;"
         "}"
-        "QToolButton#sampleActionButton:pressed { background: #C4E2F7; }"
-        "QToolButton#sampleActionButton:checked {"
-        "  background: #D2EAFB;"
-        "  color: #0B3A59;"
-        "  border: 2px solid #2C7BBF;"
+        "QToolButton#runStart:hover:enabled {"
+        "  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+        "      stop:0 #7EC0EC, stop:0.55 #4E9BD6, stop:1 #3986C4);"
         "}"
-        "QToolButton#sampleActionButton:disabled {"
-        "  background: #F4F8FC;"
-        "  color: #9FB3C4;"
-        "  border-color: #DCE7F1;"
+        "QToolButton#runStart:disabled {"
+        "  background: #E4EFF9; color: #8FA8BC;"
+        "}"
+        "QToolButton#runPause:disabled { color: #A9BFCF; }"
+        "QToolButton#runPause:enabled { color: #7E9BB2; }"
+        "QToolButton#runPause[state=\"hot\"] {"
+        "  background: #FFF5E0; color: #B96E00;"
+        "  border: 1.5px solid #F4C26B;"
+        "}"
+        "QToolButton#runPause[state=\"go\"] {"
+        "  background: #3A8ECB; color: #FFFFFF;"
         "}"
         "QToolButton#startButton {"
         "  background: qradialgradient(cx:0.34, cy:0.24, radius:1.0,"
@@ -1279,6 +1269,7 @@ QWidget *MainWindow::createMainPage()
         { tr("结果信息"), ToolbarIconType::Results },
         { tr("查询"), ToolbarIconType::Search },
         { tr("质控"), ToolbarIconType::Quality },
+        { tr("曲线"), ToolbarIconType::Curve },
         { tr("耗材管理"), ToolbarIconType::Consumables },
         { tr("日志"), ToolbarIconType::Log },
         { tr("设置"), ToolbarIconType::Settings }
@@ -1306,6 +1297,10 @@ QWidget *MainWindow::createMainPage()
             connect(button, &QToolButton::clicked,
                     this, &MainWindow::openQuality);
             m_qualityButton = button;
+        } else if (spec.icon == ToolbarIconType::Curve) {
+            connect(button, &QToolButton::clicked,
+                    this, &MainWindow::openCurve);
+            m_curveButton = button;
         } else if (spec.icon == ToolbarIconType::Consumables) {
             connect(button, &QToolButton::clicked,
                     this, &MainWindow::openConsumables);
@@ -1327,24 +1322,99 @@ QWidget *MainWindow::createMainPage()
         }
     }
     navLayout->addStretch(1);
+
+    // 导航栏底部：加样 / 试管盘 两个高频操作入口（checkable，和上面导航一致）。
+    auto *addSampleNavButton = createNavButton(
+                tr("加样"),
+                makeToolbarIcon(ToolbarIconType::AddSample, topIconColor),
+                navContent);
+    addSampleNavButton->setCheckable(true);
+    connect(addSampleNavButton, &QToolButton::clicked,
+            this, &MainWindow::openAddSample);
+    m_addSampleButton = addSampleNavButton;
+    navLayout->addWidget(addSampleNavButton);
+
+    auto *trayNavButton = createNavButton(
+                tr("试管盘"),
+                makeToolbarIcon(ToolbarIconType::Tray, topIconColor),
+                navContent);
+    trayNavButton->setCheckable(true);
+    connect(trayNavButton, &QToolButton::clicked,
+            this, &MainWindow::openTubeTrays);
+    m_trayButton = trayNavButton;
+    navLayout->addWidget(trayNavButton);
+
     navScroll->setWidget(navContent);
     navBarLayout->addWidget(navScroll);
     bodyLayout->addWidget(navBar);
 
     auto *content = new QWidget(page);
     content->setObjectName(QStringLiteral("contentArea"));
-    auto *contentLayout = new QHBoxLayout(content);
+    auto *contentLayout = new QVBoxLayout(content);
     contentLayout->setContentsMargins(24, 24, 24, 24);
     contentLayout->setSpacing(12);
 
-    // 试剂余量面板移到左侧竖排放置
-    m_reagentPanel = new ReagentBottlePanel(content);
-    m_reagentPanel->setFixedWidth(220);
-    contentLayout->addWidget(m_reagentPanel, 0);
+    // 模组上方的动作控制行：清洗 / 复位 / 开始 / 暂停。
+    auto *runControlRow = new QWidget(content);
+    runControlRow->setObjectName(QStringLiteral("runControlRow"));
+    auto *runControlLayout = new QHBoxLayout(runControlRow);
+    runControlLayout->setContentsMargins(0, 0, 0, 0);
+    runControlLayout->setSpacing(10);
 
-    m_moduleOverview = new ModuleOverviewWidget(content);
+    auto *cleanButton = createBottomActionButton(
+                tr("清洗"), makeToolbarIcon(ToolbarIconType::Clean,
+                                             topIconColor),
+                runControlRow);
+    connect(cleanButton, &QToolButton::clicked,
+            this, &MainWindow::handleCleaning);
+    runControlLayout->addWidget(cleanButton);
+
+    auto *resetButton = createBottomActionButton(
+                tr("复位"), makeToolbarIcon(ToolbarIconType::Reset,
+                                             topIconColor),
+                runControlRow);
+    connect(resetButton, &QToolButton::clicked,
+            this, &MainWindow::handleResetTest);
+    runControlLayout->addWidget(resetButton);
+
+    m_pauseButton = createBottomActionButton(
+                tr("暂停"), makeToolbarIcon(ToolbarIconType::Pause,
+                                             topIconColor),
+                runControlRow);
+    m_pauseButton->setObjectName(QStringLiteral("runPause"));
+    connect(m_pauseButton, &QToolButton::clicked,
+            this, &MainWindow::handlePauseResume);
+    runControlLayout->addWidget(m_pauseButton);
+
+    runControlLayout->addSpacing(20);
+
+    m_startButton = createBottomActionButton(
+                tr("开始"), makeToolbarIcon(ToolbarIconType::Play,
+                                             topIconColor),
+                runControlRow);
+    m_startButton->setObjectName(QStringLiteral("runStart"));
+    connect(m_startButton, &QToolButton::clicked,
+            this, &MainWindow::handleStartTest);
+    runControlLayout->addWidget(m_startButton);
+
+    runControlLayout->addStretch(1);
+    contentLayout->addWidget(runControlRow);
+
+    auto *moduleRow = new QWidget(content);
+    auto *moduleRowLayout = new QHBoxLayout(moduleRow);
+    moduleRowLayout->setContentsMargins(0, 0, 0, 0);
+    moduleRowLayout->setSpacing(12);
+
+    // 试剂余量面板移到左侧竖排放置
+    m_reagentPanel = new ReagentBottlePanel(moduleRow);
+    m_reagentPanel->setFixedWidth(220);
+    moduleRowLayout->addWidget(m_reagentPanel, 0);
+
+    m_moduleOverview = new ModuleOverviewWidget(moduleRow);
     m_moduleOverview->setMachineModel(m_machineModel);
-    contentLayout->addWidget(m_moduleOverview, 1);
+    moduleRowLayout->addWidget(m_moduleOverview, 1);
+
+    contentLayout->addWidget(moduleRow, 1);
 
     applyChannelSettings();
 
@@ -1404,78 +1474,6 @@ QWidget *MainWindow::createMainPage()
     });
 
     createConsumablesTab();
-
-    // 底部主操作条：动作按钮在左，圆形开始按钮在右下角，符合触屏操作习惯。
-    auto *actionBar = new QWidget(page);
-    actionBar->setObjectName(QStringLiteral("bottomActionBar"));
-    actionBar->setFixedHeight(96);
-    auto *actionLayout = new QHBoxLayout(actionBar);
-    actionLayout->setContentsMargins(24, 8, 24, 8);
-    actionLayout->setSpacing(10);
-
-    auto *cleanButton = createBottomActionButton(
-                tr("清洗"), makeToolbarIcon(ToolbarIconType::Clean,
-                                             topIconColor),
-                actionBar);
-    connect(cleanButton, &QToolButton::clicked,
-            this, &MainWindow::handleCleaning);
-    actionLayout->addWidget(cleanButton);
-
-    auto *resetButton = createBottomActionButton(
-                tr("复位"), makeToolbarIcon(ToolbarIconType::Reset,
-                                             topIconColor),
-                actionBar);
-    connect(resetButton, &QToolButton::clicked,
-            this, &MainWindow::handleResetTest);
-    actionLayout->addWidget(resetButton);
-
-    m_pauseButton = createBottomActionButton(
-                tr("暂停"), makeToolbarIcon(ToolbarIconType::Pause,
-                                             topIconColor),
-                actionBar);
-    connect(m_pauseButton, &QToolButton::clicked,
-            this, &MainWindow::handlePauseResume);
-    actionLayout->addWidget(m_pauseButton);
-
-    actionLayout->addStretch(1);
-
-    // 加样 / 试管盘是测试前的高频入口，放在开始按钮左侧。
-    auto *addSampleButton = createSampleActionButton(
-                tr("加样"),
-                makeToolbarIcon(ToolbarIconType::AddSample, topIconColor),
-                actionBar);
-    addSampleButton->setCheckable(true);
-    connect(addSampleButton, &QToolButton::clicked,
-            this, &MainWindow::openAddSample);
-    m_addSampleButton = addSampleButton;
-    actionLayout->addWidget(addSampleButton);
-
-    auto *trayButton = createSampleActionButton(
-                tr("试管盘"),
-                makeToolbarIcon(ToolbarIconType::Tray, topIconColor),
-                actionBar);
-    trayButton->setCheckable(true);
-    connect(trayButton, &QToolButton::clicked,
-            this, &MainWindow::openTubeTrays);
-    m_trayButton = trayButton;
-    actionLayout->addWidget(trayButton);
-
-    m_startButton = new QToolButton(actionBar);
-    m_startButton->setObjectName(QStringLiteral("startButton"));
-    m_startButton->setCursor(Qt::PointingHandCursor);
-    m_startButton->setFocusPolicy(Qt::NoFocus);
-    m_startButton->setFixedSize(80, 80);
-    m_startButton->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-    m_startButton->setIconSize(QSize(26, 26));
-    m_startButton->setText(tr("开始"));
-    m_startButton->setIcon(makeToolbarIcon(ToolbarIconType::Play, Qt::white,
-                                           QColor("#5F7A8F")));
-    m_startButton->setToolTip(tr("开始测试"));
-    connect(m_startButton, &QToolButton::clicked,
-            this, &MainWindow::handleStartTest);
-    actionLayout->addWidget(m_startButton, 0, Qt::AlignVCenter);
-
-    rootLayout->addWidget(actionBar);
 
     auto *bottomBar = new QWidget(page);
     bottomBar->setObjectName(QStringLiteral("bottomBar"));
@@ -1887,19 +1885,7 @@ void MainWindow::handlePauseResume()
         // 模组和主板的周期轮询全部照常运行。
     }
     updatePauseButtonAppearance();
-}
-
-void MainWindow::updatePauseButtonAppearance()
-{
-    if (!m_pauseButton) {
-        return;
-    }
-    const bool paused = m_testScheduler && m_testScheduler->isPaused();
-    m_pauseButton->setText(paused ? tr("继续") : tr("暂停"));
-    m_pauseButton->setIcon(makeToolbarIcon(
-                               paused ? ToolbarIconType::Play
-                                      : ToolbarIconType::Pause,
-                               QColor("#1F4E79")));
+    updateStartButtonAppearance();
 }
 
 void MainWindow::updateStartButtonAppearance()
@@ -1914,10 +1900,47 @@ void MainWindow::updateStartButtonAppearance()
     m_startButton->setCursor(running ? Qt::ArrowCursor
                                      : Qt::PointingHandCursor);
     m_startButton->setText(running ? tr("测试中") : tr("开始"));
+    m_startButton->setIcon(makeToolbarIcon(
+                               running ? ToolbarIconType::Play : ToolbarIconType::Play,
+                               running ? QColor("#8FA8BC")
+                                       : QColor(255, 255, 255)));
     m_startButton->setToolTip(
                 running
                 ? tr("测试进行中：可在加样页继续确认样本，复位结束测试")
                 : tr("开始测试"));
+    updatePauseButtonAppearance();
+}
+
+void MainWindow::updatePauseButtonAppearance()
+{
+    if (!m_pauseButton) {
+        return;
+    }
+    const bool paused = m_testScheduler && m_testScheduler->isPaused();
+    const bool running = m_testScheduler && m_testScheduler->isRunning();
+
+    if (!running) {
+        // 空闲：暂停段置灰，不可点
+        m_pauseButton->setEnabled(false);
+        m_pauseButton->setText(tr("暂停"));
+        m_pauseButton->setIcon(makeToolbarIcon(ToolbarIconType::Pause,
+                                               QColor("#A9BFCF")));
+        m_pauseButton->setProperty("state", QStringLiteral("idle"));
+    } else if (paused) {
+        m_pauseButton->setEnabled(true);
+        m_pauseButton->setText(tr("继续"));
+        m_pauseButton->setIcon(makeToolbarIcon(ToolbarIconType::Play, Qt::white));
+        m_pauseButton->setProperty("state", QStringLiteral("go"));
+    } else {
+        m_pauseButton->setEnabled(true);
+        m_pauseButton->setText(tr("暂停"));
+        m_pauseButton->setIcon(makeToolbarIcon(ToolbarIconType::Pause,
+                                               QColor("#B96E00")));
+        m_pauseButton->setProperty("state", QStringLiteral("hot"));
+    }
+    // QSS 属性选择器需要刷新样式表
+    m_pauseButton->style()->unpolish(m_pauseButton);
+    m_pauseButton->style()->polish(m_pauseButton);
 }
 
 void MainWindow::handleResetTest()
@@ -2311,6 +2334,13 @@ void MainWindow::createEmptyPlaceholderTabs()
                         tr("质量控制功能待接入，后续在这里显示质控结果。")),
                     tr("质控"));
     }
+    if (m_curveTabIndex < 0) {
+        m_curveTabIndex = m_mainTabs->addTab(
+                    createPlaceholderPage(
+                        tr("曲线"),
+                        tr("曲线功能待接入，后续在这里显示聚合曲线。")),
+                    tr("曲线"));
+    }
     if (m_addSampleTabIndex < 0) {
         m_addSampleWidget = new AddSampleWidget(m_machineModel,
                                                 m_testDataStore, m_mainTabs);
@@ -2405,6 +2435,15 @@ void MainWindow::openQuality()
         m_mainTabs->setCurrentIndex(m_qualityTabIndex);
     }
     setActiveTabButton(m_qualityButton);
+}
+
+void MainWindow::openCurve()
+{
+    createEmptyPlaceholderTabs();
+    if (m_mainTabs && m_curveTabIndex >= 0) {
+        m_mainTabs->setCurrentIndex(m_curveTabIndex);
+    }
+    setActiveTabButton(m_curveButton);
 }
 
 void MainWindow::openAddSample()
@@ -3400,6 +3439,8 @@ void MainWindow::syncActiveTopButtonToTab()
         setActiveTabButton(m_queryButton);
     } else if (index >= 0 && index == m_qualityTabIndex) {
         setActiveTabButton(m_qualityButton);
+    } else if (index >= 0 && index == m_curveTabIndex) {
+        setActiveTabButton(m_curveButton);
     } else if (index >= 0 && index == m_addSampleTabIndex) {
         setActiveTabButton(m_addSampleButton);
     } else if (index >= 0 && index == m_tubeTrayTabIndex) {
@@ -3587,7 +3628,7 @@ void MainWindow::setMainPageInteractionEnabled(bool enabled)
         navBar->setEnabled(enabled);
     }
     if (QWidget *actionBar = m_mainPage->findChild<QWidget *>(
-                QStringLiteral("bottomActionBar"))) {
+                QStringLiteral("runControlRow"))) {
         actionBar->setEnabled(enabled);
     }
     if (m_mainTabs) {

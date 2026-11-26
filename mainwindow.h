@@ -208,6 +208,7 @@ private:
     void openResults();
     void openQuery();
     void openQuality();
+    void openCurve();
     void openAddSample();
     void createLogTab();
     void openLogs();
@@ -238,6 +239,7 @@ private:
     int m_resultsTabIndex = -1;
     int m_queryTabIndex = -1;
     int m_qualityTabIndex = -1;
+    int m_curveTabIndex = -1;
     int m_addSampleTabIndex = -1;
     int m_settingsTabIndex = -1;
     int m_logTabIndex = -1;
@@ -258,6 +260,7 @@ private:
     QToolButton *m_queryButton = nullptr;
     QToolButton *m_qualityButton = nullptr;
     QToolButton *m_trayButton = nullptr;
+    QToolButton *m_curveButton = nullptr;
     QToolButton *m_consumablesButton = nullptr;
     QToolButton *m_addSampleButton = nullptr;
     QToolButton *m_logButton = nullptr;

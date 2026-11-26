@@ -4,6 +4,9 @@
 
 #include "reagentbottlepanel.h"
 
+#include "instrumentparameters.h"
+#include "mainboardconsumables.h"
+
 #include <QFont>
 #include <QFontMetrics>
 #include <QLinearGradient>
@@ -11,6 +14,7 @@
 #include <QPainterPath>
 #include <QPen>
 #include <QRadialGradient>
+#include <QTimerEvent>
 
 namespace {
 
@@ -46,6 +50,20 @@ ReagentBottlePanel::ReagentBottlePanel(QWidget *parent)
         { tr("RIS右"), QColor("#22C55E"), false }
     };
 
+    // 每瓶对应一个主板耗材位置，用于读该试剂的“单瓶% 报警限”（设置页可配）。
+    const int positions[] = {
+        MainBoardConsumable::InternalCleanS1, // S1清洗液
+        MainBoardConsumable::AA, MainBoardConsumable::AA_Second,
+        MainBoardConsumable::ADP, MainBoardConsumable::ADP_Second,
+        MainBoardConsumable::COL, MainBoardConsumable::COL_Second,
+        MainBoardConsumable::EPI, MainBoardConsumable::EPI_Second,
+        MainBoardConsumable::RIS, MainBoardConsumable::RIS_Second
+    };
+    m_alarmPercents.resize(m_specs.size());
+    for (int i = 0; i < m_specs.size(); ++i) {
+        m_alarmPercents[i] = consumableSingleAlarmPercent(positions[i]);
+    }
+
     clearLevels();
 }
 
@@ -62,6 +80,48 @@ double ReagentBottlePanel::level(int bottleIndex) const
     return m_levels.at(bottleIndex);
 }
 
+double ReagentBottlePanel::alarmPercent(int bottleIndex) const
+{
+    if (bottleIndex < 0 || bottleIndex >= m_alarmPercents.size()) {
+        return 0.0;
+    }
+    return m_alarmPercents.at(bottleIndex);
+}
+
+void ReagentBottlePanel::setAlarmPercent(int bottleIndex, double percent)
+{
+    if (bottleIndex < 0 || bottleIndex >= m_alarmPercents.size()) {
+        return;
+    }
+    const double value = qBound(0.0, percent, 100.0);
+    if (qFuzzyCompare(m_alarmPercents.at(bottleIndex) + 1.0, value + 1.0)) {
+        return;
+    }
+    m_alarmPercents[bottleIndex] = value;
+    update();
+}
+
+void ReagentBottlePanel::setAlarmPercents(const QVector<double> &percents)
+{
+    const int count = qMin(percents.size(), m_alarmPercents.size());
+    for (int i = 0; i < count; ++i) {
+        m_alarmPercents[i] = qBound(0.0, percents.at(i), 100.0);
+    }
+    update();
+}
+
+bool ReagentBottlePanel::isAlarmActive(int bottleIndex) const
+{
+    if (bottleIndex < 0 || bottleIndex >= m_levels.size()) {
+        return false;
+    }
+    if (bottleIndex >= m_alarmPercents.size()
+            || m_alarmPercents.at(bottleIndex) <= 0.0) {
+        return false;
+    }
+    return m_levels.at(bottleIndex) < m_alarmPercents.at(bottleIndex);
+}
+
 void ReagentBottlePanel::setLevel(int bottleIndex, double percent)
 {
     if (bottleIndex < 0 || bottleIndex >= m_levels.size()) {
@@ -71,7 +131,13 @@ void ReagentBottlePanel::setLevel(int bottleIndex, double percent)
     if (qFuzzyCompare(m_levels.at(bottleIndex) + 1.0, value + 1.0)) {
         return;
     }
+    const bool wasAlarm = isAlarmActive(bottleIndex);
     m_levels[bottleIndex] = value;
+    const bool nowAlarm = isAlarmActive(bottleIndex);
+    if (!wasAlarm && nowAlarm) {
+        m_blinkOn = false; // 触发报警时从可见相位开始
+    }
+    updateAlarmTimer();
     update();
 }
 
@@ -81,12 +147,15 @@ void ReagentBottlePanel::setLevels(const QVector<double> &levels)
     for (int i = 0; i < count; ++i) {
         m_levels[i] = qBound(0.0, levels.at(i), 100.0);
     }
+    updateAlarmTimer();
     update();
 }
 
 void ReagentBottlePanel::clearLevels()
 {
     m_levels.fill(0.0, m_specs.size());
+    m_blinkOn = false;
+    updateAlarmTimer();
     update();
 }
 
@@ -98,6 +167,34 @@ QSize ReagentBottlePanel::sizeHint() const
 QSize ReagentBottlePanel::minimumSizeHint() const
 {
     return QSize(200, 480);
+}
+
+void ReagentBottlePanel::updateAlarmTimer()
+{
+    bool anyAlarm = false;
+    for (int i = 0; i < m_levels.size(); ++i) {
+        if (isAlarmActive(i)) {
+            anyAlarm = true;
+            break;
+        }
+    }
+    if (anyAlarm) {
+        if (!m_blinkTimer.isActive()) {
+            m_blinkTimer.start(500, this);
+        }
+    } else if (m_blinkTimer.isActive()) {
+        m_blinkTimer.stop();
+    }
+}
+
+void ReagentBottlePanel::timerEvent(QTimerEvent *event)
+{
+    if (event && event->timerId() == m_blinkTimer.timerId()) {
+        m_blinkOn = !m_blinkOn;
+        update();
+        return;
+    }
+    QWidget::timerEvent(event);
 }
 
 void ReagentBottlePanel::paintEvent(QPaintEvent *event)
@@ -215,18 +312,47 @@ void ReagentBottlePanel::paintBottle(QPainter &p, const QRectF &slot,
                       slot.width(), 13.0),
                Qt::AlignHCenter | Qt::AlignVCenter, spec.label);
 
-    // 液位百分比
-    QFont percentFont(QStringLiteral("Microsoft YaHei"));
-    percentFont.setPixelSize(9);
-    percentFont.setBold(true);
-    p.setFont(percentFont);
-    QColor percentColor = percent > 0.5
-            ? darker(spec.liquidColor, 112) : QColor("#9AAAB8");
-    p.setPen(percentColor);
-    p.drawText(QRectF(slot.left(), slot.bottom() - 13.0,
-                      slot.width(), 13.0),
-               Qt::AlignHCenter | Qt::AlignVCenter,
-               QStringLiteral("%1%").arg(qRound(percent)));
+    // 液位百分比：改为居中显示在瓶内（横向+纵向居中）。
+    paintBottlePercent(p, body, percent, isAlarmActive(bottleIndex));
+}
+
+/** 在瓶身正中绘制百分比，白字 + 半透明深色底板保证各种液色下可读。
+ *  低于报警限时底板变红并随报警闪烁。 */
+void ReagentBottlePanel::paintBottlePercent(QPainter &p, const QRectF &body,
+                                            double percent, bool alarm)
+{
+    const QString text = QStringLiteral("%1%").arg(qRound(percent));
+
+    QFont pctFont(QStringLiteral("Microsoft YaHei"));
+    pctFont.setPixelSize(11);
+    pctFont.setBold(true);
+    const QFontMetrics fm(pctFont);
+
+    QRectF badge(-1, -1, 0, 0);
+    if (pctFont.pixelSize() > 0) {
+        badge.setSize(QSizeF(fm.width(text) + 10.0, fm.height() + 2.0));
+    }
+    badge.moveCenter(body.center());
+
+    // 报警态闪烁：m_blinkOn 为关时整个 badge 弱化到不可见。
+    QColor badgeColor(20, 40, 58, 150);
+    if (alarm) {
+        badgeColor = QColor(185, 28, 28, 205);
+    }
+    p.save();
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+    if (alarm && !m_blinkOn) {
+        badgeColor.setAlpha(0);
+    }
+
+    p.setPen(Qt::NoPen);
+    p.setBrush(badgeColor);
+    p.drawRoundedRect(badge, 7.0, 7.0);
+
+    p.setFont(pctFont);
+    p.setPen(Qt::white);
+    p.drawText(badge, Qt::AlignCenter, text);
+    p.restore();
 }
 
 void ReagentBottlePanel::paintCleaningBottle(QPainter &p,
