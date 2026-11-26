@@ -679,7 +679,6 @@ QWidget *SampleDetailPanel::buildReagentCard(const TestCurveData &test,
                                              const SampleTestData &sample)
 {
     const ReagentParams params = computeParams(test);
-    const bool male = (sample.gender == QStringLiteral("男"));
 
     // —— 可折叠卡片 ——
     auto *card = new QFrame(this);
@@ -804,15 +803,17 @@ QWidget *SampleDetailPanel::buildReagentCard(const TestCurveData &test,
                     : col == 2 ? int(ReferenceInterval::Timepoint::S300)
                     : int(ReferenceInterval::Timepoint::Max);
             const bool inRange = ReferenceInterval::contains(
-                        index, male, ReferenceInterval::Timepoint(tp),
+                        index, ReferenceInterval::Timepoint(tp),
                         cells[col].value);
             if (!inRange) {
                 valueColor = QColor(kBadColor);
             }
             if (tp == int(ReferenceInterval::Timepoint::Max)) {
                 rangeText = tr("%1~%2%%")
-                        .arg(ReferenceInterval::low(index, male))
-                        .arg(ReferenceInterval::high(index, male));
+                        .arg(ReferenceInterval::low(
+                                 index, ReferenceInterval::Timepoint::Max))
+                        .arg(ReferenceInterval::high(
+                                 index, ReferenceInterval::Timepoint::Max));
             }
         }
 

@@ -25,6 +25,7 @@
 #include "mainboardstatusicons.h"
 #include "mainboardpoller.h"
 #include "querywidget.h"
+#include "curvedisplaywidget.h"
 #include "resultsinfowidget.h"
 #include "sampledetailpanel.h"
 #include "sampletraymodel.h"
@@ -2338,11 +2339,9 @@ void MainWindow::createEmptyPlaceholderTabs()
                     tr("质控"));
     }
     if (m_curveTabIndex < 0) {
-        m_curveTabIndex = m_mainTabs->addTab(
-                    createPlaceholderPage(
-                        tr("曲线"),
-                        tr("曲线功能待接入，后续在这里显示聚合曲线。")),
-                    tr("曲线"));
+        m_curveWidget = new CurveDisplayWidget(m_testDataStore, m_mainTabs);
+        QScrollArea *curveScroll = makePageScroll(m_curveWidget, m_mainTabs);
+        m_curveTabIndex = m_mainTabs->addTab(curveScroll, tr("曲线"));
     }
     if (m_addSampleTabIndex < 0) {
         m_addSampleWidget = new AddSampleWidget(m_machineModel,
@@ -2443,6 +2442,9 @@ void MainWindow::openQuality()
 void MainWindow::openCurve()
 {
     createEmptyPlaceholderTabs();
+    if (m_curveWidget) {
+        m_curveWidget->refresh();
+    }
     if (m_mainTabs && m_curveTabIndex >= 0) {
         m_mainTabs->setCurrentIndex(m_curveTabIndex);
     }

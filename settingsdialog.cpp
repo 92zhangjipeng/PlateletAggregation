@@ -2506,11 +2506,37 @@ QWidget *SettingsDialog::createReferenceRangePage()
     auto *page = new QWidget;
     auto *layout = createMaintenancePageLayout(
                 page, tr("参考区间"),
-                tr("按试剂、性别和 60S/180S/300S/MAX 设置聚集率参考下限/上限（%）。"
+                tr("按试剂和 60S/180S/300S/MAX 设置聚集率参考下限/上限（%）。"
                    "0~0 表示该时间点未设置，不参与异常判断。"));
 
     auto *tabs = new QTabWidget(page);
     tabs->setObjectName(QStringLiteral("referenceTabs"));
+    tabs->tabBar()->setObjectName(QStringLiteral("referenceTabBar"));
+    tabs->setStyleSheet(QStringLiteral(
+        "QTabWidget#referenceTabs::pane {"
+        "  border: 1px solid #D4E3EF;"
+        "  background: #FFFFFF;"
+        "  border-radius: 0 0 8px 8px;"
+        "  top: -1px;"
+        "}"
+        "QTabBar#referenceTabBar::tab {"
+        "  background: #E3EEF8;"
+        "  color: #4E6B82;"
+        "  border: 1px solid #D4E3EF;"
+        "  border-bottom: none;"
+        "  border-top-left-radius: 8px;"
+        "  border-top-right-radius: 8px;"
+        "  padding: 8px 26px;"
+        "  margin-right: 4px;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 13px;"
+        "}"
+        "QTabBar#referenceTabBar::tab:selected {"
+        "  background: #FFFFFF;"
+        "  color: #1F4E79;"
+        "  font-weight: 600;"
+        "}"
+        "QTabBar#referenceTabBar::tab:hover { background: #EDF5FC; }"));
 
     const ReferenceInterval::Timepoint timepoints[] = {
         ReferenceInterval::Timepoint::S60,
@@ -2526,67 +2552,58 @@ QWidget *SettingsDialog::createReferenceRangePage()
         tabLayout->setSpacing(12);
 
         const int index = i;
-        auto buildGenderGroup = [this, tab, index, &timepoints](bool male) {
-            auto *group = new QGroupBox(male ? tr("男") : tr("女"), tab);
-            group->setObjectName(QStringLiteral("basicParamGroup"));
-            auto *groupLayout = new QVBoxLayout(group);
-            groupLayout->setContentsMargins(18, 22, 18, 18);
-            groupLayout->setSpacing(8);
+        auto *group = new QGroupBox(tab);
+        group->setObjectName(QStringLiteral("basicParamGroup"));
+        auto *groupLayout = new QVBoxLayout(group);
+        groupLayout->setContentsMargins(18, 22, 18, 18);
+        groupLayout->setSpacing(8);
 
-            auto *grid = new QGridLayout;
-            grid->setHorizontalSpacing(18);
-            grid->setVerticalSpacing(8);
-            const QStringList headers = {
-                tr("时间点"), tr("下限(%)"), tr("上限(%)")
-            };
-            for (int c = 0; c < headers.size(); ++c) {
-                auto *label = new QLabel(headers.at(c), group);
-                label->setObjectName(QStringLiteral("paramCaption"));
-                grid->addWidget(label, 0, c);
-            }
+        auto *grid = new QGridLayout;
+        grid->setHorizontalSpacing(18);
+        grid->setVerticalSpacing(8);
+        const QStringList headers = {
+            tr("时间点"), tr("下限(%)"), tr("上限(%)")
+        };
+        for (int c = 0; c < headers.size(); ++c) {
+            auto *label = new QLabel(headers.at(c), group);
+            label->setObjectName(QStringLiteral("paramCaption"));
+            grid->addWidget(label, 0, c);
+        }
 
-            auto makeSpin = [this, group](
-                    int value,
-                    const std::function<void(int)> &setter) {
-                auto *spin = new MedicalSpinBox(group);
-                spin->setRange(0, 100);
-                spin->setSuffix(tr(" %"));
-                spin->setValue(value);
-                spin->setMinimumWidth(120);
-                connect(spin,
-                        static_cast<void (QSpinBox::*)(int)>(
-                            &QSpinBox::valueChanged),
-                        this, [setter](int v) { setter(v); });
-                return spin;
-            };
-
-            for (int r = 0; r < 4; ++r) {
-                const ReferenceInterval::Timepoint timepoint =
-                        timepoints[r];
-                auto *name = new QLabel(
-                            ReferenceInterval::timepointName(timepoint),
-                            group);
-                name->setObjectName(QStringLiteral("paramCaption"));
-                grid->addWidget(name, r + 1, 0);
-                grid->addWidget(
-                            makeSpin(ReferenceInterval::low(index, male,
-                                                            timepoint),
-                                     [index, male, timepoint](int v) {
-                    ReferenceInterval::setLow(index, male, timepoint, v);
-                }), r + 1, 1);
-                grid->addWidget(
-                            makeSpin(ReferenceInterval::high(index, male,
-                                                             timepoint),
-                                     [index, male, timepoint](int v) {
-                    ReferenceInterval::setHigh(index, male, timepoint, v);
-                }), r + 1, 2);
-            }
-            groupLayout->addLayout(grid);
-            return group;
+        auto makeSpin = [this, group](
+                int value,
+                const std::function<void(int)> &setter) {
+            auto *spin = new MedicalSpinBox(group);
+            spin->setRange(0, 100);
+            spin->setSuffix(tr(" %"));
+            spin->setValue(value);
+            spin->setMinimumWidth(120);
+            connect(spin,
+                    static_cast<void (QSpinBox::*)(int)>(
+                        &QSpinBox::valueChanged),
+                    this, [setter](int v) { setter(v); });
+            return spin;
         };
 
-        tabLayout->addWidget(buildGenderGroup(true));
-        tabLayout->addWidget(buildGenderGroup(false));
+        for (int r = 0; r < 4; ++r) {
+            const ReferenceInterval::Timepoint timepoint = timepoints[r];
+            auto *name = new QLabel(
+                        ReferenceInterval::timepointName(timepoint), group);
+            name->setObjectName(QStringLiteral("paramCaption"));
+            grid->addWidget(name, r + 1, 0);
+            grid->addWidget(
+                        makeSpin(ReferenceInterval::low(index, timepoint),
+                                 [index, timepoint](int v) {
+                    ReferenceInterval::setLow(index, timepoint, v);
+                }), r + 1, 1);
+            grid->addWidget(
+                        makeSpin(ReferenceInterval::high(index, timepoint),
+                                 [index, timepoint](int v) {
+                    ReferenceInterval::setHigh(index, timepoint, v);
+                }), r + 1, 2);
+        }
+        groupLayout->addLayout(grid);
+        tabLayout->addWidget(group);
         tabLayout->addStretch(1);
         tabs->addTab(tab,
                      QString::fromLatin1(ReferenceInterval::reagentName(i)));
@@ -2598,7 +2615,7 @@ QWidget *SettingsDialog::createReferenceRangePage()
                 tr("MAX 默认：AA 30~70%、ADP 40~80%、EPI 35~75%、"
                    "COL 50~90%、RIS 45~85%；"
                    "60S/180S/300S 默认 0~0，表示未设置、不参与异常判断。"
-                   "修改后保存到 QSettings，结果页/报告后续按性别和时间点取用。"),
+                   "修改后保存到 QSettings，结果页/曲线页按试剂和时间点取用。"),
                 page);
     hint->setObjectName(QStringLiteral("paramHint"));
     hint->setWordWrap(true);

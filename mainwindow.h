@@ -33,6 +33,7 @@ class QPlainTextEdit;
 class QProgressBar;
 class QueryWidget;
 class ResultsInfoWidget;
+class CurveDisplayWidget;
 class SampleDetailPanel;
 class SampleTrayModel;
 class SettingsDialog;
@@ -289,6 +290,7 @@ private:
     SettingsDialog *m_settingsDialog = nullptr;
     ResultsInfoWidget *m_resultsInfoWidget = nullptr;
     QueryWidget *m_queryWidget = nullptr;
+    CurveDisplayWidget *m_curveWidget = nullptr;
     TestDataStore *m_testDataStore = nullptr;
     SampleDetailPanel *m_detailPanel = nullptr;
     // 当前测试会话：样本号 → 本次 tests 所属 samples.id（区分不同天的同号样本）

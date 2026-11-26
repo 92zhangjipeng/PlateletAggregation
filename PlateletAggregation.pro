@@ -42,6 +42,7 @@ SOURCES += \
     resultstablewidget.cpp \
     resultsinfowidget.cpp \
     querywidget.cpp \
+    curvedisplaywidget.cpp \
     instrumentcoordinates.cpp \
     coordinatefileio.cpp \
     coordinatemaintenancewidget.cpp \
@@ -83,6 +84,7 @@ HEADERS += \
     resultstablewidget.h \
     resultsinfowidget.h \
     querywidget.h \
+    curvedisplaywidget.h \
     instrumentcoordinates.h \
     coordinatefileio.h \
     coordinatemaintenancewidget.h \
