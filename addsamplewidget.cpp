@@ -4,6 +4,7 @@
 
 #include "addsamplewidget.h"
 
+#include "FramelessDialog.h"
 #include "appconfig.h"
 #include "medicalwidgets.h"
 #include "testdatastore.h"
@@ -27,6 +28,7 @@
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QKeyEvent>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLineF>
@@ -37,6 +39,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPixmap>
 #include <QPolygonF>
 #include <QPushButton>
 #include <QRadialGradient>
@@ -72,12 +75,74 @@ enum SampleColumn {
     TestItemColumn,
     HeightColumn,
     PositionColumn,
+    ImageColumn,
     SampleColumnCount
 };
 
 const int kSampleRowHeight = 40;
+// 右侧样本列表 / 实时图像面板宽度。测试项目列是唯一的 Stretch 列，
+// 面板加宽后全血模式（多出“图像”列）仍能显示完整的 AA+ADP 组合。
+const int kSamplePanelWidth = 560;
 const int kHeightSourceRole = Qt::UserRole + 1;
 const char kPlasmaAutoHeightSource[] = "plasmaAuto";
+
+// 图像列：UserRole + 2 存完整 QImage（缩略图由 delegate 缩放绘制）。
+const int kCaptureImageRole = Qt::UserRole + 2;
+// 识别高度来源（测高识别结果填入）
+const char kHeightRecognizeSource[] = "heightRecognize";
+
+/**
+ * 样本列表窗口：全血模式下的非模态工具窗。
+ * 用 WA_ShowWithoutActivating，测高触发自动弹出时不抢主页条码栏焦点。
+ */
+class SampleListDialog : public FramelessDialog
+{
+public:
+    explicit SampleListDialog(QWidget *parent)
+        : FramelessDialog(QObject::tr("样本列表"), parent)
+    {
+        setWindowFlags(Qt::Tool | Qt::FramelessWindowHint);
+        setAttribute(Qt::WA_ShowWithoutActivating, true);
+        if (QVBoxLayout *dialogLayout = contentLayout()) {
+            dialogLayout->setContentsMargins(8, 8, 8, 8);
+        }
+        resize(576, 680);
+    }
+
+    void showCard(QWidget *card)
+    {
+        if (card) {
+            setContentWidget(card);
+        }
+    }
+
+    void removeCard(QWidget *card)
+    {
+        if (card && contentLayout()) {
+            contentLayout()->removeWidget(card);
+        }
+    }
+};
+
+/** 弹出大图查看：图像列缩略图和右侧“实时图像”共用。 */
+void showLargeImageDialog(QWidget *parent, const QImage &image)
+{
+    if (image.isNull()) {
+        return;
+    }
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("血样照片"));
+    dialog.setWindowFlag(Qt::WindowStaysOnTopHint);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *label = new QLabel(&dialog);
+    label->setAlignment(Qt::AlignCenter);
+    label->setPixmap(QPixmap::fromImage(image).scaled(
+                         800, 600, Qt::KeepAspectRatio,
+                         Qt::SmoothTransformation));
+    layout->addWidget(label);
+    dialog.adjustSize();
+    dialog.exec();
+}
 
 QPointF lerpPoint(const QPointF &from, const QPointF &to, qreal t)
 {
@@ -867,6 +932,61 @@ public:
     }
 };
 
+/**
+ * 图像列 delegate：绘制测高拍照缩略图；无图为“未拍照”占位。
+ * 点击（编辑事件）弹出大图查看。
+ */
+class SampleImageDelegate : public QStyledItemDelegate
+{
+public:
+    explicit SampleImageDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyledItemDelegate::paint(painter, option, index);
+        const QImage image = index.data(kCaptureImageRole).value<QImage>();
+        const QRect area = QRect(option.rect).adjusted(4, 4, -4, -4);
+        if (image.isNull()) {
+            painter->setPen(QColor(0x9A, 0xB4, 0xC8));
+            QFont f = option.font;
+            f.setPointSizeF(qMax(7.0, f.pointSizeF() - 1.0));
+            painter->setFont(f);
+            painter->drawText(area, Qt::AlignCenter, QStringLiteral("—"));
+            return;
+        }
+        const QPixmap pm =
+                QPixmap::fromImage(image).scaled(area.size(),
+                                                 Qt::KeepAspectRatio,
+                                                 Qt::SmoothTransformation);
+        painter->drawPixmap(area, pm);
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &,
+                   const QModelIndex &) const override
+    {
+        return QSize(70, kSampleRowHeight - 8);
+    }
+
+    bool editorEvent(QEvent *event, QAbstractItemModel *model,
+                     const QStyleOptionViewItem &option,
+                     const QModelIndex &index) override
+    {
+        if (event->type() == QEvent::MouseButtonRelease) {
+            const QImage image = index.data(kCaptureImageRole).value<QImage>();
+            if (!image.isNull()) {
+                showLargeImageDialog(const_cast<QWidget *>(option.widget),
+                                     image);
+            }
+            return true;
+        }
+        return QStyledItemDelegate::editorEvent(event, model, option, index);
+    }
+};
+
 } // namespace
 
 /**
@@ -886,7 +1006,8 @@ public:
         , m_model(model)
     {
         setMouseTracking(true);
-        setMinimumSize(600, 440);
+        // 右侧面板 560 宽后，540 的血样架最小宽度刚好让 1200 窗口不出现横向滚动条。
+        setMinimumSize(540, 440);
         setFocusPolicy(Qt::StrongFocus);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     }
@@ -942,6 +1063,24 @@ public:
         update();
     }
 
+    // 供外部标定“可移动(待定)”的孔位集合，所有方法在 public 段声明，
+    // 实现放在 private… 之后的 helper 里。声明在此以便外部调用。
+    void setDraggablePositions(const QStringList &positions)
+    {
+        QSet<QString> next;
+        for (const QString &p : positions) {
+            const QString t = p.trimmed();
+            if (!t.isEmpty()) {
+                next.insert(t);
+            }
+        }
+        if (next == m_draggablePositions) {
+            return;
+        }
+        m_draggablePositions = next;
+        update();
+    }
+
     using MoveHandler = std::function<void(const QStringList &)>;
     using CancelHandler = std::function<void()>;
 
@@ -949,6 +1088,11 @@ public:
     {
         m_moveCommit = std::move(commit);
         m_moveCancel = std::move(cancel);
+    }
+
+    void setMoveStartHandler(const std::function<void(const QStringList &)> &handler)
+    {
+        m_moveStart = handler;
     }
 
     void startMoving(const QStringList &positions)
@@ -976,6 +1120,9 @@ public:
         QToolTip::hideText();
         setFocus(Qt::MouseFocusReason);
         setCursor(Qt::ClosedHandCursor);
+        if (m_moveStart) {
+            m_moveStart(cleaned);
+        }
         update();
     }
 
@@ -1071,40 +1218,27 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override
     {
         if (m_moving) {
-            const int index = wellAt(event->pos());
-            if (m_hasPreviewTarget != (index >= 0)) {
-                m_hasPreviewTarget = index >= 0;
-                update();
+            if (!m_dragMoved
+                    && (event->pos() - m_pressPos).manhattanLength() >= 4) {
+                m_dragMoved = true;
             }
-            if (index >= 0) {
-                const Geometry geometry = rackGeometry();
-                const Well &well = geometry.wells.at(index);
-                QStringList target;
-                if (m_movingPositions.size() >= 2) {
-                    const int base = well.group * 10 + well.row * 2;
-                    target << QString::number(base)
-                           << QString::number(base + 1);
-                } else {
-                    target << well.position;
+            QStringList target;
+            bool valid = false;
+            const bool hasTarget = moveTargetAt(event->pos(), &target, &valid);
+            // 不在孔附近时让预览管留在原位，松手会取消本次移动。
+            const QStringList preview = hasTarget ? target : m_movingPositions;
+            const bool previewValid = hasTarget ? valid : true;
+            if (m_hasPreviewTarget != hasTarget
+                    || preview != m_previewPositions
+                    || previewValid != m_previewValid) {
+                m_hasPreviewTarget = hasTarget;
+                m_previewPositions = preview;
+                m_previewPppPositions.clear();
+                if (preview.size() >= 2) {
+                    m_previewPppPositions.insert(preview.first());
                 }
-
-                bool valid = true;
-                for (const QString &position : target) {
-                    if (m_samplePositions.contains(position)
-                            && !m_movingPositions.contains(position)) {
-                        valid = false;
-                    }
-                }
-                if (target != m_previewPositions
-                        || valid != m_previewValid) {
-                    m_previewPositions = target;
-                    m_previewPppPositions.clear();
-                    if (target.size() >= 2) {
-                        m_previewPppPositions.insert(target.first());
-                    }
-                    m_previewValid = valid;
-                    update();
-                }
+                m_previewValid = previewValid;
+                update();
             }
             QToolTip::hideText();
             QWidget::mouseMoveEvent(event);
@@ -1170,25 +1304,58 @@ protected:
     void mousePressEvent(QMouseEvent *event) override
     {
         if (m_moving) {
-            if (event->button() == Qt::LeftButton) {
-                if (m_hasPreviewTarget && m_previewValid
-                        && !m_previewPositions.isEmpty()) {
-                    const QStringList positions = m_previewPositions;
-                    resetMoving();
-                    if (m_moveCommit) {
-                        m_moveCommit(positions);
-                    }
-                }
-                event->accept();
-                return;
-            }
             if (event->button() == Qt::RightButton) {
                 cancelMoving();
                 event->accept();
                 return;
             }
+            // 移动中不再用“再按一下”放置，改由 mouseReleaseEvent 松手放置。
+            event->accept();
+            return;
+        }
+        if (event->button() == Qt::LeftButton) {
+            // 血样架内直接拖动：左键落在一个“可移动”的占用管上就进入移动。
+            const int index = wellAt(event->pos());
+            if (index >= 0) {
+                const Geometry geom = rackGeometry();
+                const QStringList cellPositions =
+                        movingPositionsForWell(geom, index);
+                if (!cellPositions.isEmpty()
+                        && positionsDraggable(cellPositions)) {
+                    m_pressWell = index;
+                    m_pressPos = event->pos();
+                    m_dragMoved = false;
+                    startMoving(cellPositions);
+                    event->accept();
+                    return;
+                }
+            }
         }
         QWidget::mousePressEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (m_moving && event->button() == Qt::LeftButton) {
+            // 按松开位置重新算一次目标，避免用上一次鼠标移动留下的旧
+            // 预览导致落点不准；拖动距离不足视为单击，不移动。
+            QStringList target;
+            bool valid = false;
+            const bool hasTarget = m_dragMoved
+                    && moveTargetAt(event->pos(), &target, &valid);
+            resetMoving();
+            m_pressWell = -1;
+            if (hasTarget && valid && !target.isEmpty()) {
+                if (m_moveCommit) {
+                    m_moveCommit(target);
+                }
+            } else if (m_moveCancel) {
+                m_moveCancel();
+            }
+            event->accept();
+            return;
+        }
+        QWidget::mouseReleaseEvent(event);
     }
 
     void keyPressEvent(QKeyEvent *event) override
@@ -1210,6 +1377,9 @@ protected:
     }
 
 private:
+    struct Well;       // 前向声明，供下方 helper 的参数类型使用（体在 complete-class 上下文可见）。
+    struct Geometry;   // 前向声明，供下方 helper 的参数类型使用（体在 complete-class 上下文可见）。
+
     void resetMoving()
     {
         m_moving = false;
@@ -1218,11 +1388,134 @@ private:
         m_previewPppPositions.clear();
         m_previewValid = true;
         m_hasPreviewTarget = false;
+        m_dragMoved = false;
         m_hoverWell = -1;
         unsetCursor();
         QToolTip::hideText();
         update();
     }
+
+    // 目标孔对应的孔位：PPP+PRP 模式下同组同行两根管一起移动。
+    QStringList targetPositionsForWell(const Well &well) const
+    {
+        QStringList target;
+        if (m_movingPositions.size() >= 2) {
+            const int base = well.group * 10 + well.row * 2;
+            target << QString::number(base) << QString::number(base + 1);
+        } else {
+            target << well.position;
+        }
+        return target;
+    }
+
+    bool targetPositionsValid(const QStringList &positions) const
+    {
+        for (const QString &position : positions) {
+            if (m_samplePositions.contains(position)
+                    && !m_movingPositions.contains(position)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 按光标位置找移动目标孔：取离光标最近的孔心，而不是像 wellAt()
+     * 那样优先返回前排命中，避免前后排管身重叠时选错孔。
+     * 允许在孔心附近一定范围内松手（吸附），减少“差一点就退回”。
+     */
+    bool moveTargetAt(const QPoint &pos, QStringList *target,
+                      bool *valid) const
+    {
+        if (target) {
+            target->clear();
+        }
+        if (valid) {
+            *valid = false;
+        }
+        const Geometry geometry = rackGeometry();
+        if (!geometry.valid()) {
+            return false;
+        }
+        // 吸附半径覆盖相邻两排/两列孔之间的空隙，但不越过整个架子。
+        const qreal snapRadius = qBound<qreal>(
+                    28.0, geometry.pitch, 44.0);
+        int bestIndex = -1;
+        qreal bestDistance = snapRadius;
+        for (int i = 0; i < geometry.wells.size(); ++i) {
+            const Well &well = geometry.wells.at(i);
+            const QPointF delta = QPointF(pos) - well.center;
+            const qreal distance = qSqrt(delta.x() * delta.x()
+                                         + delta.y() * delta.y());
+            if (distance <= bestDistance) {
+                bestDistance = distance;
+                bestIndex = i;
+            }
+        }
+        if (bestIndex < 0) {
+            return false;
+        }
+        const QStringList candidate =
+                targetPositionsForWell(geometry.wells.at(bestIndex));
+        if (target) {
+            *target = candidate;
+        }
+        if (valid) {
+            *valid = targetPositionsValid(candidate);
+        }
+        return true;
+    }
+
+    // 命中的孔若为“可移动(待定)”的占用管，返回其孔位列表。
+    // PPP+PRP 模式下同组同行的两根管作为一个样本一起移动，
+    // 无论按在 PPP 还是 PRP 那一根都移动两根。
+    QStringList movingPositionsForWell(const Geometry &geom, int index) const
+    {
+        if (index < 0 || index >= geom.wells.size()) {
+            return QStringList();
+        }
+        const Well &well = geom.wells.at(index);
+        const QString position = well.position;
+        if (!m_samplePositions.contains(position)
+                || !m_draggablePositions.contains(position)) {
+            return QStringList();
+        }
+        const bool pppMode = !m_pppPositions.isEmpty();
+        QStringList target;
+        if (pppMode) {
+            // 同一组同一行的两根管：col0=group*10+row*2, col1=+1。
+            const int col0 = well.group * 10 + well.row * 2;
+            const int col1 = col0 + 1;
+            const QString p0 = QString::number(col0);
+            const QString p1 = QString::number(col1);
+            const bool have0 = m_samplePositions.contains(p0)
+                    && m_draggablePositions.contains(p0);
+            const bool have1 = m_samplePositions.contains(p1)
+                    && m_draggablePositions.contains(p1);
+            if (have0 && have1) {
+                target << p0 << p1;
+            } else {
+                return QStringList();   // 配对不全时不允许拖动
+            }
+        } else {
+            target << position;
+        }
+        return target;
+    }
+
+    bool positionsDraggable(const QStringList &positions) const
+    {
+        for (const QString &p : positions) {
+            if (!m_draggablePositions.contains(p)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    int m_pressWell = -1;   // 记录按下起始孔，供 PPP+PRP 也始终双根拖动
+    QPoint m_pressPos;      // 按下位置：拖动超过阈值才算移动
+    bool m_dragMoved = false;
 
     struct Well {
         QPointF center;      // 上层平板孔中心
@@ -1828,9 +2121,9 @@ private:
         }
         QString text;
         if (!m_hasPreviewTarget) {
-            text = tr("移动样本：把鼠标移到目标孔，左键放置，右键取消");
+            text = tr("移动样本：拖到目标孔后松开左键，右键取消");
         } else if (m_previewValid) {
-            text = tr("移动样本：左键放到目标孔，右键取消");
+            text = tr("移动样本：松开左键放到目标孔，右键取消");
         } else {
             text = tr("目标孔被占用：请换一个孔，右键取消");
         }
@@ -2274,11 +2567,13 @@ private:
     QSet<QString> m_samplePositions;
     QSet<QString> m_selectedPositions;
     QSet<QString> m_pppPositions;   // PPP+PRP 模式下每对的第一个孔为 PPP
+    QSet<QString> m_draggablePositions;   // 可拖动(待定)的孔位
     QSet<QString> m_previewPppPositions;
     QStringList m_movingPositions;
     QStringList m_previewPositions;
     MoveHandler m_moveCommit;
     CancelHandler m_moveCancel;
+    std::function<void(const QStringList &)> m_moveStart;
     bool m_moving = false;
     bool m_previewValid = true;
     bool m_hasPreviewTarget = false;
@@ -2321,6 +2616,14 @@ AddSampleWidget::AddSampleWidget(MachineModel model,
         "  color: #7A8FA3;"
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 11px;"
+        "}"
+        "QLabel#liveImage {"
+        "  background: #16222E;"
+        "  border: 1px solid #33475B;"
+        "  border-radius: 8px;"
+        "  color: #B7C7D5;"
+        "  font-family: 'Microsoft YaHei';"
+        "  font-size: 12px;"
         "}"
         "QLabel#tableHint {"
         "  color: #8A9CAB;"
@@ -2462,6 +2765,8 @@ void AddSampleWidget::setMachineModel(MachineModel model)
 
 void AddSampleWidget::refreshMode()
 {
+    // 模式切换后恢复实时取景，避免沿用上一次测高定格的旧照片。
+    m_liveFrozen = false;
     updateSampleQuality();
 }
 
@@ -2614,6 +2919,27 @@ void AddSampleWidget::showEvent(QShowEvent *event)
     }
 }
 
+bool AddSampleWidget::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_liveImage) {
+        if (event->type() == QEvent::MouseButtonRelease) {
+            auto *mouseEvent = static_cast<QMouseEvent *>(event);
+            if (mouseEvent->button() == Qt::LeftButton
+                    && !m_lastLiveImage.isNull()) {
+                showLargeImageDialog(this, m_lastLiveImage);
+                return true;
+            }
+        } else if (event->type() == QEvent::Resize
+                   && m_liveImage && !m_lastLiveImage.isNull()) {
+            m_liveImage->setPixmap(
+                        QPixmap::fromImage(m_lastLiveImage).scaled(
+                            m_liveImage->size(), Qt::KeepAspectRatio,
+                            Qt::SmoothTransformation));
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
 void AddSampleWidget::buildUi()
 {
     auto *root = new QVBoxLayout(this);
@@ -2634,31 +2960,40 @@ void AddSampleWidget::buildUi()
     content->setSpacing(12);
     content->addWidget(createBloodAreaCard(), 1);
 
-    auto *rightColumn = new QWidget(this);
-    rightColumn->setFixedWidth(500);
-    auto *rightLayout = new QVBoxLayout(rightColumn);
-    rightLayout->setContentsMargins(0, 0, 0, 0);
-    rightLayout->setSpacing(8);
+    // 全血：右侧整列实时图像（仅此模式显示）。
+    content->addWidget(createLiveImageCard(), 0);
 
-    auto *rightButtons = new QHBoxLayout;
-    rightButtons->setSpacing(10);
-    m_addSampleButton = new QPushButton(tr("＋ 添加"), rightColumn);
+    // 血浆：右侧快速录入 + 添加/确认 + 样本表格。
+    m_plasmaRight = new QWidget(this);
+    m_plasmaRight->setFixedWidth(kSamplePanelWidth);
+    m_plasmaRightLayout = new QVBoxLayout(m_plasmaRight);
+    m_plasmaRightLayout->setContentsMargins(0, 0, 0, 0);
+    m_plasmaRightLayout->setSpacing(8);
+
+    m_quickEntryWidget = createQuickEntryWidget();
+    m_plasmaRightLayout->addWidget(m_quickEntryWidget);
+
+    m_rightButtonsLayout = new QHBoxLayout;
+    m_rightButtonsLayout->setSpacing(10);
+    m_addSampleButton = new QPushButton(tr("＋ 添加"), m_plasmaRight);
     m_addSampleButton->setObjectName(QStringLiteral("sampleAddPrimary"));
     m_addSampleButton->setCursor(Qt::PointingHandCursor);
     m_addSampleButton->setMinimumHeight(44);
     m_addSampleButton->setSizePolicy(
                 QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_confirmButton = new QPushButton(tr("确认"), rightColumn);
+    m_confirmButton = new QPushButton(tr("确认"), m_plasmaRight);
     m_confirmButton->setObjectName(QStringLiteral("sampleConfirm"));
     m_confirmButton->setCursor(Qt::PointingHandCursor);
     m_confirmButton->setMinimumHeight(44);
     m_confirmButton->setSizePolicy(
                 QSizePolicy::Expanding, QSizePolicy::Fixed);
-    rightButtons->addWidget(m_addSampleButton, 1);
-    rightButtons->addWidget(m_confirmButton, 1);
-    rightLayout->addLayout(rightButtons);
-    rightLayout->addWidget(createSampleTableCard(), 1);
-    content->addWidget(rightColumn, 0);
+    m_rightButtonsLayout->addWidget(m_addSampleButton, 1);
+    m_rightButtonsLayout->addWidget(m_confirmButton, 1);
+    m_plasmaRightLayout->addLayout(m_rightButtonsLayout);
+
+    m_sampleTableCard = createSampleTableCard();
+    m_plasmaRightLayout->addWidget(m_sampleTableCard, 1);
+    content->addWidget(m_plasmaRight, 0);
 
     connect(m_addSampleButton, &QPushButton::clicked,
             this, &AddSampleWidget::addSample);
@@ -2666,17 +3001,158 @@ void AddSampleWidget::buildUi()
             this, &AddSampleWidget::confirmSamples);
 
     root->addLayout(content, 1);
+
+    // 全血底部条码/状态条：条码栏在测高触发前扫码，触发时带入新样本。
+    m_wholeBloodBar = new QFrame(this);
+    m_wholeBloodBar->setObjectName(QStringLiteral("sampleCard"));
+    m_wholeBloodBarLayout = new QHBoxLayout(m_wholeBloodBar);
+    m_wholeBloodBarLayout->setContentsMargins(12, 6, 12, 6);
+    m_wholeBloodBarLayout->setSpacing(10);
+    m_wholeBloodBarLayout->addStretch(1);
+    m_statusLabel = new QLabel(m_wholeBloodBar);
+    m_statusLabel->setObjectName(QStringLiteral("cardNote"));
+    m_sampleListButton = new QPushButton(tr("样本列表"), m_wholeBloodBar);
+    m_sampleListButton->setObjectName(QStringLiteral("sampleAction"));
+    m_sampleListButton->setCursor(Qt::PointingHandCursor);
+    m_sampleListButton->setToolTip(tr("打开/收起样本列表窗口"));
+    m_wholeBloodBarLayout->addWidget(m_statusLabel);
+    m_wholeBloodBarLayout->addWidget(m_sampleListButton);
+    root->addWidget(m_wholeBloodBar, 0);
+
+    connect(m_sampleListButton, &QPushButton::clicked, this, [this]() {
+        if (!m_sampleListPopup) {
+            return;
+        }
+        if (m_sampleListPopup->isVisible()) {
+            m_sampleListPopup->hide();
+        } else {
+            showSampleListPopup();
+        }
+    });
+
+    createSampleListPopup();
+    applyModeLayout(sampleQualityIsPlasma());
+}
+
+void AddSampleWidget::createSampleListPopup()
+{
+    if (m_sampleListPopup) {
+        return;
+    }
+    auto *dialog = new SampleListDialog(this);
+    // 窗口是顶层窗口，显式带上页面样式，表格卡片才不会失去样式。
+    dialog->setStyleSheet(styleSheet()
+        + QStringLiteral("QDialog#framelessDialog { background: #F4F8FC; }")
+        + QStringLiteral("QWidget#framelessDialogContent { background: #F4F8FC; }"));
+    m_sampleListPopup = dialog;
+}
+
+void AddSampleWidget::showSampleListPopup()
+{
+    if (!m_sampleListPopup || sampleQualityIsPlasma()) {
+        return;
+    }
+    if (!m_sampleListPopup->isVisible()) {
+        if (!m_popupPositioned) {
+            // 首次弹出默认贴在主窗口右侧，尽量不挡左边血样架。
+            QWidget *topWindow = window();
+            if (topWindow) {
+                const QPoint topLeft = topWindow->mapToGlobal(QPoint(0, 0));
+                const QSize popupSize = m_sampleListPopup->size();
+                m_sampleListPopup->move(
+                            qMax(topLeft.x() + 20,
+                                 topLeft.x() + topWindow->width()
+                                 - popupSize.width() - 20),
+                            topLeft.y() + 70);
+            }
+            m_popupPositioned = true;
+        }
+        m_sampleListPopup->show();
+    }
+}
+
+void AddSampleWidget::applyModeLayout(bool plasma)
+{
+    if (!m_plasmaRight || !m_liveImageCard || !m_wholeBloodBar
+            || !m_sampleTableCard || !m_quickEntryWidget
+            || !m_sampleTableLayout || !m_wholeBloodBarLayout) {
+        return;
+    }
+    if (m_modeLayoutReady && plasma == m_modeLayoutPlasma) {
+        return;
+    }
+    m_modeLayoutReady = true;
+    m_modeLayoutPlasma = plasma;
+
+    // 先把可能出现在旧位置的控件全部摘下来，保证反复切换模式不会重复插入。
+    if (m_sampleListPopup) {
+        static_cast<SampleListDialog *>(m_sampleListPopup)
+                ->removeCard(m_sampleTableCard);
+    }
+    m_plasmaRightLayout->removeWidget(m_sampleTableCard);
+    m_plasmaRightLayout->removeWidget(m_quickEntryWidget);
+    m_sampleTableLayout->removeWidget(m_quickEntryWidget);
+    m_wholeBloodBarLayout->removeWidget(m_quickEntryWidget);
+    m_wholeBloodBarLayout->removeWidget(m_confirmButton);
+    m_rightButtonsLayout->removeWidget(m_confirmButton);
+
+    if (plasma) {
+        if (m_sampleListPopup) {
+            m_sampleListPopup->hide();
+        }
+        m_liveImageCard->hide();
+        m_wholeBloodBar->hide();
+        m_plasmaRight->show();
+
+        // 快速录入回到表格卡片标题下方，表格回到血浆右栏。
+        m_sampleTableLayout->insertWidget(1, m_quickEntryWidget);
+        m_plasmaRightLayout->addWidget(m_sampleTableCard, 1);
+        if (m_quickSampleNoCaption) {
+            m_quickSampleNoCaption->setVisible(true);
+        }
+        if (m_quickSampleNoEdit) {
+            m_quickSampleNoEdit->setVisible(true);
+        }
+        m_rightButtonsLayout->addWidget(m_confirmButton, 1);
+    } else {
+        // 全血：表格搬到独立窗口；右侧整列留给实时图像。
+        m_plasmaRight->hide();
+        m_wholeBloodBar->show();
+        m_liveImageCard->show();
+
+        if (m_sampleListPopup) {
+            static_cast<SampleListDialog *>(m_sampleListPopup)
+                    ->showCard(m_sampleTableCard);
+        }
+        m_wholeBloodBarLayout->insertWidget(0, m_quickEntryWidget);
+        if (m_quickSampleNoCaption) {
+            m_quickSampleNoCaption->setVisible(false);
+        }
+        if (m_quickSampleNoEdit) {
+            m_quickSampleNoEdit->setVisible(false);
+        }
+        // 全血样本号始终按数据库当天最大号 +1 生成，不沿用血浆页的临时修改。
+        m_quickSampleNoEdited = false;
+        updateQuickSampleNumber();
+        const int listIndex =
+                m_wholeBloodBarLayout->indexOf(m_sampleListButton);
+        m_wholeBloodBarLayout->insertWidget(
+                    listIndex < 0 ? m_wholeBloodBarLayout->count()
+                                  : listIndex,
+                    m_confirmButton);
+    }
 }
 
 QFrame *AddSampleWidget::createSampleTableCard()
 {
     auto *card = new QFrame(this);
     card->setObjectName(QStringLiteral("sampleCard"));
-    card->setFixedWidth(500);
+    card->setFixedWidth(kSamplePanelWidth);
     card->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     auto *layout = new QVBoxLayout(card);
-    layout->setContentsMargins(16, 12, 16, 12);
+    layout->setContentsMargins(12, 10, 12, 10);
     layout->setSpacing(8);
+    m_sampleTableLayout = layout;
 
     auto *titleRow = new QHBoxLayout;
     auto *title = new QLabel(tr("加样列表"), card);
@@ -2688,42 +3164,6 @@ QFrame *AddSampleWidget::createSampleTableCard()
     titleRow->addStretch(1);
     titleRow->addWidget(m_countLabel);
     layout->addLayout(titleRow);
-
-    // 快速加样：样本号 + 条码 一次录入，条码栏可直接扫码/手动输入。
-    auto *quickGrid = new QGridLayout;
-    quickGrid->setHorizontalSpacing(8);
-    quickGrid->setVerticalSpacing(6);
-
-    auto *sampleNoCaption = new QLabel(tr("样本号"), card);
-    sampleNoCaption->setObjectName(QStringLiteral("quickLabel"));
-    m_quickSampleNoEdit = new QLineEdit(card);
-    m_quickSampleNoEdit->setObjectName(QStringLiteral("quickInput"));
-    m_quickSampleNoEdit->setPlaceholderText(tr("下一个样本号"));
-    m_quickSampleNoEdit->setToolTip(
-                tr("默认按 T+8位日期+4位序号生成，共 13 位；"
-                   "可修改，但必须保持 13 位长度"));
-    m_quickSampleNoEdit->setValidator(new QRegularExpressionValidator(
-                QRegularExpression(QStringLiteral("^[Tt]?\\d{0,12}$")),
-                m_quickSampleNoEdit));
-
-    auto *barcodeCaption = new QLabel(tr("条码"), card);
-    barcodeCaption->setObjectName(QStringLiteral("quickLabel"));
-    m_quickBarcodeEdit = new QLineEdit(card);
-    m_quickBarcodeEdit->setObjectName(QStringLiteral("quickInput"));
-    m_quickBarcodeEdit->setPlaceholderText(tr("扫描或手动输入数字条码"));
-    m_quickBarcodeEdit->setClearButtonEnabled(true);
-    m_quickBarcodeEdit->setToolTip(
-                tr("扫码枪直接扫入；只能输入数字，回车或点上方「添加」加入列表"));
-    m_quickBarcodeEdit->setValidator(new QRegularExpressionValidator(
-                QRegularExpression(QStringLiteral("^\\d*$")),
-                m_quickBarcodeEdit));
-
-    quickGrid->addWidget(sampleNoCaption, 0, 0);
-    quickGrid->addWidget(m_quickSampleNoEdit, 0, 1);
-    quickGrid->addWidget(barcodeCaption, 1, 0);
-    quickGrid->addWidget(m_quickBarcodeEdit, 1, 1);
-    quickGrid->setColumnStretch(1, 1);
-    layout->addLayout(quickGrid);
 
     auto *toolRow = new QHBoxLayout;
     toolRow->setSpacing(8);
@@ -2748,7 +3188,7 @@ QFrame *AddSampleWidget::createSampleTableCard()
     m_sampleTable->setColumnCount(SampleColumnCount);
     m_sampleTable->setHorizontalHeaderLabels(QStringList()
         << tr("状态") << tr("样本号") << tr("条码") << tr("测试项目")
-        << tr("识别高度") << tr("样本位置"));
+        << tr("识别高度") << tr("样本位置") << tr("图像"));
     m_sampleTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_sampleTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_sampleTable->setEditTriggers(QAbstractItemView::DoubleClicked
@@ -2768,11 +3208,12 @@ QFrame *AddSampleWidget::createSampleTableCard()
     m_sampleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Fixed);
     m_sampleTable->horizontalHeader()->setSectionResizeMode(
                 TestItemColumn, QHeaderView::Stretch);
-    m_sampleTable->setColumnWidth(StatusColumn, 65);
+    m_sampleTable->setColumnWidth(StatusColumn, 66);
     m_sampleTable->setColumnWidth(SampleNoColumn, 105);
-    m_sampleTable->setColumnWidth(BarcodeColumn, 85);
-    m_sampleTable->setColumnWidth(HeightColumn, 70);
-    m_sampleTable->setColumnWidth(PositionColumn, 65);
+    m_sampleTable->setColumnWidth(BarcodeColumn, 76);
+    m_sampleTable->setColumnWidth(HeightColumn, 60);
+    m_sampleTable->setColumnWidth(PositionColumn, 56);
+    m_sampleTable->setColumnWidth(ImageColumn, 56);
     m_sampleTable->setMinimumHeight(150);
 
     connect(m_sampleTable->horizontalHeader(),
@@ -2787,6 +3228,8 @@ QFrame *AddSampleWidget::createSampleTableCard()
                 StatusColumn, new SampleStatusDelegate(m_sampleTable));
     m_sampleTable->setItemDelegateForColumn(
                 BarcodeColumn, new BarcodeDelegate(m_sampleTable));
+    m_sampleTable->setItemDelegateForColumn(
+                ImageColumn, new SampleImageDelegate(m_sampleTable));
 
     auto *statusHeader = m_sampleTable->horizontalHeaderItem(StatusColumn);
     if (statusHeader) {
@@ -2821,18 +3264,12 @@ QFrame *AddSampleWidget::createSampleTableCard()
         positionHeader->setToolTip(
                     tr("血样孔号，例如 10；PPP+PRP 模式为 10+11"));
     }
+    auto *imageHeader = m_sampleTable->horizontalHeaderItem(ImageColumn);
+    if (imageHeader) {
+        imageHeader->setToolTip(
+                    tr("全血模式测高触发时拍下血样照片，可点击放大"));
+    }
 
-    connect(m_quickSampleNoEdit, &QLineEdit::textEdited,
-            this, [this]() { m_quickSampleNoEdited = true; });
-    connect(m_quickBarcodeEdit, &QLineEdit::returnPressed,
-            this, &AddSampleWidget::addSample);
-    connect(m_quickSampleNoEdit, &QLineEdit::returnPressed,
-            this, [this]() {
-        if (m_quickBarcodeEdit) {
-            m_quickBarcodeEdit->setFocus();
-            m_quickBarcodeEdit->selectAll();
-        }
-    });
     connect(m_removeSampleButton, &QPushButton::clicked,
             this, &AddSampleWidget::removeSelectedSamples);
     connect(m_modifySampleButton, &QPushButton::clicked,
@@ -2917,6 +3354,61 @@ QFrame *AddSampleWidget::createSampleTableCard()
     return card;
 }
 
+// 快速加样：样本号 + 条码。血浆模式在表格上方，全血模式搬到页面底部条码栏。
+QWidget *AddSampleWidget::createQuickEntryWidget()
+{
+    auto *widget = new QWidget(this);
+    auto *quickGrid = new QGridLayout(widget);
+    quickGrid->setContentsMargins(0, 0, 0, 0);
+    quickGrid->setHorizontalSpacing(8);
+    quickGrid->setVerticalSpacing(6);
+
+    m_quickSampleNoCaption = new QLabel(tr("样本号"), widget);
+    m_quickSampleNoCaption->setObjectName(QStringLiteral("quickLabel"));
+    m_quickSampleNoEdit = new QLineEdit(widget);
+    m_quickSampleNoEdit->setObjectName(QStringLiteral("quickInput"));
+    m_quickSampleNoEdit->setPlaceholderText(tr("下一个样本号"));
+    m_quickSampleNoEdit->setToolTip(
+                tr("默认按 T+8位日期+4位序号生成，共 13 位；"
+                   "可修改，但必须保持 13 位长度"));
+    m_quickSampleNoEdit->setValidator(new QRegularExpressionValidator(
+                QRegularExpression(QStringLiteral("^[Tt]?\\d{0,12}$")),
+                m_quickSampleNoEdit));
+
+    auto *barcodeCaption = new QLabel(tr("条码"), widget);
+    barcodeCaption->setObjectName(QStringLiteral("quickLabel"));
+    m_quickBarcodeEdit = new QLineEdit(widget);
+    m_quickBarcodeEdit->setObjectName(QStringLiteral("quickInput"));
+    m_quickBarcodeEdit->setPlaceholderText(tr("扫描或手动输入数字条码"));
+    m_quickBarcodeEdit->setClearButtonEnabled(true);
+    // 全血模式下会搬到页面底部条码栏，保证有足够的扫码输入宽度。
+    m_quickBarcodeEdit->setMinimumWidth(200);
+    m_quickBarcodeEdit->setToolTip(
+                tr("扫码枪直接扫入；只能输入数字，回车或点上方「添加」加入列表"));
+    m_quickBarcodeEdit->setValidator(new QRegularExpressionValidator(
+                QRegularExpression(QStringLiteral("^\\d*$")),
+                m_quickBarcodeEdit));
+
+    quickGrid->addWidget(m_quickSampleNoCaption, 0, 0);
+    quickGrid->addWidget(m_quickSampleNoEdit, 0, 1);
+    quickGrid->addWidget(barcodeCaption, 1, 0);
+    quickGrid->addWidget(m_quickBarcodeEdit, 1, 1);
+    quickGrid->setColumnStretch(1, 1);
+
+    connect(m_quickSampleNoEdit, &QLineEdit::textEdited,
+            this, [this]() { m_quickSampleNoEdited = true; });
+    connect(m_quickBarcodeEdit, &QLineEdit::returnPressed,
+            this, &AddSampleWidget::addSample);
+    connect(m_quickSampleNoEdit, &QLineEdit::returnPressed,
+            this, [this]() {
+        if (m_quickBarcodeEdit) {
+            m_quickBarcodeEdit->setFocus();
+            m_quickBarcodeEdit->selectAll();
+        }
+    });
+    return widget;
+}
+
 QFrame *AddSampleWidget::createBloodAreaCard()
 {
     auto *card = new QFrame(this);
@@ -2945,8 +3437,71 @@ QFrame *AddSampleWidget::createBloodAreaCard()
                 [this]() {
         handleBloodAreaMoveCancelled();
     });
+    // 直接拖动开始：记录当前命中的（移动的）管对应的待定行。
+    m_bloodArea->setMoveStartHandler(
+                [this](const QStringList &positions) {
+        handleBloodAreaMoveStarted(positions);
+    });
     layout->addWidget(m_bloodArea, 1);
     return card;
+}
+
+QFrame *AddSampleWidget::createLiveImageCard()
+{
+    auto *card = new QFrame(this);
+    card->setObjectName(QStringLiteral("sampleCard"));
+    card->setFixedWidth(kSamplePanelWidth);
+    card->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    auto *layout = new QVBoxLayout(card);
+    layout->setContentsMargins(12, 10, 12, 10);
+    layout->setSpacing(6);
+
+    auto *header = new QHBoxLayout;
+    auto *title = new QLabel(tr("实时图像"), card);
+    title->setObjectName(QStringLiteral("cardTitle"));
+    m_liveImageCaption = new QLabel(tr("点击图片放大"), card);
+    m_liveImageCaption->setObjectName(QStringLiteral("cardNote"));
+    m_liveImageCaption->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    header->addWidget(title);
+    header->addStretch(1);
+    header->addWidget(m_liveImageCaption);
+    layout->addLayout(header);
+
+    m_liveImage = new QLabel(card);
+    m_liveImage->setObjectName(QStringLiteral("liveImage"));
+    m_liveImage->setAlignment(Qt::AlignCenter);
+    m_liveImage->setMinimumHeight(200);
+    m_liveImage->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_liveImage->setCursor(Qt::PointingHandCursor);
+    m_liveImage->setToolTip(tr("全血模式实时取景；测高触发后定格为拍下的照片"));
+    m_liveImage->setText(tr("实时画面"));
+    m_liveImage->installEventFilter(this);
+    layout->addWidget(m_liveImage, 1);
+
+    m_liveImageCard = card;
+    return card;
+}
+
+// 外部相机实时帧回调：全血预览时刷新 m_liveImage。
+void AddSampleWidget::showLivePreview(const QImage &image)
+{
+    if (image.isNull() || !m_liveImage || sampleQualityIsPlasma()) {
+        return;
+    }
+    if (m_liveFrozen) {
+        return;   // 已定格拍照，等待下一次任务加入时解除。
+    }
+    m_lastLiveImage = image;
+    if (m_liveImageCaption) {
+        const QString caption = tr("实时取景 · 点击放大");
+        if (m_liveImageCaption->text() != caption) {
+            m_liveImageCaption->setText(caption);
+        }
+    }
+    const QPixmap pm = QPixmap::fromImage(image).scaled(
+                m_liveImage->size(), Qt::KeepAspectRatio,
+                Qt::SmoothTransformation);
+    m_liveImage->setPixmap(pm);
 }
 
 void AddSampleWidget::updateSampleQuality()
@@ -2974,6 +3529,18 @@ void AddSampleWidget::updateSampleQuality()
                     ? tr("手动添加一个血浆样本")
                     : tr("全血模式：由主板测高检测自动添加样本，"
                          "每次触发加 1 个"));
+    }
+    // 右侧布局：全血=实时图像 + 独立样本窗口；血浆=快速录入 + 表格。
+    applyModeLayout(plasma);
+    // 图像列：仅全血显示。
+    if (m_sampleTable) {
+        m_sampleTable->setColumnHidden(ImageColumn, plasma);
+    }
+    if (m_liveImageCaption) {
+        m_liveImageCaption->setText(
+                    m_liveFrozen
+                    ? tr("测高照片 · 点击放大")
+                    : tr("实时取景 · 点击放大"));
     }
     updateHeightHeader();
     updateSampleHeightValues();
@@ -3100,11 +3667,34 @@ void AddSampleWidget::updateSampleCount()
     if (!m_countLabel || !m_sampleTable) {
         return;
     }
+    int draft = 0;
+    int queued = 0;
+    int added = 0;
+    for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
+        QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+        if (!status) {
+            continue;
+        }
+        const QString text = status->text();
+        if (text == tr("待定")) {
+            ++draft;
+        } else if (text == tr("待测")) {
+            ++queued;
+        } else if (text == tr("加样完成") || text == tr("已加样")) {
+            ++added;
+        }
+    }
+
     const int rows = m_sampleTable->rowCount();
     m_countLabel->setText(
                 testModeIsPppPrp()
                 ? tr("共 %1 个样本 · 每样本2孔").arg(rows)
                 : tr("共 %1 个样本 · 每样本1孔").arg(rows));
+    if (m_statusLabel) {
+        m_statusLabel->setText(
+                    tr("待定 %1 · 待测 %2 · 已加样 %3")
+                    .arg(draft).arg(queued).arg(added));
+    }
 }
 
 void AddSampleWidget::updateScanHint()
@@ -3115,10 +3705,10 @@ void AddSampleWidget::updateScanHint()
     if (!sampleQualityIsPlasma()) {
         m_tableHint->setText(
                     addSampleScanBarcodeEnabled()
-                    ? tr("全血：主板测高触发自动加样 · 触发前先扫描/输入条码 · "
-                         "双击测试项目多选")
-                    : tr("全血：主板测高触发自动加样 · 每次触发加 1 个 · "
-                         "双击测试项目多选"));
+                    ? tr("全血：测高触发自动加样 · 触发前在底部条码栏扫码 · "
+                         "双击测试项目多选 · 窗口关掉可从底部「样本列表」打开")
+                    : tr("全血：测高触发自动加样 · 每次触发加 1 个 · "
+                         "双击测试项目多选 · 窗口关掉可从底部「样本列表」打开"));
         return;
     }
     if (addSampleScanBarcodeEnabled()) {
@@ -3368,11 +3958,14 @@ void AddSampleWidget::syncBloodAreaSamples()
 
     QStringList positions;
     QStringList pppPositions;
+    QStringList draggablePositions;
     const bool pppMode = testModeIsPppPrp();
     for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
         if (isRowPositionReleased(row)) {
             continue;
         }
+        QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+        const bool draft = status && status->text() == tr("待定");
         if (QTableWidgetItem *item =
                 m_sampleTable->item(row, PositionColumn)) {
             const QStringList parts = positionParts(item->text());
@@ -3380,10 +3973,14 @@ void AddSampleWidget::syncBloodAreaSamples()
             if (pppMode && !parts.isEmpty()) {
                 pppPositions << parts.first();
             }
+            if (draft) {
+                draggablePositions << parts;
+            }
         }
     }
     m_bloodArea->setSamplePositions(positions);
     m_bloodArea->setPppPositions(pppPositions);
+    m_bloodArea->setDraggablePositions(draggablePositions);
 
     QStringList selectedPositions;
     const QModelIndexList selected =
@@ -3405,6 +4002,37 @@ void AddSampleWidget::syncBloodAreaSamples()
         }
     }
     m_bloodArea->setSelectedPositions(selectedPositions);
+}
+
+// 直接拖动开始时调用：记录本次要移动的待定样本行。
+void AddSampleWidget::handleBloodAreaMoveStarted(
+        const QStringList &positions)
+{
+    if (!m_sampleTable || positions.isEmpty()) {
+        m_movingRow = -1;
+        return;
+    }
+    // 起点 = 第一个移动孔位；找到该孔位对应的待定行。
+    const QString first = positions.first();
+    for (int row = 0; row < m_sampleTable->rowCount(); ++row) {
+        QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+        if (!status || status->text() != tr("待定")) {
+            continue;
+        }
+        QTableWidgetItem *item =
+                m_sampleTable->item(row, PositionColumn);
+        if (!item) {
+            continue;
+        }
+        const QStringList parts = positionParts(item->text());
+        if (parts.contains(first)) {
+            m_movingRow = row;
+            m_sampleTable->selectRow(row);
+            m_sampleTable->setCurrentCell(row, PositionColumn);
+            return;
+        }
+    }
+    m_movingRow = -1;
 }
 
 void AddSampleWidget::handleBloodAreaMoveCommitted(
@@ -3467,7 +4095,75 @@ void AddSampleWidget::handleHeightDetectionTrigger()
     if (!m_sampleTable || sampleQualityIsPlasma()) {
         return;
     }
+    // 新一轮测高开始：解除上次定格，恢复实时取景，等拍照后再定格。
+    m_liveFrozen = false;
     addSampleInternal(true);
+    // 只在本页可见时自动弹样本列表，避免操作员在其它页时被打断。
+    if (isVisible()) {
+        showSampleListPopup();
+        // 焦点留在底部条码栏，保持“扫码 → 放管触发”的连续操作。
+        if (addSampleScanBarcodeEnabled() && m_quickBarcodeEdit) {
+            m_quickBarcodeEdit->setFocus();
+            m_quickBarcodeEdit->selectAll();
+        }
+    }
+}
+
+void AddSampleWidget::showCapturedImage(const QImage &image,
+                                        double heightMm)
+{
+    if (image.isNull()) {
+        return;
+    }
+    // 测高触发：定格为拍下的照片，实时取景暂停刷新。
+    m_liveFrozen = true;
+    m_lastLiveImage = image;
+    if (m_liveImageCaption) {
+        m_liveImageCaption->setText(tr("测高照片 · 点击放大"));
+    }
+    // 右侧实时面板：全血时展示拍下的定格照片。
+    if (m_liveImage) {
+        const QPixmap pm = QPixmap::fromImage(image).scaled(
+                    m_liveImage->size(), Qt::KeepAspectRatio,
+                    Qt::SmoothTransformation);
+        m_liveImage->setPixmap(pm);
+    }
+
+    // 绑定到最新一个测高触发添加的待定样本行。
+    int targetRow = -1;
+    for (int row = m_sampleTable ? m_sampleTable->rowCount() - 1 : -1;
+         row >= 0; --row) {
+        QTableWidgetItem *status = m_sampleTable->item(row, StatusColumn);
+        if (status && status->text() == tr("待定")) {
+            targetRow = row;
+            break;
+        }
+    }
+    if (targetRow < 0) {
+        return;
+    }
+    if (QTableWidgetItem *item =
+            m_sampleTable->item(targetRow, ImageColumn)) {
+        m_updatingTable = true;
+        item->setData(kCaptureImageRole, image);
+        m_updatingTable = false;
+        item->setToolTip(tr("测高触发拍下的血样照片，点击可放大"));
+        adjustSampleRowHeight(targetRow);
+    }
+    // 回填识别高度。
+    if (heightMm > 0.0) {
+        if (QTableWidgetItem *item =
+                m_sampleTable->item(targetRow, HeightColumn)) {
+            const QString text = QString::number(heightMm, 'f', 1);
+            m_updatingTable = true;
+            item->setText(text);
+            item->setData(Qt::UserRole, text);
+            item->setData(kHeightSourceRole,
+                          QString::fromLatin1(kHeightRecognizeSource));
+            m_updatingTable = false;
+            item->setToolTip(tr("全血模式：识别高度由测高结果填入"));
+        }
+    }
 }
 
 void AddSampleWidget::addSampleInternal(bool fromHeightTrigger)
@@ -3569,8 +4265,8 @@ void AddSampleWidget::addSampleInternal(bool fromHeightTrigger)
     }
 
     const int row = m_sampleTable->rowCount() - 1;
+    m_sampleTable->scrollToBottom();
     if (!fromHeightTrigger) {
-        m_sampleTable->scrollToBottom();
         m_sampleTable->selectRow(row);
         m_sampleTable->setCurrentCell(row, BarcodeColumn);
     }
@@ -3665,6 +4361,8 @@ void AddSampleWidget::confirmSamples()
     }
 
     if (!problems.isEmpty()) {
+        // 全血模式下列表在独立窗口里，校验失败先把它调出来，方便定位问题行。
+        showSampleListPopup();
         MedicalMessageBox::warning(this, tr("确认加样"),
                              problems.join(QLatin1Char('\n')));
         if (firstProblemRow >= 0) {
@@ -3677,6 +4375,15 @@ void AddSampleWidget::confirmSamples()
     if (draftRows.isEmpty()) {
         MedicalMessageBox::information(this, tr("确认加样"),
                                  tr("当前没有待定样本。"));
+        return;
+    }
+
+    // 校验通过后确认一次，才把任务入队。
+    if (MedicalMessageBox::question(this, tr("确认加样"),
+                                    tr("共有 %1 个待定样本，确定确认并加入待测队列吗？")
+                                    .arg(draftRows.size()),
+                                    QMessageBox::Yes | QMessageBox::No,
+                                    QMessageBox::No) != QMessageBox::Yes) {
         return;
     }
 
@@ -4189,6 +4896,8 @@ void AddSampleWidget::appendSampleRow(const QString &sampleNumber,
     }
     m_sampleTable->setItem(row, PositionColumn,
                            makeItem(position, false));
+    m_sampleTable->setItem(row, ImageColumn,
+                           makeItem(QString(), false));
 
     if (QTableWidgetItem *item = m_sampleTable->item(row, StatusColumn)) {
         item->setToolTip(
@@ -4209,6 +4918,9 @@ void AddSampleWidget::appendSampleRow(const QString &sampleNumber,
     }
     if (QTableWidgetItem *item = m_sampleTable->item(row, PositionColumn)) {
         item->setToolTip(tr("血样孔号，例如 10；PPP+PRP 模式为 10+11"));
+    }
+    if (QTableWidgetItem *item = m_sampleTable->item(row, ImageColumn)) {
+        item->setToolTip(tr("测高触发拍下的血样照片，点击可放大"));
     }
 
     m_updatingTable = false;

@@ -5,16 +5,21 @@
 #include "testsamplequeue.h"
 
 #include <QSet>
+#include <QImage>
 #include <QStringList>
 #include <QWidget>
 
+class FramelessDialog;
+class QDialog;
 class QFrame;
+class QHBoxLayout;
 class QLabel;
 class QLineEdit;
 class QPushButton;
 class QShowEvent;
 class QTableWidget;
 class QTableWidgetItem;
+class QVBoxLayout;
 class TestDataStore;
 class BloodSampleAreaWidget;
 
@@ -80,12 +85,23 @@ public:
     /** 全血模式主板测高上升沿触发：每次触发自动添加一个样本 */
     void handleHeightDetectionTrigger();
 
+    /**
+     * 测高拍照完成后由 MainWindow 调用：把拍到的 QImage 显示到
+     * 左侧实时面板，并绑定到最新一个（测高触发添加的）待定样本的
+     * 「图像」列；识别高度写入该行 HeightColumn。
+     */
+    void showCapturedImage(const QImage &image, double heightMm = -1.0);
+    /** 实时取景帧回调（全血预览），测高触发定格后停止刷新。 */
+    void showLivePreview(const QImage &image);
+
     /** 已确认待测样本队列（测试流程后续从这里取样本） */
     TestQueue *testQueue();
     const TestQueue *testQueue() const;
 
 protected:
     void showEvent(QShowEvent *event) override;
+    /** 实时图像点击弹出大图、面板缩放时重新适配。 */
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
     void addSample();
@@ -99,6 +115,13 @@ private:
     void buildUi();
     QFrame *createSampleTableCard();
     QFrame *createBloodAreaCard();
+    QFrame *createLiveImageCard();
+    QWidget *createQuickEntryWidget();
+    void createSampleListPopup();
+    /** 全血/血浆切换右侧布局：表格在右栏与独立样本列表窗口之间搬迁。 */
+    void applyModeLayout(bool plasma);
+    /** 测高触发后显示样本列表窗口（已显示则不重复弹）。 */
+    void showSampleListPopup();
     void updateSampleQuality();
     void updateHeightHeader();
     void updateSampleHeightValues();
@@ -116,6 +139,7 @@ private:
     void focusBarcodeCell(int row);
     void modifyTestItems(int row);
     void syncBloodAreaSamples();
+    void handleBloodAreaMoveStarted(const QStringList &positions);
     void handleBloodAreaMoveCommitted(const QStringList &positions);
     void handleBloodAreaMoveCancelled();
     void adjustSampleRowHeight(int row);
@@ -155,6 +179,26 @@ private:
     QPushButton *m_removeSampleButton = nullptr;
     QPushButton *m_modifySampleButton = nullptr;
     BloodSampleAreaWidget *m_bloodArea = nullptr;
+    QWidget *m_plasmaRight = nullptr;       // 血浆模式右侧列
+    QVBoxLayout *m_plasmaRightLayout = nullptr;
+    QHBoxLayout *m_rightButtonsLayout = nullptr;
+    QWidget *m_quickEntryWidget = nullptr;  // 样本号/条码快速录入
+    QLabel *m_quickSampleNoCaption = nullptr;
+    QFrame *m_sampleTableCard = nullptr;
+    QVBoxLayout *m_sampleTableLayout = nullptr;
+    QFrame *m_wholeBloodBar = nullptr;      // 全血底部条码/状态条
+    QHBoxLayout *m_wholeBloodBarLayout = nullptr;
+    QLabel *m_statusLabel = nullptr;
+    QPushButton *m_sampleListButton = nullptr;
+    FramelessDialog *m_sampleListPopup = nullptr;   // 非模态样本列表窗口
+    bool m_popupPositioned = false;         // 首次弹出时摆到主窗口右侧
+    bool m_modeLayoutPlasma = false;
+    bool m_modeLayoutReady = false;
+    QFrame *m_liveImageCard = nullptr;      // 全血实时图像卡片（右侧整列）
+    QLabel *m_liveImageCaption = nullptr;   // 全血实时图像标题/提示
+    QLabel *m_liveImage = nullptr;          // 全血实时图像
+    QImage m_lastLiveImage;                 // 最近一帧（供放大/缩放重绘）
+    bool m_liveFrozen = false;              // 测高触发已定格拍照
     TestQueue m_testQueue;
     QSet<QString> m_testingSamples;   // 正在测试的样本号（不改变表格状态文字）
     bool m_updatingTable = false;

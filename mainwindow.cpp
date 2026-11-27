@@ -4,6 +4,8 @@
 
 #include "mainwindow.h"
 #include "addsamplewidget.h"
+#include "heightcamcontroller.h"
+#include "heightrecognizer.h"
 #include "consumablesdialog.h"
 #include "settingsdialog.h"
 #include "CommunicationWorker.h"
@@ -1063,6 +1065,9 @@ MainWindow::MainWindow(QWidget *parent)
     // 串口连接从程序启动就开始，登录页显示期间也在后台自动连接
     startInstrumentConnection();
     createSettingsTab();
+
+    // 测高相机线程：全血模式打开拍照，血浆模式关闭。
+    setupHeightCamera();
 }
 
 MainWindow::~MainWindow()
@@ -1607,6 +1612,14 @@ void MainWindow::returnToLogin()
 
 void MainWindow::handleStartTest()
 {
+    // 开始前确认，避免误触启动。
+    if (MedicalMessageBox::question(this, tr("开始测试"),
+                                    tr("即将开始测试，确定继续吗？"),
+                                    QMessageBox::Yes | QMessageBox::No,
+                                    QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+
     createEmptyPlaceholderTabs();
     if (!m_addSampleWidget || !m_trayModel || !m_moduleOverview) {
         showActionHint(tr("测试依赖未初始化"));
@@ -2825,12 +2838,21 @@ void MainWindow::createSettingsTab()
     });
     connect(m_settingsDialog, &SettingsDialog::sampleQualityChanged,
             this, [this]() {
+        const bool wholeBlood = !sampleQualityIsPlasma();
         if (m_boardIndicators) {
-            m_boardIndicators->setHeightIconVisible(
-                        !sampleQualityIsPlasma());
+            m_boardIndicators->setHeightIconVisible(wholeBlood);
         }
         if (m_addSampleWidget) {
             m_addSampleWidget->refreshMode();
+        }
+        // 全血→开相机+开实时取景；血浆→关相机+关实时取景。
+        if (m_heightCam) {
+            QMetaObject::invokeMethod(m_heightCam, "setCameraPower",
+                                      Qt::QueuedConnection,
+                                      Q_ARG(bool, wholeBlood));
+            QMetaObject::invokeMethod(m_heightCam, "setPreviewEnabled",
+                                      Qt::QueuedConnection,
+                                      Q_ARG(bool, wholeBlood));
         }
     });
     connect(m_settingsDialog, &SettingsDialog::coordinateMotionRequested,
@@ -2844,6 +2866,25 @@ void MainWindow::createSettingsTab()
     });
     connect(m_settingsDialog, &SettingsDialog::machineModelChanged,
             this, &MainWindow::setMachineModel);
+    connect(m_settingsDialog, &SettingsDialog::heightCameraChanged,
+            this, [this](const QString &deviceName, int deviceIndex) {
+        if (!m_heightCam) {
+            return;
+        }
+        QMetaObject::invokeMethod(m_heightCam, "setCameraDevice",
+                                  Qt::QueuedConnection,
+                                  Q_ARG(QString, deviceName),
+                                  Q_ARG(int, deviceIndex));
+        // 全血模式下立即按新设备重开取流；血浆模式保持关闭。
+        if (!sampleQualityIsPlasma()) {
+            QMetaObject::invokeMethod(m_heightCam, "setCameraPower",
+                                      Qt::QueuedConnection,
+                                      Q_ARG(bool, false));
+            QMetaObject::invokeMethod(m_heightCam, "setCameraPower",
+                                      Qt::QueuedConnection,
+                                      Q_ARG(bool, true));
+        }
+    });
     connect(m_settingsDialog, &SettingsDialog::channelEnabledChanged,
             this, [this](int globalChannel, bool enabled) {
         if (!m_moduleOverview) {
@@ -4892,6 +4933,17 @@ void MainWindow::setupCommunicationThread()
 
 void MainWindow::shutdownCommunicationThread()
 {
+    // 先停测高相机线程。
+    if (m_heightCamThread && m_heightCamThread->isRunning()) {
+        if (m_heightCam) {
+            m_heightCam->disconnect(this);
+            QMetaObject::invokeMethod(m_heightCam, "setCameraPower",
+                                      Qt::BlockingQueuedConnection,
+                                      Q_ARG(bool, false));
+        }
+        m_heightCamThread->quit();
+        m_heightCamThread->wait();
+    }
     if (m_commThread && m_commThread->isRunning()) {
         if (m_commWorker) {
             // 退出前把主板缓存区的耗材余量写入 flash（老软件同样的退出流程），
@@ -4917,6 +4969,98 @@ void MainWindow::shutdownCommunicationThread()
     delete m_commWorker;
     m_commWorker = nullptr;
     // m_commThread 的父对象是本窗口，随窗口析构
+}
+
+void MainWindow::setupHeightCamera()
+{
+    if (m_heightCamThread || m_heightCam) {
+        return;
+    }
+    m_heightCamThread = new QThread(this);
+    m_heightCam = new HeightCamController;
+    // 设备在“仪器参数”页按名称保存；名称在线程启动前写入，
+    // 之后再 moveToThread，避免取流线程读到竞态。
+    const bool wholeBlood = !sampleQualityIsPlasma();
+    {
+        QSettings settings;
+        const QString deviceName = settings.value(
+                    QStringLiteral("heightCamera/deviceName")).toString();
+        const int deviceIndex = settings.value(
+                    QStringLiteral("heightCamera/deviceIndex"), 0).toInt();
+        m_heightCam->setCameraDevice(deviceName, deviceIndex);
+    }
+    m_heightCam->moveToThread(m_heightCamThread);
+    connect(m_heightCamThread, &QThread::started,
+            m_heightCam, &HeightCamController::start);
+    connect(m_heightCam, &HeightCamController::imageCaptured,
+            this, [this](const QString &imagePath) {
+        handleCapturedImage(imagePath);
+    }, Qt::QueuedConnection);
+    connect(m_heightCam, &HeightCamController::liveFrame,
+            this, [this](const QImage &frame) {
+        if (m_addSampleWidget) {
+            m_addSampleWidget->showLivePreview(frame);
+        }
+    }, Qt::QueuedConnection);
+    connect(m_heightCam, &HeightCamController::captureFailed,
+            this, [this](const QString &type, const QString &msg) {
+        qWarning() << "[HeightCam] 拍照失败:" << type << "-" << msg;
+    }, Qt::QueuedConnection);
+    // 全血模式开相机，血浆模式关闭。
+    QMetaObject::invokeMethod(m_heightCam, "setCameraPower",
+                              Qt::QueuedConnection,
+                              Q_ARG(bool, wholeBlood));
+    // 实时取景：全血打开预览，血浆关闭。
+    QMetaObject::invokeMethod(m_heightCam, "setPreviewEnabled",
+                              Qt::QueuedConnection,
+                              Q_ARG(bool, wholeBlood));
+    m_heightCamThread->start();
+    qInfo() << "[HeightCam] 测高相机线程启动，全血模式=" << wholeBlood;
+}
+
+void MainWindow::handleCapturedImage(const QString &imagePath)
+{
+    if (!m_addSampleWidget) {
+        return;
+    }
+    QImage image;
+    if (!image.load(imagePath)) {
+        qWarning() << "[HeightCam] 无法加载拍到的照片:" << imagePath;
+        return;
+    }
+    // 基础识别：算红细胞高度（mm），识别失败返回 -1。
+    double heightMm = -1.0;
+    const QImage imgRgb = image.convertToFormat(QImage::Format_RGB888);
+    if (!imgRgb.isNull()) {
+        const int w = imgRgb.width();
+        const int h = imgRgb.height();
+        if (w > 0 && h > 0) {
+            cv::Mat bgr(h, w, CV_8UC3,
+                        const_cast<uchar *>(imgRgb.constBits()),
+                        static_cast<size_t>(imgRgb.bytesPerLine()));
+            cv::Mat bgrCopy;
+            if (imgRgb.bytesPerLine() ==
+                    static_cast<int>(w * 3)) {
+                bgrCopy = bgr.clone();
+            } else {
+                cv::Mat converted;
+                cv::cvtColor(bgr, converted, cv::COLOR_RGB2BGR);
+                bgrCopy = converted;
+            }
+            // 识别层期望 BGR（内部转 HSV），而 QImage 为 RGB，
+            // 直接按 BGR 语义传入红色/蓝色也可判定；为稳妥先转 BGR。
+            cv::Mat bgrImg;
+            cv::cvtColor(bgrCopy, bgrImg, cv::COLOR_RGB2BGR);
+            const HeightRecognitionResult r =
+                    HeightRecognizer::recognize(bgrImg);
+            if (r.ok) {
+                heightMm = r.rbcHeightMm;
+                qInfo() << "[HeightCam] 识别高度:" << heightMm
+                        << "mm 溶血:" << r.state;
+            }
+        }
+    }
+    m_addSampleWidget->showCapturedImage(image, heightMm);
 }
 
 void MainWindow::handleStartupTimeout()
@@ -5219,6 +5363,11 @@ void MainWindow::applyMainboardStatus(const MainBoardStatus &status)
             && m_addSampleWidget) {
         qInfo() << "Mainboard height detection trigger: add one sample";
         m_addSampleWidget->handleHeightDetectionTrigger();
+        // 测高触发即拍照信号：让相机也拍一帧。
+        if (m_heightCam) {
+            QMetaObject::invokeMethod(
+                        m_heightCam, "triggerCapture", Qt::QueuedConnection);
+        }
     }
 
     QStringList issues;

@@ -16,6 +16,7 @@
 #include <functional>
 
 class AddSampleWidget;
+class HeightCamController;
 class QToolButton;
 class CommunicationWorker;
 class ConsumablesDialog;
@@ -129,6 +130,10 @@ private:
     QWidget *createMainPage();
     void setupCommunicationThread();
     void shutdownCommunicationThread();
+    /** 创建测高相机线程：血浆模式关相机、全血开相机并接拍照信号。 */
+    void setupHeightCamera();
+    /** 测高拍照回调：识别高度并把图像交给加样页绑定 + 显示。 */
+    void handleCapturedImage(const QString &imagePath);
     void setConnectionStatus(const QString &text, const char *state,
                              const QString &toolTip = QString());
     bool startupConnectionAbnormal() const;
@@ -309,6 +314,8 @@ private:
     CleaningController *m_cleaningController = nullptr;
     ResetController *m_resetController = nullptr;
     AddSampleWidget *m_addSampleWidget = nullptr;
+    HeightCamController *m_heightCam = nullptr;
+    QThread *m_heightCamThread = nullptr;
     bool m_addSampleResultsWired = false;
     SampleTrayModel *m_trayModel = nullptr;
     TubeTrayDialog *m_tubeTrayDialog = nullptr;

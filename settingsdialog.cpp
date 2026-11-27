@@ -7,6 +7,7 @@
 #include "modulecontrolwidget.h"
 #include "CommunicationWorker.h"
 #include "appconfig.h"
+#include "heightcamcontroller.h"
 #include "instrumentparameters.h"
 #include "informationentry.h"
 #include "referenceinterval.h"
@@ -14,6 +15,7 @@
 #include <QAbstractItemView>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QCryptographicHash>
 #include <QDebug>
 #include <QDialog>
@@ -1932,6 +1934,56 @@ QWidget *SettingsDialog::createInstrumentParamsPage()
         }
     });
 
+    // —— 测高相机：按设备名保存，保证全血模式打开的是仪器摄像头 ——
+    instrumentLayout->addSpacing(4);
+    auto *cameraRow = new QHBoxLayout;
+    cameraRow->setSpacing(12);
+    auto *cameraCaption = new QLabel(tr("测高相机"), instrumentGroup);
+    cameraCaption->setObjectName(QStringLiteral("paramCaption"));
+    m_heightCameraCombo = new MedicalComboBox(instrumentGroup);
+    m_heightCameraCombo->setSizeAdjustPolicy(
+                QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_heightCameraCombo->setMinimumContentsLength(18);
+    auto *refreshCameraButton = new QPushButton(tr("刷新"), instrumentGroup);
+    refreshCameraButton->setObjectName(QStringLiteral("userActionButton"));
+    refreshCameraButton->setCursor(Qt::PointingHandCursor);
+    cameraRow->addWidget(cameraCaption);
+    cameraRow->addWidget(m_heightCameraCombo, 1);
+    cameraRow->addWidget(refreshCameraButton);
+    instrumentLayout->addLayout(cameraRow);
+
+    auto *cameraHint = new QLabel(
+                tr("全血模式测高使用此摄像头。按设备名称保存，"
+                   "USB 拔插或换电脑后仍能找回仪器摄像头；"
+                   "插拔摄像头后点「刷新」重新枚举。"),
+                instrumentGroup);
+    cameraHint->setObjectName(QStringLiteral("paramHint"));
+    cameraHint->setWordWrap(true);
+    instrumentLayout->addWidget(cameraHint);
+
+    populateHeightCameraCombo();
+    connect(refreshCameraButton, &QPushButton::clicked,
+            this, [this]() { populateHeightCameraCombo(); });
+    // 用 activated：用户选中当前已高亮的项也会触发，避免“点了同一项却
+    // 没保存设备名”的陷阱；程序内部 populate 时不会触发。
+    connect(m_heightCameraCombo,
+            static_cast<void (QComboBox::*)(int)>(&QComboBox::activated),
+            this, [this](int) {
+        if (!m_heightCameraCombo) {
+            return;
+        }
+        const int index = m_heightCameraCombo
+                ->currentData(Qt::UserRole + 1).toInt();
+        if (index < 0) {
+            return;   // 占位项（未检测到摄像头），不覆盖已保存配置
+        }
+        const QString name = m_heightCameraCombo->currentData().toString();
+        QSettings settings;
+        settings.setValue(QStringLiteral("heightCamera/deviceName"), name);
+        settings.setValue(QStringLiteral("heightCamera/deviceIndex"), index);
+        emit heightCameraChanged(name, index);
+    });
+
     auto *testGroup = new QGroupBox(tr("测试模式"), page);
     testGroup->setObjectName(QStringLiteral("basicParamGroup"));
     auto *testLayout = new QVBoxLayout(testGroup);
@@ -2052,6 +2104,67 @@ QWidget *SettingsDialog::createInstrumentParamsPage()
     layout->addWidget(testGroup);
     layout->addStretch(1);
     return page;
+}
+
+void SettingsDialog::populateHeightCameraCombo()
+{
+    if (!m_heightCameraCombo) {
+        return;
+    }
+    QSettings settings;
+    const QString savedName = settings.value(
+                QStringLiteral("heightCamera/deviceName")).toString().trimmed();
+    const int savedIndex = settings.value(
+                QStringLiteral("heightCamera/deviceIndex"), 0).toInt();
+
+    const QStringList names = HeightCamController::cameraDeviceNames();
+    const QSignalBlocker blocker(m_heightCameraCombo);
+    m_heightCameraCombo->clear();
+
+    if (names.isEmpty()) {
+        m_heightCameraCombo->addItem(tr("未检测到摄像头"), QString());
+        m_heightCameraCombo->setItemData(
+                    m_heightCameraCombo->count() - 1, -1, Qt::UserRole + 1);
+        m_heightCameraCombo->setEnabled(false);
+        return;
+    }
+    m_heightCameraCombo->setEnabled(true);
+
+    int selectedRow = -1;
+    for (int i = 0; i < names.size(); ++i) {
+        const QString label = names.at(i).isEmpty()
+                ? tr("设备 %1（名称未知）").arg(i)
+                : tr("设备 %1：%2").arg(i).arg(names.at(i));
+        m_heightCameraCombo->addItem(label, names.at(i));
+        const int row = m_heightCameraCombo->count() - 1;
+        m_heightCameraCombo->setItemData(row, i, Qt::UserRole + 1);
+        if (!savedName.isEmpty()
+                && names.at(i).compare(savedName, Qt::CaseInsensitive) == 0) {
+            selectedRow = row;
+        }
+    }
+
+    if (selectedRow < 0 && !savedName.isEmpty()) {
+        // 已保存的设备当前不在线：保留这一项，提示用户插回仪器摄像头。
+        m_heightCameraCombo->addItem(
+                    tr("%1（未连接）").arg(savedName), savedName);
+        const int row = m_heightCameraCombo->count() - 1;
+        m_heightCameraCombo->setItemData(row, savedIndex, Qt::UserRole + 1);
+        selectedRow = row;
+    }
+    if (selectedRow < 0) {
+        for (int i = 0; i < m_heightCameraCombo->count(); ++i) {
+            if (m_heightCameraCombo->itemData(i, Qt::UserRole + 1).toInt()
+                    == savedIndex) {
+                selectedRow = i;
+                break;
+            }
+        }
+    }
+    if (selectedRow < 0) {
+        selectedRow = 0;
+    }
+    m_heightCameraCombo->setCurrentIndex(selectedRow);
 }
 
 QVBoxLayout *SettingsDialog::createMaintenancePageLayout(

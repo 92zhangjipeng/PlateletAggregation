@@ -57,7 +57,9 @@ SOURCES += \
     medicalwidgets.cpp \
     testscheduler.cpp \
     testactioncontroller.cpp \
-    addsamplewidget.cpp
+    addsamplewidget.cpp \
+    heightcamcontroller.cpp \
+    heightrecognizer.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -98,6 +100,8 @@ HEADERS += \
     pumppositiontracker.h \
     medicalwidgets.h \
     addsamplewidget.h \
+    heightcamcontroller.h \
+    heightrecognizer.h \
     SerialPortManager.h \
     ModuleAdPoller.h \
     mainboardpoller.h \
@@ -113,3 +117,15 @@ HEADERS += \
     MedicalMessageBox.h \
     FramelessWindowSupport.h \
     DetectionModule.h
+
+# ===== 测高 OpenCV（32 位 MinGW，来自 C:/opencv3.4.1/OpencvBuildLib）=====
+INCLUDEPATH += C:/opencv3.4.1/OpencvBuildLib/include
+LIBS += -LC:/opencv3.4.1/OpencvBuildLib/lib \
+    -lopencv_core453 \
+    -lopencv_imgproc453 \
+    -lopencv_videoio453 \
+    -lopencv_highgui453 \
+    -lopencv_imgcodecs453
+
+# 测高相机按名称选择：DirectShow 枚举（ICreateDevEnum）
+win32: LIBS += -lole32 -loleaut32 -luuid -lstrmiids

@@ -14,6 +14,7 @@
 
 class CommunicationWorker;
 class CoordinateMaintenanceWidget;
+class QComboBox;
 class QLineEdit;
 class QPushButton;
 class QStackedWidget;
@@ -64,6 +65,8 @@ signals:
     void sampleQualityChanged();
     /** 仪器参数页切换机型 */
     void machineModelChanged(MachineModel model);
+    /** 仪器参数页切换测高相机（设备名 + 当前索引） */
+    void heightCameraChanged(const QString &deviceName, int deviceIndex);
     /** 坐标维护页「触发移动」请求执行定位校验 */
     void coordinateMotionRequested(
             const InstrumentCoordinates::MoveTarget &target);
@@ -104,6 +107,8 @@ private:
     void rebuildBasicPage();
     int activeSampleCount() const;
     bool ensureSampleShapeEditable(const QString &what);
+    /** 重新枚举 DirectShow 摄像头并选中已保存的设备 */
+    void populateHeightCameraCombo();
 
     void reloadUserTable(const QString &filter = QString());
     void addUserFromForm();
@@ -138,6 +143,7 @@ private:
     QLabel *m_basicModuleValue = nullptr;
     QLabel *m_basicChannelValue = nullptr;
     QLabel *m_basicSerialValue = nullptr;
+    QComboBox *m_heightCameraCombo = nullptr;
 
     QLineEdit *m_userSearchEdit = nullptr;
     QTableWidget *m_userTable = nullptr;
