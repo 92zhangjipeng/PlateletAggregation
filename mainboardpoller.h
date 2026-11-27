@@ -41,18 +41,25 @@ public:
     /**
      * 写耗材总量（充值/换瓶登记总瓶数）。
      * position 0~12；totalBottles 为瓶/板数（≤255）。
-     * 按主板信息 V1.0.1：byte7 高4位 reg_type、低4位 mfc_status=01 更新耗材总量，
-     * byte9 写总量。余量字段保持不动。
+     * 写命令号同样使用 100+position；frame[8] 高4位 reg_type、
+     * 低4位 mfc_status=01 更新耗材总量，frame[9] 写总量。
      */
     static QByteArray consumableTotalWriteFrame(int position, int totalBottles);
 
     /**
-     * 写耗材余量（每次扣减写单瓶 0~100% 比例）。
-     * position 0~12；ratio 为 0~512。
-     * 按主板信息 V1.0.1：byte9 高4位 Types_of_cons、低4位 cons_status=0001 更新余量，
-     * byte11~12 写余量（低位在前）。
+     * 写耗材余量（缓存写入，与老软件 writeSuppliesBottleControlOrder 一致）。
+     * position 0~12；ratio 为 0~512；totalBottles 为当前总瓶数。
+     * 命令号 = 耗材下标；frame[8]/frame[10] = (下标 << 4) | 0x01；
+     * frame[9] = 总瓶数；frame[11~12] = 比例（低位在前）。
      */
-    static QByteArray consumableRatioWriteFrame(int position, quint16 ratio);
+    static QByteArray consumableRatioWriteFrame(int position, quint16 ratio,
+                                                int totalBottles);
+
+    /**
+     * 把主板缓存中的耗材数据写入 flash（老软件退出时发送）：
+     * cmd_num=0，frame[8]=0x07，其余数据字节为 0。
+     */
+    static QByteArray consumableBufferCommitFrame();
 
     /** 按主板信息 V1.0.1 解析 15 字节状态帧 */
     static MainBoardStatus parseStatusFrame(const QByteArray &frame,

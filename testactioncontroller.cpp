@@ -6,6 +6,7 @@
 
 #include "appconfig.h"
 #include "instrumentparameters.h"
+#include "mainboardconsumables.h"
 #include "moduleoverviewwidget.h"
 #include "pumppositiontracker.h"
 
@@ -31,6 +32,23 @@ int channelModule(int globalChannel)
 int channelLocal(int globalChannel)
 {
     return (globalChannel - 1) % 4 + 1;
+}
+
+/**
+ * 试剂坐标位 -> 主板耗材位置。
+ * 坐标顺序：0~4 = AA/ADP/EPI/COL/RIS 左，5~9 = 同顺序的右位；
+ * 主板位置则是 AA/EPI/ADP/COL/RIS（注意 EPI 与 ADP 顺序不同），
+ * 右侧位置统一加 AA_Second - AA（=8）。无效坐标返回 -1。
+ */
+int reagentConsumablePosition(int coordinateIndex)
+{
+    using namespace MainBoardConsumable;
+    static const int leftPositions[] = { AA, ADP, EPI, COL, RIS };
+    if (coordinateIndex < 0 || coordinateIndex >= 10) {
+        return -1;
+    }
+    const int base = leftPositions[coordinateIndex % 5];
+    return coordinateIndex < 5 ? base : base + (AA_Second - AA);
 }
 }
 
@@ -70,6 +88,8 @@ bool TestActionController::beginAction(const QString &name)
         return false;
     }
     m_busy = true;
+    m_cancelRequested = false;
+    m_preflightBlocksTest = false;
     ++m_actionId;
     m_steps.clear();
     m_currentStep = -1;
@@ -90,6 +110,11 @@ void TestActionController::finishAction(bool ok, const QString &message)
     if (!m_busy) {
         return;
     }
+    // 序列构建阶段就失败（m_currentStep < 0）说明还没有下发任何运动命令，
+    // 属于坐标/参数等预检错误；单独上报，调度器只处理当前样本/试剂。
+    const bool rejectedBeforeMotion =
+            !ok && !m_cancelRequested && m_currentStep < 0;
+
     // 超时/取消/失败时也要放开总线，否则周期轮询会一直静默。
     setMotionExchangeActive(false);
     m_timeoutTimer->stop();
@@ -98,7 +123,14 @@ void TestActionController::finishAction(bool ok, const QString &message)
     if (ok) {
         qInfo() << m_actionName << "完成";
     } else {
-        qWarning() << m_actionName << "失败:" << message;
+        qWarning() << m_actionName
+                   << (rejectedBeforeMotion ? "预检失败（未下发运动）:"
+                                            : "失败:")
+                   << message;
+    }
+    if (rejectedBeforeMotion) {
+        emit actionRejected(message, m_preflightBlocksTest);
+        return;
     }
     emit actionFinished(ok, message);
 }
@@ -319,6 +351,9 @@ void TestActionController::handleReport(
 void TestActionController::cancel()
 {
     if (m_busy) {
+        // 主动取消即使发生在下发第一步之前，也按普通失败结束，
+        // 避免被误判为“预检失败”而跳过调度器的中止流程。
+        m_cancelRequested = true;
         finishAction(false, tr("动作已取消"));
     }
 }
@@ -362,13 +397,7 @@ int TestActionController::globalToLocal(int globalChannel) const
 
 int TestActionController::reagentUiIndex(const QString &reagent) const
 {
-    const QString name = reagent.trimmed().toUpper();
-    if (name == QLatin1String("AA")) return 0;
-    if (name == QLatin1String("ADP")) return 1;
-    if (name == QLatin1String("EPI")) return 2;
-    if (name == QLatin1String("COL")) return 3;
-    if (name == QLatin1String("RIS")) return 4;
-    return -1;
+    return reagentNameUiIndex(reagent);
 }
 
 int TestActionController::reagentCoordinateIndex(
@@ -913,6 +942,7 @@ bool TestActionController::buildAddSample(const QueuedSample &sample,
 
     PumpPositionTracker &pumps = PumpPositionTracker::instance();
     if (!pumps.sampleValid()) {
+        m_preflightBlocksTest = true;
         m_error = tr("样本泵位置未知，请先执行开机灌注");
         return false;
     }
@@ -1100,6 +1130,7 @@ bool TestActionController::buildWashSampleNeedle()
     }
     PumpPositionTracker &pumps = PumpPositionTracker::instance();
     if (!pumps.sampleValid()) {
+        m_preflightBlocksTest = true;
         m_error = tr("样本泵位置未知，请先执行开机灌注");
         return false;
     }
@@ -1186,6 +1217,7 @@ bool TestActionController::buildWashReagentNeedle()
     }
     PumpPositionTracker &pumps = PumpPositionTracker::instance();
     if (!pumps.reagentValid()) {
+        m_preflightBlocksTest = true;
         m_error = tr("试剂泵位置未知，请先执行开机灌注");
         return false;
     }
@@ -1296,14 +1328,19 @@ bool TestActionController::buildMovePppCup(int globalChannel, int pppTube)
 }
 
 bool TestActionController::buildSetupReagent(int globalChannel, int prpTube,
-                                             const QString &reagent)
+                                             const QString &reagent,
+                                             int coordinateIndex)
 {
     const int uiIndex = reagentUiIndex(reagent);
     if (uiIndex < 0) {
         m_error = tr("未知试剂：%1").arg(reagent);
         return false;
     }
-    const int coordIndex = reagentCoordinateIndex(reagent);
+    // 调度器已按“主位到报警限切预备位”的规则选好坐标位；
+    // 未指定时沿用默认左位。
+    const int coordIndex = coordinateIndex >= 0
+            ? coordinateIndex
+            : reagentCoordinateIndex(reagent);
     const auto bottle = m_coordinates->locateReagent(
                 coordIndex, InstrumentCoordinates::ZAxis::ReagentNeedle);
     if (!bottle.xyValid) {
@@ -1321,11 +1358,15 @@ bool TestActionController::buildSetupReagent(int globalChannel, int prpTube,
 
     PumpPositionTracker &pumps = PumpPositionTracker::instance();
     if (!pumps.reagentValid()) {
+        m_preflightBlocksTest = true;
         m_error = tr("试剂泵位置未知，请先执行开机灌注");
         return false;
     }
     m_reagentStart = pumps.reagentPosition();
     const int doseUl = reagentVolumeUl(uiIndex);
+    // 实际使用哪个试剂位由 coordinateIndex 决定（当前测试默认左位），
+    // 扣减必须跟着实际吸样的那一瓶走。
+    const int consumablePosition = reagentConsumablePosition(coordIndex);
     const int steps = pumpStepsForUl(doseUl, reagentPumpStepsPerUl());
     int target = 0;
     if (steps <= 0) {
@@ -1435,9 +1476,14 @@ bool TestActionController::buildSetupReagent(int globalChannel, int prpTube,
                  prefix + tr("吐 %1 到反应杯").arg(reagent),
                  kMainBoard, platelet::MotionProtocol::Axis::ReagentPump,
                  kPumpTimeout, PumpUpdate::ReagentPump, m_reagentStart,
-                 [this, globalChannel](
+                 [this, globalChannel, consumablePosition, doseUl](
                  const platelet::MotionProtocol::Frame &) {
         emit reagentDispensed(globalChannel);
+        // 吐试剂成功才视为这份试剂真正被消耗；主窗口按与 S1 相同的
+        // 流程扣减对应左/右瓶余量并写回主板缓存（退出时统一提交）。
+        if (consumablePosition >= 0) {
+            emit reagentConsumed(consumablePosition, doseUl);
+        }
     });
     appendDelay(reagentSpitLiftDelayMs(), prefix + tr("吐试剂后延时"));
     appendMotion(m_protocol->resetReagentNeedle(),
@@ -1510,13 +1556,14 @@ void TestActionController::movePppCup(int globalChannel, int pppTube)
 }
 
 void TestActionController::setupReagent(int globalChannel, int prpTube,
-                                        const QString &reagent)
+                                        const QString &reagent,
+                                        int coordinateIndex)
 {
     if (!beginAction(tr("通道 %1 测 %2").arg(globalChannel).arg(reagent))) {
         return;
     }
     m_globalChannel = globalChannel;
-    if (!buildSetupReagent(globalChannel, prpTube, reagent)) {
+    if (!buildSetupReagent(globalChannel, prpTube, reagent, coordinateIndex)) {
         finishAction(false, m_error);
         return;
     }

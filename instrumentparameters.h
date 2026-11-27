@@ -596,6 +596,18 @@ inline const char *reagentUiSettingsSegment(int index)
     return segments[clampedReagentUiIndex(index)];
 }
 
+/** 测试项目名 AA/ADP/EPI/COL/RIS -> 试剂 UI 序号 0~4；未知返回 -1 */
+inline int reagentNameUiIndex(const QString &name)
+{
+    const QString key = name.trimmed().toUpper();
+    if (key == QLatin1String("AA"))  return 0;
+    if (key == QLatin1String("ADP")) return 1;
+    if (key == QLatin1String("EPI")) return 2;
+    if (key == QLatin1String("COL")) return 3;
+    if (key == QLatin1String("RIS")) return 4;
+    return -1;
+}
+
 /** UI 试剂序号 -> 主板耗材位置 */
 inline int reagentUiToConsumablePosition(int index)
 {
@@ -698,6 +710,34 @@ inline int liquidLevelAspirateHeightMm(int detectedHeightMm,
         return failHeightMm;
     }
     return detectedHeightMm;
+}
+
+// ---------------- 预备试剂位 ----------------
+
+/**
+ * 启用预备试剂位：当前使用的试剂位单瓶余量降到该试剂的
+ * 单瓶%报警限后，自动切换到另一侧（左 <-> 右）继续测试。
+ * 关闭时测试暂停并提示更换试剂。默认关闭。
+ */
+inline const char *reagentBackupPositionSettingsKey()
+{
+    return "consumables/enableBackupReagent";
+}
+
+inline bool reagentBackupPositionEnabled()
+{
+    QSettings settings;
+    return settings.value(
+                QString::fromLatin1(reagentBackupPositionSettingsKey()),
+                false).toBool();
+}
+
+inline void setReagentBackupPositionEnabled(bool enabled)
+{
+    QSettings settings;
+    settings.setValue(
+                QString::fromLatin1(reagentBackupPositionSettingsKey()),
+                enabled);
 }
 
 // ---------------- 单瓶 / 总瓶数报警限 ----------------

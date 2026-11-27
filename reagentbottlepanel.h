@@ -80,9 +80,10 @@ private:
     };
 
     void paintBottle(QPainter &p, const QRectF &slot, int bottleIndex);
-    /** 在瓶身正中绘制液位百分比，报警时红色稳态显示。 */
+    /** 在瓶身正中绘制液位百分比，报警时红色稳态显示。
+     *  decimals>0 时显示小数（S1 容量大、单次扣减少，用 1 位小数）。 */
     void paintBottlePercent(QPainter &p, const QRectF &body,
-                            double percent, bool alarm);
+                            double percent, bool alarm, int decimals = 0);
     /** S1 白色方形清洗液瓶（切角瓶身 + 螺纹短颈） */
     void paintCleaningBottle(QPainter &p, const QRectF &body,
                              const BottleSpec &spec, double percent);

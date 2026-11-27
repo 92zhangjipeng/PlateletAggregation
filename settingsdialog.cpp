@@ -631,7 +631,8 @@ SettingsDialog::SettingsDialog(CommunicationWorker *commWorker,
         "  font-size: 12px;"
         "  spacing: 6px;"
         "}"
-        "QCheckBox#channelCheck, QCheckBox#scanCheck {"
+        "QCheckBox#channelCheck, QCheckBox#scanCheck, "
+        "QCheckBox#backupReagentCheck {"
         "  color: #3A5065;"
         "  font-family: 'Microsoft YaHei';"
         "  font-size: 12px;"
@@ -1160,6 +1161,33 @@ QWidget *SettingsDialog::createBasicPage()
 
     connect(scanCheck, &QCheckBox::toggled, this, [](bool checked) {
         setAddSampleScanBarcodeEnabled(checked);
+    });
+
+    auto *backupRow = new QHBoxLayout;
+    backupRow->setSpacing(12);
+    auto *backupCaption = new QLabel(tr("预备试剂位"), basicGroup);
+    backupCaption->setObjectName(QStringLiteral("paramCaption"));
+    auto *backupCheck = new MedicalCheckBox(
+                tr("启用预备试剂位"), basicGroup);
+    backupCheck->setObjectName(QStringLiteral("backupReagentCheck"));
+    backupCheck->setChecked(reagentBackupPositionEnabled());
+    backupRow->addWidget(backupCaption);
+    backupRow->addWidget(backupCheck);
+    backupRow->addStretch(1);
+    basicLayout->addLayout(backupRow);
+
+    auto *backupHint = new QLabel(
+                tr("当前试剂位单瓶余量降到该试剂的单瓶%报警限时：启用则"
+                   "自动切换到另一侧（左/右）继续测试；未启用则暂停测试并"
+                   "提示更换试剂。报警限 0 表示不检查；单瓶%报警限在"
+                   "「仪器参数」中按试剂设置。"),
+                basicGroup);
+    backupHint->setObjectName(QStringLiteral("paramHint"));
+    backupHint->setWordWrap(true);
+    basicLayout->addWidget(backupHint);
+
+    connect(backupCheck, &QCheckBox::toggled, this, [](bool checked) {
+        setReagentBackupPositionEnabled(checked);
     });
 
     auto *separator = new QFrame(basicGroup);

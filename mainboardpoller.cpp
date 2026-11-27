@@ -6,6 +6,8 @@
 #include "mainboardconsumables.h"
 #include "SerialPortManager.h"
 
+#include <QDebug>
+
 namespace {
 constexpr quint8 kMainBoardAddress = 0x05;
 constexpr quint8 kMainBoardFuncCode = 0x16;
@@ -226,43 +228,61 @@ QByteArray MainBoardPoller::consumableTotalWriteFrame(int position,
     }
 
     // 主板信息 V1.0.1：更新耗材总量（充值/换瓶后登记总瓶数）。
-    // byte7 低4位 mfc_status=01 更新耗材总量，高4位 reg_type=种类；
-    // byte9  reg_remain 总量瓶数；余量字段 byte11~12 保持0不动。
+    // 读写下标共用“命令号 = 100 + 位置”；frame[8] 低4位 mfc_status=01
+    // 更新耗材总量，高4位 reg_type=种类；frame[9] reg_remain 总量瓶数。
     QByteArray frame(SerialPortManager::kFrameLength, '\0');
     frame[0] = static_cast<char>(kMainBoardAddress);
     frame[1] = static_cast<char>(kMainBoardFuncCode);
-    frame[2] = '\0';                          // cmd_size
-    frame[3] = '\0';
+    frame[2] = static_cast<char>(
+                MainBoardConsumable::kCommandBase + position);  // 写命令号
+    frame[3] = '\0';                          // cmd_size
     frame[4] = '\0';                          // type=0 写
-    frame[7] = static_cast<char>(
+    frame[8] = static_cast<char>(
                 (position << 4) | 0x01);      // reg_type | mfc 更新耗材总量
     frame[9] = static_cast<char>(totalBottles & 0xFF);
     return frame;
 }
 
 QByteArray MainBoardPoller::consumableRatioWriteFrame(int position,
-                                                      quint16 ratio)
+                                                      quint16 ratio,
+                                                      int totalBottles)
 {
     if (position < 0 || position >= MainBoardConsumable::kPositionCount
-            || ratio > MainBoardConsumable::kRatioMax) {
+            || ratio > MainBoardConsumable::kRatioMax
+            || totalBottles < 0 || totalBottles > 0xFF) {
         return QByteArray();
     }
 
-    // 主板信息 V1.0.1：更新耗材余量（每次扣减写单瓶剩余比例 0~512）。
-    // byte9  低4位 cons_status=0001 更新耗材余量，
-    //        高4位 Types_of_cons=种类（右侧瓶位映射请看 header）；
-    // byte11~12 consumable 余量 0~512（低位在前）。
+    // 与老软件 QUIUtils::writeSuppliesBottleControlOrder(..., isBuffer=true) 一致：
+    // 命令号 = 耗材下标；frame[8]/frame[10] = (下标 << 4) | 0x01（缓存写入）；
+    // frame[9] = 当前总瓶数；frame[11~12] = 单瓶比例（低位在前）。
+    // 这类写命令进入主板缓存，退出软件时再由 consumableBufferCommitFrame()
+    // 统一写入 flash。
     QByteArray frame(SerialPortManager::kFrameLength, '\0');
     frame[0] = static_cast<char>(kMainBoardAddress);
     frame[1] = static_cast<char>(kMainBoardFuncCode);
-    frame[2] = '\0';                          // cmd_size
-    frame[3] = '\0';
+    frame[2] = static_cast<char>(position);   // 老协议：命令号=耗材下标
+    frame[3] = '\0';                          // cmd_size
     frame[4] = '\0';                          // type=0 写
-    frame[9] = static_cast<char>(
-                (MainBoardConsumable::ratioTypeForPosition(position) << 4)
-                | 0x01);                      // Types_of_cons | cons 更新余量
+    const char positionByte = static_cast<char>((position << 4) | 0x01);
+    frame[8] = positionByte;
+    frame[9] = static_cast<char>(totalBottles & 0xFF);
+    frame[10] = positionByte;
     frame[11] = static_cast<char>(ratio & 0xFF);
     frame[12] = static_cast<char>((ratio >> 8) & 0xFF);
+    return frame;
+}
+
+QByteArray MainBoardPoller::consumableBufferCommitFrame()
+{
+    // 老软件退出时发送：命令号 0、frame[8]=0x07，把缓存区耗材数据写入 flash。
+    QByteArray frame(SerialPortManager::kFrameLength, '\0');
+    frame[0] = static_cast<char>(kMainBoardAddress);
+    frame[1] = static_cast<char>(kMainBoardFuncCode);
+    frame[2] = '\0';
+    frame[3] = '\0';
+    frame[4] = '\0';
+    frame[8] = static_cast<char>(0x07);
     return frame;
 }
 
@@ -378,6 +398,17 @@ void MainBoardPoller::handleConsumableFrame(const QByteArray &frame)
         return;
     }
 
+    // 写命令回执（命令号同样是 100+位置）不是周期读结果：
+    // 余量更新回执 cons_status=1，总量更新回执 mfc_status=1。
+    // 如果当读结果解析，会把“回填的总瓶数/刚写入的比例”误当成实时值。
+    const quint8 writeMfc = static_cast<quint8>(frame.at(8)) & 0x0F;
+    const quint8 writeCons = static_cast<quint8>(frame.at(10)) & 0x0F;
+    if (writeMfc == 1 || writeCons == 1) {
+        qInfo() << "耗材写回应答:" << position
+                << QString::fromLatin1(frame.toHex(' ').toUpper());
+        return;
+    }
+
     // 命令号（100+下标）的下标空间已与主板确认：0 AA、1 EPI、2 ADP、
     // 3 COL、4 RIS、5 内部清洗剂 S1、6 试管、7 外部清洗液 S2，
     // 8~12 为右侧瓶位 AA1~RIS1。
@@ -393,7 +424,7 @@ void MainBoardPoller::handleConsumableFrame(const QByteArray &frame)
     }
 
     // 读卡失败/刷卡异常/充值失败时保留上一次有效值。
-    const quint8 mfcStatus = static_cast<quint8>(frame.at(8)) & 0x0F;
+    const quint8 mfcStatus = writeMfc;
     if (mfcStatus == 3 || mfcStatus == 4 || mfcStatus == 6) {
         return;
     }
@@ -401,6 +432,12 @@ void MainBoardPoller::handleConsumableFrame(const QByteArray &frame)
     const int bottles = static_cast<quint8>(frame.at(9));
     const quint16 ratio = static_cast<quint8>(frame.at(11))
             | (static_cast<quint16>(static_cast<quint8>(frame.at(12))) << 8);
+    if (position == MainBoardConsumable::InternalCleanS1) {
+        qInfo() << "S1 读回帧:"
+                << QString::fromLatin1(frame.toHex(' ').toUpper())
+                << "mfc" << int(mfcStatus) << "cons" << int(writeCons)
+                << "bottles" << bottles << "ratio" << int(ratio);
+    }
     emit consumableUpdated(
                 position,
                 bottles,

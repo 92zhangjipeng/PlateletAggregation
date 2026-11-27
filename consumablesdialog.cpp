@@ -686,6 +686,15 @@ void ConsumablesDialog::updateConsumableAmountLabels()
                 * 100.0 / MainBoardConsumable::kRatioMax;
         return ConsumablesDialog::tr("%1%").arg(percent, 0, 'f', 0);
     };
+    // S1 容量大、单次扣减少，整数百分比看不出变化，单独用 1 位小数。
+    const auto ratioPercent1 = [](int ratio) -> QString {
+        if (ratio < 0) {
+            return QStringLiteral("--");
+        }
+        const double percent = qBound(0, ratio, MainBoardConsumable::kRatioMax)
+                * 100.0 / MainBoardConsumable::kRatioMax;
+        return ConsumablesDialog::tr("%1%").arg(percent, 0, 'f', 1);
+    };
 
     const auto setText = [](QLabel *label, const QString &text,
                             const QString &toolTip) {
@@ -739,7 +748,7 @@ void ConsumablesDialog::updateConsumableAmountLabels()
             ConsumablesDialog::tr("内部清洗液 S1 剩余总量（瓶）"));
     setText(m_amountLeftValues[AmountInternalClean],
             s1Valid
-            ? ratioPercent(
+            ? ratioPercent1(
                   m_positionRatios[MainBoardConsumable::InternalCleanS1])
             : QStringLiteral("--"),
             ConsumablesDialog::tr("当前瓶剩余百分比"));

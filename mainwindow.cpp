@@ -1649,6 +1649,27 @@ void MainWindow::handleStartTest()
             qInfo() << "测试状态:" << status;
             showActionHint(status);
         });
+        // 吸试剂前按余量选择主位/预备位；不可用时调度器自行暂停。
+        m_testScheduler->setReagentPositionSelector(
+                    [this](const QString &reagent, QString *reason) {
+            return selectReagentCoordinate(reagent, reason);
+        });
+        connect(m_testScheduler, &TestScheduler::reagentAlarm,
+                this, [this](const QString &reagent, const QString &message) {
+            // 调度器已暂停：刷新按钮/耗材操作状态，允许暂停期间更换试剂。
+            updatePauseButtonAppearance();
+            updateStartButtonAppearance();
+            updateConsumablesOperationState();
+            // 不在调度器 pump() 的调用栈里弹模态框。
+            QTimer::singleShot(0, this, [this, reagent, message]() {
+                MedicalMessageBox::warning(
+                            this,
+                            reagent.isEmpty()
+                            ? tr("试剂余量报警")
+                            : tr("%1 试剂余量报警").arg(reagent),
+                            message);
+            });
+        });
         connect(m_testScheduler, &TestScheduler::errorOccurred,
                 this, [this](const QString &message) {
             qWarning() << "测试错误:" << message;
@@ -1716,6 +1737,17 @@ void MainWindow::handleStartTest()
             }
             if (m_resultsInfoWidget) {
                 m_resultsInfoWidget->refresh();
+            }
+        });
+        // 测试流程洗针也会消耗内部清洗液 S1：每次洗针成功后按实际洗针量
+        // 扣减，并由 consumeConsumableUl() 把最新比例写回主板。
+        connect(m_testScheduler, &TestScheduler::internalCleanUsed,
+                this, [this](double usedUl) {
+            QString error;
+            if (!consumeConsumableUl(MainBoardConsumable::InternalCleanS1,
+                                     usedUl, &error)) {
+                qWarning() << "测试洗针扣减内部清洗液失败:"
+                           << usedUl << "µL" << error;
             }
         });
         // PPP 基准值 < 1000：把样本标记为“异常结果”
@@ -1791,6 +1823,29 @@ void MainWindow::handleStartTest()
                 &TestActionController::actionAbandoned,
                 m_testScheduler,
                 &TestScheduler::handleActionAbandoned);
+        // 动作结束后机械臂空闲；暂停测试期间可据此放开试剂更换按钮。
+        connect(m_testActionController,
+                &TestActionController::actionFinished,
+                this, [this](bool, const QString &) {
+            updateConsumablesOperationState();
+        });
+        // 预检失败（坐标未设置等、机械臂未动）只放弃当前样本/试剂：
+        // 用队列连接，避免在动作层同步构帧的调用栈里重入调度器 pump()。
+        connect(m_testActionController,
+                &TestActionController::actionRejected,
+                m_testScheduler,
+                &TestScheduler::handleActionRejected,
+                Qt::QueuedConnection);
+        // 测试每吐一份试剂即消耗对应试剂瓶：与内部清洗液 S1 一样，
+        // 按实际吸样量扣减单瓶余量并由 consumeConsumableUl() 写回主板缓存。
+        connect(m_testActionController, &TestActionController::reagentConsumed,
+                this, [this](int position, int usedUl) {
+            QString error;
+            if (!consumeConsumableUl(position, usedUl, &error)) {
+                qWarning() << "测试扣减试剂失败:" << position << usedUl
+                           << "µL" << error;
+            }
+        });
         // 抓杯失败：抓手已复位后弹出，提供“重试 / 放弃”两种补救措施。
         connect(m_testActionController,
                 &TestActionController::grabFailurePaused,
@@ -1890,6 +1945,8 @@ void MainWindow::handlePauseResume()
     }
     updatePauseButtonAppearance();
     updateStartButtonAppearance();
+    // 暂停期间允许更换已到报警限的试剂；继续后重新按测试中锁定。
+    updateConsumablesOperationState();
 }
 
 void MainWindow::updateStartButtonAppearance()
@@ -2120,6 +2177,11 @@ bool MainWindow::consumeConsumableUl(int position, double usedUl,
     if (m_consumablesDialog) {
         m_consumablesDialog->setConsumableAmount(position, bottles, ratio);
     }
+    // 不依赖主板回读，扣减后立即刷新主板左侧的试剂余量面板。
+    const int bottle = reagentBottleForConsumablePosition(position);
+    if (bottle >= 0 && m_reagentPanel) {
+        m_reagentPanel->setLevel(bottle, mainboardRatioPercent(ratio));
+    }
     qInfo() << "耗材扣减" << position << "用量" << usedUl
             << "µL 剩余" << remain << "µL 比例" << ratio << "/512";
     return true;
@@ -2130,12 +2192,19 @@ void MainWindow::writeConsumableRatio(int position, int ratio)
     if (!m_commWorker) {
         return;
     }
+    // AA~RIS 左右瓶共享总瓶数，主位置固定为左侧；写余量时统一带主位置
+    // 的总瓶数，避免右侧位置尚未回读时把共享总量写成 0。
+    const int bottlesPosition =
+            MainBoardConsumable::mainPositionForReagent(position);
     const QByteArray frame = MainBoardPoller::consumableRatioWriteFrame(
-                position, quint16(ratio));
+                position, quint16(ratio),
+                m_consumableBottles[bottlesPosition]);
     if (frame.isEmpty()) {
         qWarning() << "耗材比例写帧失败" << position << ratio;
         return;
     }
+    qInfo() << "耗材写回帧:" << position << ratio
+            << QString::fromLatin1(frame.toHex(' ').toUpper());
     m_lastWrittenConsumableRatio[position] = ratio;
     QMetaObject::invokeMethod(
                 m_commWorker, "sendFrameRequested", Qt::QueuedConnection,
@@ -2970,17 +3039,137 @@ bool MainWindow::reagentReplacementBlocked(QString *reason) const
     if (m_cardRechargeState == CardRechargeState::Writing) {
         return blocked(tr("刷卡充值写入中，不能更换试剂"));
     }
-    if (testingActive()
-            || (m_testScheduler && m_testScheduler->isRunning())
-            || (m_testActionController && m_testActionController->isBusy())
+
+    // 测试暂停（含试剂到报警限自动暂停）且机械臂空闲时允许更换：
+    // 更换只写主板余量/总量，不做机械动作；换完点「继续」恢复测试。
+    const bool schedulerPaused = m_testScheduler
+            && m_testScheduler->isRunning() && m_testScheduler->isPaused();
+    const bool motionBusy =
+            (m_testActionController && m_testActionController->isBusy())
             || (m_perfusionController && m_perfusionController->isBusy())
             || (m_cleaningController && m_cleaningController->isBusy())
             || (m_verificationController
                 && m_verificationController->isBusy())
-            || (m_resetController && m_resetController->isBusy())) {
-        return blocked(tr("测试机械臂正在运动或测试进行中，不能更换试剂"));
+            || (m_resetController && m_resetController->isBusy());
+    if (motionBusy) {
+        return blocked(tr("机械臂正在运动，待当前动作完成后才能更换试剂"));
+    }
+    if (!schedulerPaused
+            && (testingActive()
+                || (m_testScheduler && m_testScheduler->isRunning()))) {
+        return blocked(tr("测试进行中，请先暂停测试后再更换试剂"));
     }
     return false;
+}
+
+int MainWindow::selectReagentCoordinate(const QString &reagent, QString *reason)
+{
+    if (reason) {
+        reason->clear();
+    }
+    const int uiIndex = reagentNameUiIndex(reagent);
+    if (uiIndex < 0) {
+        if (reason) {
+            *reason = tr("未知试剂 %1，测试已暂停。").arg(reagent);
+        }
+        return -1;
+    }
+
+    using namespace MainBoardConsumable;
+    const int leftPosition = reagentUiToConsumablePosition(uiIndex);
+    const int rightPosition = leftPosition + (AA_Second - AA);
+    const int leftCoordinate = uiIndex;          // 坐标 0~4：AA/ADP/EPI/COL/RIS 左
+    const int rightCoordinate = uiIndex + 5;     // 坐标 5~9：同顺序的右位
+    const QString reagentName =
+            QString::fromLatin1(reagentUiSettingsSegment(uiIndex));
+    const QString leftName = positionDisplayName(leftPosition);
+    const QString rightName = positionDisplayName(rightPosition);
+    // 左右瓶共用容量分组，报警限也共用。
+    const int alarmPercent = consumableSingleAlarmPercent(leftPosition);
+    if (alarmPercent <= 0) {
+        // 报警限为 0 视为不做余量检查。
+        return leftCoordinate;
+    }
+
+    // 与扣减后界面显示保持一致：优先用软件内保留的最新剩余 µL。
+    const auto displayRatio = [this](int position) {
+        if (!m_consumableValid[position]) {
+            return -1;
+        }
+        const double capacity = consumableCapacityUl(position);
+        if (m_consumableRemainingValid[position] && capacity > 0.0) {
+            return mainboardUlToRatio(m_consumableRemainingUl[position],
+                                      capacity);
+        }
+        return m_consumableRatios[position];
+    };
+
+    const int leftRatio = displayRatio(leftPosition);
+    if (leftRatio < 0) {
+        // 尚未读到余量：保持原流程，由扣减环节给出提示。
+        return leftCoordinate;
+    }
+    if (mainboardRatioPercent(leftRatio) > alarmPercent) {
+        return leftCoordinate;
+    }
+    const QString leftPercent =
+            QString::number(mainboardRatioPercent(leftRatio), 'f', 1);
+
+    if (!reagentBackupPositionEnabled()) {
+        if (reason) {
+            *reason = tr("%1余量约 %2%（报警限 %3%），测试已暂停。\n"
+                         "请到「耗材管理」更换 %1 后，点顶部「继续」。")
+                    .arg(leftName).arg(leftPercent).arg(alarmPercent);
+        }
+        return -1;
+    }
+
+    const int rightRatio = displayRatio(rightPosition);
+    if (rightRatio < 0) {
+        if (reason) {
+            *reason = tr("%1余量约 %2%（报警限 %3%），"
+                         "但备用位余量尚未读到。\n"
+                         "测试已暂停，请稍后点顶部「继续」。")
+                    .arg(leftName).arg(leftPercent).arg(alarmPercent);
+        }
+        return -1;
+    }
+    if (mainboardRatioPercent(rightRatio) <= alarmPercent) {
+        if (reason) {
+            *reason = tr("%1 左右瓶余量均已到报警限（%2%）。\n"
+                         "测试已暂停，请到「耗材管理」更换任一 %1 试剂瓶后，"
+                         "点顶部「继续」。")
+                    .arg(reagentName).arg(alarmPercent);
+        }
+        return -1;
+    }
+
+    // 预备位坐标未校准时不要把当前试剂判为失败，而是暂停提示。
+    const auto target = m_instrumentCoordinates.locateReagent(
+                rightCoordinate, InstrumentCoordinates::ZAxis::ReagentNeedle);
+    if (!target.xyValid) {
+        if (reason) {
+            *reason = tr("%1余量约 %2%（报警限 %3%），但备用位（%4）"
+                         "的试剂针坐标未设置，无法自动切换。\n"
+                         "测试已暂停，请更换 %1 或先维护 %4 坐标后，"
+                         "点顶部「继续」。")
+                    .arg(leftName).arg(leftPercent).arg(alarmPercent)
+                    .arg(rightName);
+        }
+        return -1;
+    }
+
+    qInfo() << "试剂预备位切换:" << reagentName << leftName << leftPercent
+            << "% ->" << rightName
+            << QString::number(mainboardRatioPercent(rightRatio), 'f', 1)
+               << "%";
+    // 投递到事件循环，避免被紧接着的“样本 X 测试 AA”状态覆盖。
+    const QString hint = tr("%1余量到报警限，已切换到 %2 继续测试")
+            .arg(leftName).arg(rightName);
+    QTimer::singleShot(0, this, [this, hint]() {
+        showActionHint(hint);
+    });
+    return rightCoordinate;
 }
 
 void MainWindow::updateConsumablesOperationState()
@@ -4705,6 +4894,19 @@ void MainWindow::shutdownCommunicationThread()
 {
     if (m_commThread && m_commThread->isRunning()) {
         if (m_commWorker) {
+            // 退出前把主板缓存区的耗材余量写入 flash（老软件同样的退出流程），
+            // 否则下一次开机读到的还是上次提交的旧比例。
+            const QByteArray flush =
+                    MainBoardPoller::consumableBufferCommitFrame();
+            if (!flush.isEmpty()) {
+                QMetaObject::invokeMethod(
+                            m_commWorker, "sendFrameRequested",
+                            Qt::BlockingQueuedConnection,
+                            Q_ARG(QByteArray, flush),
+                            Q_ARG(QString, tr("写入耗材缓存到主板")));
+                // 与老软件一致：留出主板写 flash 的时间再关闭串口。
+                QThread::msleep(1000);
+            }
             m_commWorker->disconnect(this);
             QMetaObject::invokeMethod(m_commWorker, "stopCommunication",
                                       Qt::BlockingQueuedConnection);
@@ -4944,6 +5146,12 @@ void MainWindow::updateConsumableAmount(int position, int bottles, int ratio)
 
     const int previousBottles = m_consumableBottles[position];
     const int previousRatio = m_lastSeenConsumableRatio[position];
+    // S1 回读诊断：软件扣减并写回后，确认主板回报的比例是否真的变化。
+    if (position == MainBoardConsumable::InternalCleanS1
+            && previousRatio >= 0 && ratio != previousRatio) {
+        qInfo() << "S1 主板余量回读:" << previousRatio << "->" << ratio
+                << "/512，上次写入" << m_lastWrittenConsumableRatio[position];
+    }
     const bool externalRatioChange =
             previousRatio >= 0
             && ratio != previousRatio
@@ -4963,13 +5171,21 @@ void MainWindow::updateConsumableAmount(int position, int bottles, int ratio)
         m_consumableRemainingValid[position] = capacity > 0.0;
     }
 
+    // 主板缓存写入不会立刻体现在周期回读里；和老软件一样，
+    // 界面以软件内部保留的最新剩余 µL 为准，避免看起来“没扣”。
+    int displayRatio = ratio;
+    if (m_consumableRemainingValid[position] && capacity > 0.0) {
+        displayRatio = mainboardUlToRatio(m_consumableRemainingUl[position],
+                                          capacity);
+    }
     if (m_consumablesDialog) {
-        m_consumablesDialog->setConsumableAmount(position, bottles, ratio);
+        m_consumablesDialog->setConsumableAmount(position, bottles,
+                                                 displayRatio);
     }
 
     const int bottle = reagentBottleForConsumablePosition(position);
     if (bottle >= 0 && m_reagentPanel) {
-        m_reagentPanel->setLevel(bottle, mainboardRatioPercent(ratio));
+        m_reagentPanel->setLevel(bottle, mainboardRatioPercent(displayRatio));
     }
 }
 

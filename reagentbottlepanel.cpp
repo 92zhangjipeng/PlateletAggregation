@@ -286,16 +286,22 @@ void ReagentBottlePanel::paintBottle(QPainter &p, const QRectF &slot,
     // 液位百分比：改为居中显示在瓶内（横向+纵向居中）。
     // 未连接仪器时不显示百分比徽章，只保留空瓶图形。
     if (m_connected) {
-        paintBottlePercent(p, body, percent, isAlarmActive(bottleIndex));
+        // S1 容量 60000 µL，每次清洗只扣几百 µL，整数百分比看不出变化；
+        // 其余试剂瓶容量小，保持整数显示。
+        paintBottlePercent(p, body, percent, isAlarmActive(bottleIndex),
+                           bottleIndex == S1Clean ? 1 : 0);
     }
 }
 
 /** 在瓶身正中绘制百分比，白字 + 半透明深色底板保证各种液色下可读。
  *  低于报警限时底板变红（稳态，不闪烁）。 */
 void ReagentBottlePanel::paintBottlePercent(QPainter &p, const QRectF &body,
-                                            double percent, bool alarm)
+                                            double percent, bool alarm,
+                                            int decimals)
 {
-    const QString text = QStringLiteral("%1%").arg(qRound(percent));
+    const QString text = decimals > 0
+            ? QStringLiteral("%1%").arg(percent, 0, 'f', decimals)
+            : QStringLiteral("%1%").arg(qRound(percent));
 
     QFont pctFont(QStringLiteral("Microsoft YaHei"));
     pctFont.setPixelSize(11);

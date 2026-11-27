@@ -10,6 +10,8 @@
 #include <QString>
 #include <QVector>
 
+#include <functional>
+
 class AddSampleWidget;
 class ModuleOverviewWidget;
 class QTimer;
@@ -62,6 +64,15 @@ public:
     bool isRunning() const;
     bool isPaused() const;
 
+    /**
+     * 开始吸某个试剂前，由主窗口按余量和“启用预备试剂位”设置
+     * 选择本次使用的试剂坐标位（0~4 左、5~9 右）。
+     * 返回 <0 表示当前不能开始（余量到报警限等），reason 为提示文本。
+     */
+    using ReagentPositionSelector =
+            std::function<int(const QString &reagent, QString *reason)>;
+    void setReagentPositionSelector(ReagentPositionSelector selector);
+
 public slots:
     void start();
     void pause();
@@ -70,6 +81,13 @@ public slots:
 
     /** 动作层完成一个机械动作后调用 */
     void handleActionFinished(bool ok, const QString &message);
+    /**
+     * 动作序列在构建阶段失败（坐标未设置等），机械臂未动：
+     * 只放弃当前样本/当前试剂，其他通道已开始的反应继续采样。
+     * blocksTest=true 时（泵位置未知等全局条件）暂停下发新动作，
+     * 但保留 m_running，让已在反应的通道继续计时。
+     */
+    void handleActionRejected(const QString &message, bool blocksTest);
     /**
      * 操作员在“抓杯失败”提示框里选择放弃：
      * - PPP 杯抓取失败：放弃整个样本；
@@ -105,6 +123,15 @@ signals:
     void reagentAbandoned(const QString &sampleNumber,
                           const QString &reagent);
 
+    /** 测试流程洗针成功消耗的内部清洗液 S1（µL），主窗口据此扣减并写回主板 */
+    void internalCleanUsed(double ul);
+
+    /**
+     * 试剂余量到报警限且无法继续（未启用预备位或左右都到限）：
+     * 调度器已自动暂停，主窗口负责提示更换试剂。
+     */
+    void reagentAlarm(const QString &reagent, const QString &message);
+
     /** 某个试剂开始测试（吐试剂前）：结果详情可先落一条“测试中”占位行 */
     void reagentTestStarted(const QString &sampleNumber,
                             const QString &reagent);
@@ -115,7 +142,7 @@ signals:
     void washSampleNeedleRequested();
     void movePppCupRequested(int globalChannel, int pppTube);
     void setupReagentRequested(int globalChannel, int prpTube,
-                               const QString &reagent);
+                               const QString &reagent, int coordinateIndex);
     void washReagentNeedleRequested();
     void discardCupRequested(int globalChannel, const QString &reagent);
     /** 复位时要求动作层取消当前机械动作 */
@@ -165,6 +192,13 @@ private:
     void abandonPppSample(const QString &reason);
     /** PRP 杯抓取失败放弃：跳过当前试剂；没有后续试剂则完成样本 */
     void abandonCurrentReagent(const QString &reason);
+    /** 加样动作预检失败：释放已分配试管、标异常并跳过该样本 */
+    void abandonAddSample(const QString &reason);
+    /**
+     * 丢杯动作预检失败：试杯仍留在通道里，不能释放通道给下一个样本；
+     * 只结束该样本并保持通道占用，等待人工处理。
+     */
+    void abandonStuckChannel(const QString &reason);
     /** 放弃样本时处理已分配/已加样的托盘杯 */
     void discardTrayTube(int tube);
 
@@ -207,6 +241,8 @@ private:
     bool m_finalParkDone = false;
     bool m_sampleNeedleDirty = false;
     bool m_reagentNeedleDirty = false;
+
+    ReagentPositionSelector m_reagentPositionSelector;
 
     ActionType m_action = ActionType::None;
     QString m_actionSample;

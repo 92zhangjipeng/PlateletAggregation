@@ -7,6 +7,7 @@
 #include "addsamplewidget.h"
 #include "aggregationcalculator.h"
 #include "appconfig.h"
+#include "instrumentparameters.h"
 #include "modulerackwidget.h"
 #include "moduleoverviewwidget.h"
 #include "sampletraymodel.h"
@@ -63,6 +64,12 @@ bool TestScheduler::isRunning() const
 bool TestScheduler::isPaused() const
 {
     return m_paused;
+}
+
+void TestScheduler::setReagentPositionSelector(
+        ReagentPositionSelector selector)
+{
+    m_reagentPositionSelector = selector;
 }
 
 void TestScheduler::start()
@@ -182,6 +189,8 @@ void TestScheduler::handleActionFinished(bool ok, const QString &message)
         break;
     case ActionType::WashSampleNeedle:
         m_sampleNeedleDirty = false;
+        // 测试流程洗针吸的也是 S1，和主页手动清洗一样按实际用量扣减并写回主板。
+        emit internalCleanUsed(double(sampleWashVolumeUl()));
         emit statusChanged(tr("样本针清洗完成"));
         break;
     case ActionType::MovePppCup:
@@ -193,6 +202,7 @@ void TestScheduler::handleActionFinished(bool ok, const QString &message)
         break;
     case ActionType::WashReagentNeedle:
         m_reagentNeedleDirty = false;
+        emit internalCleanUsed(double(reagentWashVolumeUl()));
         emit statusChanged(tr("试剂针清洗完成"));
         break;
     case ActionType::DiscardCup:
@@ -207,6 +217,129 @@ void TestScheduler::handleActionFinished(bool ok, const QString &message)
 
     clearAction();
     pump();
+}
+
+void TestScheduler::handleActionRejected(const QString &message, bool blocksTest)
+{
+    if (!m_actionInProgress) {
+        return;
+    }
+
+    const ActionType action = m_action;
+    qWarning() << "动作预检失败（未下发任何运动）:" << int(action)
+               << (blocksTest ? "全局阻塞" : "仅当前样本/试剂") << message;
+
+    if (blocksTest) {
+        // 泵位置未知等全局前置条件缺失：暂停下发新动作，但保持 m_running，
+        // 已经在通道里反应的样本继续按 AD 采样计时。
+        m_paused = true;
+        clearAction();
+        emit statusChanged(
+                    tr("测试动作无法开始：%1。已暂停下发新动作，"
+                       "正在反应的通道继续计时；处理后点“继续”。")
+                    .arg(message));
+        return;
+    }
+
+    switch (action) {
+    case ActionType::SetupReagent:
+        // 当前试剂无法开始：只跳过这个试剂，样本/其他通道继续。
+        abandonCurrentReagent(message);
+        break;
+    case ActionType::MovePppCup:
+        // 当前样本的 PPP/PRP 杯无法抓取：只放弃这个样本。
+        abandonPppSample(message);
+        break;
+    case ActionType::AddSample:
+        abandonAddSample(message);
+        break;
+    case ActionType::DiscardCup:
+        abandonStuckChannel(message);
+        break;
+    case ActionType::WashSampleNeedle:
+    case ActionType::WashReagentNeedle:
+        // 洗针是全局前置动作：保留 m_running，让已经在反应的通道继续
+        // 按 AD 采样计时，只暂停下发新的机械动作，等处理后点“继续”。
+        m_paused = true;
+        clearAction();
+        emit statusChanged(
+                    tr("测试动作无法开始：%1。已暂停下发新动作，"
+                       "正在反应的通道继续计时；处理后点“继续”。")
+                    .arg(message));
+        return;
+    case ActionType::Park:
+        // 收尾动作无法构建：本次没有在途样本，直接结束会话。
+        clearAction();
+        emit statusChanged(tr("收尾动作无法开始：%1").arg(message));
+        break;
+    case ActionType::None:
+        clearAction();
+        return;
+    }
+
+    clearAction();
+    // 预检失败是同步发生在 startXXX() 的调用栈里（此时外层 pump() 的
+    // 重入保护仍生效），直接 pump() 会被挡掉，投递到事件循环后再继续调度。
+    QTimer::singleShot(0, this, [this]() {
+        if (m_running && !m_paused && !m_actionInProgress) {
+            pump();
+        }
+    });
+}
+
+void TestScheduler::abandonAddSample(const QString &reason)
+{
+    if (!m_hasAddRun) {
+        return;
+    }
+    const QString sampleNumber = m_addRun.sample.sampleNumber;
+    if (m_addRun.cupsAllocated) {
+        releaseCups(&m_addRun);
+    }
+    if (m_addSampleWidget) {
+        m_addSampleWidget->setSampleAbnormal(sampleNumber);
+    }
+    emit sampleMarkedAbnormal(sampleNumber);
+    emit statusChanged(tr("样本 %1 加样动作无法开始（%2），已标记异常并跳过")
+                       .arg(sampleNumber, reason));
+    m_addRun = SampleRun();
+    m_hasAddRun = false;
+}
+
+void TestScheduler::abandonStuckChannel(const QString &reason)
+{
+    SampleRun *run = findRunByChannel(m_actionChannel);
+    if (!run) {
+        return;
+    }
+    const QString sampleNumber = run->sample.sampleNumber;
+    const int channel = run->globalChannel;
+    run->discardPending = false;
+    run->abandoned = true;
+
+    if (m_addSampleWidget) {
+        m_addSampleWidget->setSampleAbnormal(sampleNumber);
+    }
+    emit sampleMarkedAbnormal(sampleNumber);
+
+    const int module = globalToModule(channel);
+    const int local = globalToLocal(channel);
+    m_overview->stopMotor(module, local);
+    m_overview->setChannelRunState(module, local, ChannelRunState::Abnormal);
+    m_overview->setChannelStatus(
+                module, local,
+                tr("样本:%1 试杯未丢弃，请手动处理").arg(sampleNumber));
+
+    // 试杯还在通道里，不能释放给下一个样本，否则会撞杯。
+    // 通道保持占用（m_channelsInUse 不移除），等待人工处理后复位。
+    for (int i = 0; i < m_active.size(); ++i) {
+        if (m_active.at(i).sample.sampleNumber == sampleNumber) {
+            m_active.removeAt(i);
+            break;
+        }
+    }
+    emit statusChanged(tr("样本 %1 丢杯动作无法开始（%2），通道 %3 保持占用")
+                       .arg(sampleNumber, reason).arg(channel));
 }
 
 void TestScheduler::handleActionAbandoned(const QString &message)
@@ -274,8 +407,8 @@ void TestScheduler::abandonPppSample(const QString &reason)
         }
     }
     releaseChannel(channel);
-    emit statusChanged(tr("样本 %1 PPP 杯抓取失败，已放弃该样本")
-                       .arg(sampleNumber));
+    emit statusChanged(tr("样本 %1 已放弃（%2），其他通道继续")
+                       .arg(sampleNumber, reason));
 }
 
 void TestScheduler::abandonCurrentReagent(const QString &reason)
@@ -316,8 +449,8 @@ void TestScheduler::abandonCurrentReagent(const QString &reason)
                     module, local,
                     tr("样本:%1 放弃%2，等待下一个试剂")
                     .arg(sampleNumber, reagent));
-        emit statusChanged(tr("样本 %1 放弃试剂 %2，继续下一个试剂")
-                           .arg(sampleNumber, reagent));
+        emit statusChanged(tr("样本 %1 放弃试剂 %2（%3），继续下一个试剂")
+                           .arg(sampleNumber, reagent, reason));
         return;
     }
 
@@ -325,8 +458,8 @@ void TestScheduler::abandonCurrentReagent(const QString &reason)
                 module, local,
                 tr("样本:%1 放弃%2，测试结束")
                 .arg(sampleNumber, reagent));
-    emit statusChanged(tr("样本 %1 放弃试剂 %2，没有后续试剂，测试结束")
-                       .arg(sampleNumber, reagent));
+    emit statusChanged(tr("样本 %1 放弃试剂 %2（%3），没有后续试剂，测试结束")
+                       .arg(sampleNumber, reagent, reason));
     completeSample(run);
 }
 
@@ -606,6 +739,27 @@ bool TestScheduler::startSetupReagent()
         }
 
         const QString reagent = run.sample.testItems.at(run.nextReagentIndex);
+
+        // 吸试剂前先确认该试剂是否有可用瓶位（主位/预备位）。
+        // 返回 <0：余量到报警限且不可切换，保留当前试剂待测状态并暂停，
+        // 操作员更换试剂后点「继续」会重新走这里。
+        int coordinateIndex = -1;
+        if (m_reagentPositionSelector) {
+            QString reason;
+            coordinateIndex = m_reagentPositionSelector(reagent, &reason);
+            if (coordinateIndex < 0) {
+                m_paused = true;
+                const QString message =
+                        reason.isEmpty()
+                        ? tr("试剂余量到报警限，测试已暂停，"
+                             "请更换试剂后点「继续」。")
+                        : reason;
+                emit statusChanged(message);
+                emit reagentAlarm(reagent, message);
+                return false;
+            }
+        }
+
         run.currentTest = TestCurveData();
         run.currentTest.reagent = reagent;
         run.currentTest.moduleNumber = globalToModule(run.globalChannel);
@@ -627,7 +781,7 @@ bool TestScheduler::startSetupReagent()
                            .arg(m_actionSample, reagent));
         emit setupReagentRequested(run.globalChannel,
                                    run.prpTubes.at(run.nextReagentIndex),
-                                   reagent);
+                                   reagent, coordinateIndex);
         return true;
     }
     return false;
@@ -1134,7 +1288,10 @@ void TestScheduler::updateChannelUiForReagent(SampleRun *run)
                                  .arg(run->sample.sampleNumber,
                                       run->currentTest.reagent));
     m_overview->setChannelRunState(module, local, ChannelRunState::Testing);
-    m_overview->setChannelProgress(module, local, 8);
+    // 只清掉上一个试剂的进度，不在这里启动倒计时：
+    // 本轮 300s 进度统一由 startReaction() 在试剂真正吐入反应杯后
+    // 从 0 开始累计，否则每次测试剂前会先“开启”一次再归零。
+    m_overview->setChannelProgress(module, local, 0);
 }
 
 void TestScheduler::setChannelIdleUi(int globalChannel)

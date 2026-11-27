@@ -197,6 +197,12 @@ private:
     void handleReagentReplaceRequested(int position);
     void updateConsumablesOperationState();
     bool reagentReplacementBlocked(QString *reason = nullptr) const;
+    /**
+     * 为下一次吸试剂选择坐标位（0~4 左、5~9 右）：
+     * 主位余量到单瓶报警限时，启用预备位则切到另一侧；
+     * 否则返回 -1 并给出提示，调度器会暂停等待更换试剂。
+     */
+    int selectReagentCoordinate(const QString &reagent, QString *reason);
     /** 刷卡充值状态机：读卡成功 → 暂停轮询 → 写卡 → 成功/失败 → 恢复轮询 */
     void handleCardRechargeStatus(const MainBoardStatus &status);
     void handleCardRechargeResult(int mfcStatus, int cardType, int cardQty,
